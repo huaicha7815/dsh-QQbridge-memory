@@ -6,12 +6,12 @@
   "description": "Bridge between SnowLuma (OneBot v11 / QQ) and DeepSeek Harness Web API: QQ messages become DSH agent prompts, agent replies go back to QQ. Targets the DSH Cookie-auth / slash-RPC / remote.mux protocol generation, so it deliberately names no DSH version here.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Derpyu520/qq-bridge.git"
+    "url": "git+https://github.com/huaicha7815/dsh-QQbridge-memory.git"
   },
   "bugs": {
-    "url": "https://github.com/Derpyu520/qq-bridge/issues"
+    "url": "https://github.com/huaicha7815/dsh-QQbridge-memory/issues"
   },
-  "homepage": "https://github.com/Derpyu520/qq-bridge#readme",
+  "homepage": "https://github.com/huaicha7815/dsh-QQbridge-memory#readme",
   "keywords": [
     "qq",
     "onebot",

@@ -9,7 +9,7 @@
 1. **克隆/获取仓库**：
 
    ```bash
-   git clone https://github.com/Derpyu520/qq-bridge.git
+   git clone https://github.com/huaicha7815/dsh-QQbridge-memory.git
    cd qq-bridge
    ```
 
