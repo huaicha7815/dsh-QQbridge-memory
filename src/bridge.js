@@ -10941,7 +10941,11 @@ async function main() {
 
     // 二代仿真模式（reserved2）：唤醒调度
     if (currentMode === 'reserved2') {
-      const sender = kind === 'group' ? (event.sender?.card || event.sender?.nickname || String(event.user_id)) : '私聊';
+      // 私聊也要记真实发送者：以前这里写死成「私聊」，导致私聊里的记忆在归档、
+      // 检索、星图上都成了「没人认领」的悬空事件（who=会话标签而不是人）。
+      const sender = kind === 'group'
+        ? (event.sender?.card || event.sender?.nickname || String(event.user_id))
+        : (event.sender?.nickname || event.sender?.card || String(event.user_id) || '对方');
       appendSocialV2Message(key, sender, textContent, plainContent, quoteTargetIsSelf, isOwner, event.message_id ?? event.msg_id ?? null, mediaList, event.user_id ?? null, extractForwardIds(event.message ?? []));
       // 二代同样收集群聊黑话学习素材（AI 自主提交之外，桥接仍自动提取高频陌生词）
       if (kind === 'group') feedSlangWindow(key, sender, plainContent);
@@ -10985,7 +10989,11 @@ async function main() {
 
     // 仿真群友模式：reserved 走状态机（观望/活跃/试探/退场）
     if (isSocialEnabled()) {
-      const sender = kind === 'group' ? (event.sender?.card || event.sender?.nickname || String(event.user_id)) : '私聊';
+      // 私聊也要记真实发送者：以前这里写死成「私聊」，导致私聊里的记忆在归档、
+      // 检索、星图上都成了「没人认领」的悬空事件（who=会话标签而不是人）。
+      const sender = kind === 'group'
+        ? (event.sender?.card || event.sender?.nickname || String(event.user_id))
+        : (event.sender?.nickname || event.sender?.card || String(event.user_id) || '对方');
       appendRecentMessage(key, sender, textContent, plainContent, quoteTargetIsSelf, isOwner, mediaList, messageRef); // AI 始终感知
       const st = socialState(key);
 
