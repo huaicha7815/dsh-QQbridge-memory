@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 使用问题 / 求助
+    url: https://github.com/huaicha7815/dsh-QQbridge-memory/discussions
+    about: 不确定是不是 bug、或者想讨论怎么配置，去 Discussions 更合适

@@ -1,0 +1,27 @@
+node_modules/
+
+# ── 私人数据：绝对不要提交 ──────────────────────────
+config.json
+state/
+audio/
+.env
+.env.*
+
+# 历史备份
+*.bak
+*.bak-*
+*.tmp
+_tmp_*
+
+# 一次性探针/诊断产物
+_snowluma-catalog.json
+assets/project-intro.mp4
+
+# 本导出脚本自己的标记（不属于仓库内容）
+.export-marker
+
+# 编辑器/系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
