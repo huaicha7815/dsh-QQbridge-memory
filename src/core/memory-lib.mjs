@@ -706,6 +706,262 @@ export function profileDigestForRefine(profile, { maxFacts = 8, maxThreads = 20 
   return lines.join('\n');
 }
 
+// ---------------------------------------------------------------------------
+// 记忆星图：把档案 + 事件流变成一张可视图（给控制台看，不参与检索）
+// ---------------------------------------------------------------------------
+
+/** 稳定的小哈希（FNV-1a 32 位），用来给节点生成固定 id 与固定初始位置。 */
+function hash32(text) {
+  let h = 0x811c9dc5;
+  const s = String(text ?? '');
+  for (let i = 0; i < s.length; i += 1) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h >>> 0;
+}
+
+/**
+ * 构建记忆星图：节点 + 连线 + 结构诊断。
+ *
+ * 借鉴 Hindsight 的 Constellation View，但只借它最有用的两件事：
+ *   1. **连线有类型**（实体 / 语义 / 时间），一眼看出「为什么这两个点连着」；
+ *   2. **布局要稳定**——同样的数据每次打开形状一样，才能做前后对比。
+ *      所以这里只输出图结构 + 确定性种子，排版交给前端用固定种子跑力导向。
+ *
+ * 不做什么：不引入 embedding、不调用模型。语义边就是字面 bigram 重合度，
+ * 这条图是给人看的诊断工具，不是检索器——检索仍然走 BM25。
+ *
+ * @param {object} profile 长期档案
+ * @param {Array<{t:number,k?:string,who?:string,text?:string,s?:number,kind?:string}>} events 事件流（通常给最近几天）
+ * @param {{maxEvents?:number, minSemantic?:number, maxSemanticPerNode?:number, now?:number}} opts
+ * @returns {{nodes:Array, edges:Array, stats:object}}
+ */
+export function buildMemoryGraph(profile, events, { maxEvents = 48, minSemantic = 0.34, maxSemanticPerNode = 3, now = Date.now() } = {}) {
+  const p = ensureProfile(profile);
+  const nodes = [];
+  const edges = [];
+  const byId = new Map();
+
+  const addNode = (node) => {
+    if (byId.has(node.id)) return byId.get(node.id);
+    byId.set(node.id, node);
+    nodes.push(node);
+    return node;
+  };
+  const addEdge = (a, b, kind, weight = 1) => {
+    if (!a || !b || a.id === b.id) return;
+    const key = a.id < b.id ? `${a.id}|${b.id}|${kind}` : `${b.id}|${a.id}|${kind}`;
+    if (edges.some((e) => e.key === key)) return;
+    edges.push({ key, source: a.id, target: b.id, kind, weight: Number(weight.toFixed(3)) || 0.5 });
+  };
+
+  // ── 节点：人物 / 线 / 心事 / 关键事件 ─────────────────────
+  for (const [name, v] of Object.entries(p.people)) {
+    addNode({
+      id: `p:${name}`,
+      type: 'person',
+      label: name,
+      seed: hash32(`p:${name}`),
+      meta: { facts: (v.facts || []).length, count: Number(v.count) || 0, lastSeen: Number(v.lastSeen) || 0 },
+    });
+  }
+  p.threads.forEach((t) => {
+    addNode({
+      id: `t:${hash32(t.text)}`,
+      type: 'thread',
+      label: truncateChars(t.text, 40),
+      seed: hash32(`t:${t.text}`),
+      meta: { state: t.state, with: Array.isArray(t.with) ? t.with : [], at: Number(t.lastMentionAt) || Number(t.createdAt) || 0 },
+    });
+  });
+  p.self.forEach((text) => {
+    addNode({
+      id: `s:${hash32(text)}`,
+      type: 'self',
+      label: truncateChars(text, 40),
+      seed: hash32(`s:${text}`),
+      meta: { at: Number(p.updatedAt) || 0 },
+    });
+  });
+  // 事件节点只放 S2/S3：S0/S1 是流水，放进图里就是噪声墙（Hindsight 也提醒过这一点）。
+  const recent = (Array.isArray(events) ? events : [])
+    .filter((e) => e && String(e.text || '').trim() && Number(e.s) >= 2)
+    .sort((a, b) => (Number(a.t) || 0) - (Number(b.t) || 0))
+    .slice(-Math.max(1, Number(maxEvents) || 48));
+  for (const e of recent) {
+    const key = `${Number(e.t) || 0}|${hash32(e.text)}`;
+    addNode({
+      id: `e:${key}`,
+      type: 'event',
+      label: truncateChars(String(e.text), 40),
+      seed: hash32(`e:${key}`),
+      meta: { at: Number(e.t) || 0, who: String(e.who || ''), kind: String(e.kind || ''), s: Number(e.s) || 1 },
+    });
+  }
+
+  // ── 实体边：人物 ↔ 线 / 事件 ─────────────────────────────
+  // 事件流里的 who 混着「私聊 / 群聊」这类会话标签（消息归档时写进去的），
+  // 它们不是人。不过滤的话「私聊」会变成全图最大的枢纽——那正是 Hindsight
+  // 提醒过的「高扇出实体把图解释带偏」。
+  const WHO_NOISE = new Set(['私聊', '群聊', '群友', '管理员', '系统', '我', '你', '他', '她', '?', '-', '']);
+  const looksLikePerson = (who) => {
+    const s = String(who ?? '').trim();
+    if (!s || WHO_NOISE.has(s)) return false;
+    if (s.length > 8) return false; // 人名不会是一整句话
+    if (/^[\d:]+$/.test(s)) return false;
+    return true;
+  };
+  const personByName = new Map(Object.keys(p.people).map((n) => [n, byId.get(`p:${n}`)]));
+  const ensurePerson = (who) => {
+    if (!looksLikePerson(who)) return null;
+    if (personByName.has(who)) return personByName.get(who);
+    const node = addNode({
+      id: `p:${who}`,
+      type: 'person',
+      label: who,
+      seed: hash32(`p:${who}`),
+      meta: { facts: 0, count: 0, lastSeen: 0 },
+    });
+    personByName.set(who, node);
+    return node;
+  };
+  for (const node of nodes.slice()) {
+    if (node.type === 'thread') {
+      for (const who of node.meta.with || []) addEdge(node, ensurePerson(who), 'entity', 1);
+    }
+    if (node.type === 'event') addEdge(node, ensurePerson(node.meta.who), 'entity', 0.8);
+  }
+
+  // 事件的 who 字段经常是空的或会话标签（消息归档本来就只保证记录正文），
+  // 所以再兜一层：文本里提到了已建档的人名，就连过去。一个节点最多连 2 个人，
+  // 免得一段话里提到五个人就把图连成一团。
+  const knownNames = Object.keys(p.people)
+    .filter((n) => n.length >= 2)
+    .sort((a, b) => b.length - a.length);
+  for (const node of nodes.slice()) {
+    if (node.type !== 'event' && node.type !== 'self' && node.type !== 'thread') continue;
+    const text = `${node.label} ${node.meta?.who || ''}`;
+    let linked = 0;
+    for (const name of knownNames) {
+      if (linked >= 2) break;
+      if (!text.includes(name)) continue;
+      const target = personByName.get(name);
+      if (!target) continue;
+      addEdge(node, target, 'entity', 0.6);
+      linked += 1;
+    }
+  }
+
+  // ── 语义边：字面重合（每个节点只留最强的几条，避免变成毛线球）──
+  const tokensOf = new Map(nodes.map((n) => [n.id, new Set(tokenize(`${n.label} ${n.meta?.who || ''}`).filter((t) => !t.startsWith('#')))]));
+  const pairs = [];
+  for (let i = 0; i < nodes.length; i += 1) {
+    for (let j = i + 1; j < nodes.length; j += 1) {
+      const a = tokensOf.get(nodes[i].id);
+      const b = tokensOf.get(nodes[j].id);
+      if (!a.size || !b.size) continue;
+      let inter = 0;
+      for (const t of a) if (b.has(t)) inter += 1;
+      if (!inter) continue;
+      const score = inter / (a.size + b.size - inter); // Jaccard
+      if (score >= minSemantic) pairs.push({ i, j, score });
+    }
+  }
+  pairs.sort((x, y) => y.score - x.score);
+  const semanticCount = new Map();
+  for (const { i, j, score } of pairs) {
+    const a = nodes[i];
+    const b = nodes[j];
+    const ca = semanticCount.get(a.id) || 0;
+    const cb = semanticCount.get(b.id) || 0;
+    if (ca >= maxSemanticPerNode || cb >= maxSemanticPerNode) continue;
+    semanticCount.set(a.id, ca + 1);
+    semanticCount.set(b.id, cb + 1);
+    addEdge(a, b, 'semantic', score);
+  }
+
+  // ── 时间边：同一天、且语义上确实相关的相邻事件才串起来 ─────
+  // 只按「同一天」连会让 48 条事件变成一根长链，时间边压过语义边，图就看不出结构了。
+  const dayKey = (ts) => {
+    const d = new Date(Number(ts) || 0);
+    const pad = (v) => String(v).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  };
+  const jaccard = (a, b) => {
+    const A = tokensOf.get(a.id);
+    const B = tokensOf.get(b.id);
+    if (!A?.size || !B?.size) return 0;
+    let inter = 0;
+    for (const t of A) if (B.has(t)) inter += 1;
+    return inter / (A.size + B.size - inter);
+  };
+  const eventNodes = nodes.filter((n) => n.type === 'event').sort((a, b) => a.meta.at - b.meta.at);
+  for (let i = 1; i < eventNodes.length; i += 1) {
+    const prev = eventNodes[i - 1];
+    const cur = eventNodes[i];
+    if (dayKey(prev.meta.at) !== dayKey(cur.meta.at)) continue;
+    if (jaccard(prev, cur) < 0.08) continue; // 同一天的流水账太多，只留真正沾边的
+    addEdge(prev, cur, 'temporal', 0.5);
+  }
+
+  // ── 结构诊断：枢纽 / 孤岛 / 连通簇 ─────────────────────────
+  const degree = new Map(nodes.map((n) => [n.id, 0]));
+  for (const e of edges) {
+    degree.set(e.source, (degree.get(e.source) || 0) + 1);
+    degree.set(e.target, (degree.get(e.target) || 0) + 1);
+  }
+  for (const n of nodes) n.degree = degree.get(n.id) || 0;
+
+  const adj = new Map(nodes.map((n) => [n.id, []]));
+  for (const e of edges) {
+    adj.get(e.source)?.push(e.target);
+    adj.get(e.target)?.push(e.source);
+  }
+  const seen = new Set();
+  let clusters = 0;
+  for (const n of nodes) {
+    if (seen.has(n.id)) continue;
+    clusters += 1;
+    const stack = [n.id];
+    seen.add(n.id);
+    while (stack.length) {
+      const cur = stack.pop();
+      for (const next of adj.get(cur) || []) {
+        if (seen.has(next)) continue;
+        seen.add(next);
+        stack.push(next);
+      }
+    }
+  }
+  const hubs = nodes.slice().sort((a, b) => b.degree - a.degree).slice(0, 3).map((n) => ({ id: n.id, label: n.label, degree: n.degree }));
+  const isolated = nodes.filter((n) => n.degree === 0).map((n) => ({ id: n.id, label: n.label }));
+
+  return {
+    nodes: nodes.map((n) => ({ id: n.id, type: n.type, label: n.label, seed: n.seed, degree: n.degree, meta: n.meta })),
+    edges: edges.map((e) => ({ source: e.source, target: e.target, kind: e.kind, weight: e.weight })),
+    stats: {
+      nodes: nodes.length,
+      edges: edges.length,
+      byType: {
+        person: nodes.filter((n) => n.type === 'person').length,
+        thread: nodes.filter((n) => n.type === 'thread').length,
+        self: nodes.filter((n) => n.type === 'self').length,
+        event: nodes.filter((n) => n.type === 'event').length,
+      },
+      byKind: {
+        entity: edges.filter((e) => e.kind === 'entity').length,
+        semantic: edges.filter((e) => e.kind === 'semantic').length,
+        temporal: edges.filter((e) => e.kind === 'temporal').length,
+      },
+      hubs,
+      isolated,
+      clusters,
+      now,
+    },
+  };
+}
+
 /**
  * 档案一致性检查：只读，不动数据。给 `memory-health` 和控制台记忆面板共用。
  *

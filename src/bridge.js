@@ -59,7 +59,7 @@ import {
   markStickerUsed
 } from './sticker-lib.js';
 import { createMemoryStore } from './core/memory-store.mjs';
-import { auditProfile, buildInjection, mergePersonFact, mergeSelfNote, mergeThread, profileDigestForRefine, threadClosureHints, verifyMemoryClaim } from './core/memory-lib.mjs';
+import { auditProfile, buildInjection, buildMemoryGraph, mergePersonFact, mergeSelfNote, mergeThread, profileDigestForRefine, threadClosureHints, verifyMemoryClaim } from './core/memory-lib.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -6288,6 +6288,21 @@ async function main() {
           const hits = memoryStore.search(q, { topK: topK || memCfg.searchTopK, days: days || memCfg.searchDays });
           const formatted = memoryStore.formatHits(hits, { maxChars: memCfg.searchMaxChars });
           sendJson({ ok: true, key, query: q, count: hits.length, formatted, hits: hits.map((h) => ({ kind: h.kind, day: h.day, ts: h.ts, score: Number(h.score?.toFixed?.(4)) || 0, text: h.text })) });
+          return;
+        }
+
+        // 记忆星图：档案 + 最近事件流 → 节点/连线/结构诊断。
+        // 纯规则构图（不调模型、不做 embedding），前端负责力导向排版。
+        if (req.method === 'GET' && url.pathname === '/api/memory/graph') {
+          const days = Math.max(1, Math.min(60, Number(url.searchParams.get('days')) || 5));
+          const maxEvents = Math.max(6, Math.min(120, Number(url.searchParams.get('maxEvents')) || 36));
+          const profile = memoryStore.readProfile();
+          const events = memoryStore.readEvents({ days });
+          sendJson({
+            ok: true,
+            days,
+            graph: buildMemoryGraph(profile, events, { now: Date.now(), maxEvents }),
+          });
           return;
         }
 

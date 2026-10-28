@@ -1756,6 +1756,30 @@ button:active:not(:disabled) {
 .memory-recall { display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap }
 .memory-query { color:var(--text-strong, inherit) }
 
+/* 记忆星图 */
+#section-memory-graph .graph-wrap { position:relative; margin-top:12px; border:1px solid var(--border, rgba(128,128,128,.22)); border-radius:12px; overflow:hidden; background:var(--graph-bg, radial-gradient(circle at 50% 40%, rgba(80,120,255,.08), transparent 62%)) }
+#memoryGraphCanvas { display:block; width:100%; height:auto; cursor:grab; touch-action:none }
+#memoryGraphCanvas.dragging { cursor:grabbing }
+.graph-tooltip { position:absolute; max-width:320px; padding:8px 10px; border-radius:8px; background:var(--surface, #fff); color:var(--text, #222); border:1px solid var(--border, rgba(128,128,128,.3)); box-shadow:0 6px 22px rgba(0,0,0,.16); font-size:12px; line-height:1.55; pointer-events:none; z-index:5 }
+.graph-legend { display:flex; flex-wrap:wrap; gap:14px; margin-top:10px; font-size:11px; color:var(--muted) }
+.graph-legend span { display:inline-flex; align-items:center; gap:6px }
+.graph-legend .gl-dot { width:10px; height:10px; border-radius:50%; display:inline-block }
+.graph-legend .gl-dot[data-kind="person"] { background:#4a7dff }
+.graph-legend .gl-dot[data-kind="thread"] { background:#f0a13c }
+.graph-legend .gl-dot[data-kind="self"] { background:#c86bff }
+.graph-legend .gl-dot[data-kind="event"] { background:#3fbf9a }
+.graph-legend .gl-line { width:18px; height:2px; border-radius:2px; display:inline-block }
+.graph-legend .gl-line[data-kind="entity"] { background:#f0a13c }
+.graph-legend .gl-line[data-kind="semantic"] { background:#4a7dff }
+.graph-legend .gl-line[data-kind="temporal"] { background:#3fbf9a }
+.graph-foot { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px }
+@media (max-width: 860px) { .graph-foot { grid-template-columns:1fr } }
+.graph-stats, .graph-detail { padding:10px 12px; border:1px solid var(--border, rgba(128,128,128,.22)); border-radius:10px; background:var(--surface-soft, rgba(128,128,128,.05)); font-size:12px; line-height:1.65; min-height:76px }
+.graph-detail b { color:var(--text-strong, inherit) }
+.graph-kv { display:flex; gap:6px; flex-wrap:wrap; margin-top:6px }
+.graph-kv span { padding:1px 7px; border-radius:6px; background:var(--accent-soft, rgba(80,120,255,.12)); font-size:11px }
+.graph-warn { color:var(--warn-fg-strong, #b45309) }
+
 </style>
 </head>
 <body>
@@ -1774,6 +1798,7 @@ button:active:not(:disabled) {
       <button data-view="slang" class="nav-item"><span class="nav-icon" aria-hidden="true">▤</span>黑话词库</button>
       <div class="nav-label">管理</div>
       <button data-view="memory" class="nav-item"><span class="nav-icon" aria-hidden="true">◍</span>她的记忆<span class="nav-note">V3</span></button>
+      <button data-view="memory-graph" class="nav-item"><span class="nav-icon" aria-hidden="true">✦</span>记忆星图<span class="nav-note">NEW</span></button>
       <button data-view="usage" class="nav-item"><span class="nav-icon" aria-hidden="true">◧</span>令牌与花费</button>
       <button data-view="access" class="nav-item"><span class="nav-icon" aria-hidden="true">⊙</span>访问与安全</button>
       <button data-view="operations" class="nav-item"><span class="nav-icon" aria-hidden="true">⌘</span>调试与运维</button>
@@ -2298,6 +2323,42 @@ button:active:not(:disabled) {
       <div id="memorySelf" class="memory-list">（加载中…）</div>
       <h3 class="memory-heading">最近检索（她查过什么、命中多少）</h3>
       <div id="memoryRecalls" class="memory-list">（加载中…）</div>
+    </section>
+<section id="section-memory-graph" data-page="memory-graph" class="card span-all">
+      <h2>记忆星图 <span class="meta" id="graphHint"></span></h2>
+      <div class="meta">把她记得的东西画成一张图：<b>人物</b>、<b>没还完的线</b>、<b>心事</b>、<b>值得记的事件</b>。连线有三种——实体（谁跟谁有关）、语义（说的是一类事）、时间（同一天连着发生）。它不参与检索，只帮你看清<b>记忆的结构长什么样</b>：哪些聚成了团，哪些悬在外面没人连。</div>
+      <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:8px">
+        <button id="graphReload" class="small">刷新</button>
+        <button id="graphReset" class="small">复位视图</button>
+        <select id="graphDays" class="small" style="max-width:150px">
+          <option value="2">最近 2 天的事件</option>
+          <option value="5" selected>最近 5 天的事件</option>
+          <option value="10">最近 10 天的事件</option>
+          <option value="30">最近 30 天的事件</option>
+        </select>
+        <label class="meta" style="display:inline-flex;align-items:center;gap:4px"><input type="checkbox" data-graph-type="person" checked> 人物</label>
+        <label class="meta" style="display:inline-flex;align-items:center;gap:4px"><input type="checkbox" data-graph-type="thread" checked> 线</label>
+        <label class="meta" style="display:inline-flex;align-items:center;gap:4px"><input type="checkbox" data-graph-type="self" checked> 心事</label>
+        <label class="meta" style="display:inline-flex;align-items:center;gap:4px"><input type="checkbox" data-graph-type="event" checked> 事件</label>
+        <span class="meta" id="graphMsg"></span>
+      </div>
+      <div class="graph-legend">
+        <span><i class="gl-dot" data-kind="person"></i>人物</span>
+        <span><i class="gl-dot" data-kind="thread"></i>线</span>
+        <span><i class="gl-dot" data-kind="self"></i>心事</span>
+        <span><i class="gl-dot" data-kind="event"></i>事件</span>
+        <span><i class="gl-line" data-kind="entity"></i>实体</span>
+        <span><i class="gl-line" data-kind="semantic"></i>语义</span>
+        <span><i class="gl-line" data-kind="temporal"></i>时间</span>
+      </div>
+      <div class="graph-wrap">
+        <canvas id="memoryGraphCanvas" width="1200" height="640" aria-label="记忆星图"></canvas>
+        <div id="graphTooltip" class="graph-tooltip" hidden></div>
+      </div>
+      <div class="graph-foot">
+        <div id="graphStats" class="graph-stats">（加载中…）</div>
+        <div id="graphDetail" class="graph-detail">点一个点，看它是什么。</div>
+      </div>
     </section>
 <section id="section-slang" data-page="slang" class="card span-all">
       <h2>群聊黑话 / 网络用语库</h2>
@@ -4277,6 +4338,7 @@ const consolePages = {
   slang: ['黑话词库', '读懂群聊里的，言外之意。', '从候选到确认，让 AI 逐渐熟悉大家的表达习惯。'],
   usage: ['令牌与花费', '每一次思考，都算得清楚。', '实时查看 AI 的 token 消耗与花费，可下钻到每个群、每个好友、每一轮对话。'],
   memory: ['她的记忆', '记住的不是数据，是走过的时间。', '看清她的四层长期记忆：事件流、摘要、长期档案与唤醒注入，并检查档案有没有记歪。'],
+  'memory-graph': ['记忆星图', '看得见的结构，才谈得上优化。', '把她记得的东西画成一张可探索的图：谁跟谁有关、哪些聚成团、哪些悬在外面。用来诊断记忆结构，不参与检索。'],
   access: ['访问与安全', '明确边界，安心连接。', '管理允许对话的对象、管理员权限与控制台访问凭证。'],
   operations: ['调试与运维', '让桥接，始终井然有序。', '测试消息、引导 AI，或维护桥接进程与会话工作区。'],
   reference: ['工具参考', '每一种能力，都清晰可见。', '查看桥接提供给 DSH 的 MCP 工具与用途。']
@@ -4310,6 +4372,7 @@ function setConsolePage(page, { updateHash = true, focus = false, target = '' } 
   if (page === 'social-v2' && typeof loadVoiceLibrary === 'function') loadVoiceLibrary();
   // 长期记忆同样按需加载：只有进这个页面才读档案（档案会随时间变大）。
   if (page === 'memory' && typeof loadMemoryPanel === 'function') loadMemoryPanel();
+  if (page === 'memory-graph' && typeof loadMemoryGraph === 'function') loadMemoryGraph();
   if (focus) {
     document.getElementById('mainContent').focus({ preventScroll: true });
     document.getElementById(target || 'mainContent')?.scrollIntoView({ block: 'start', behavior: 'instant' });
@@ -5047,6 +5110,382 @@ async function loadMemoryPanel() {
   }
 }
 document.getElementById('memoryReload')?.addEventListener('click', loadMemoryPanel);
+
+// ── 记忆星图：确定性力导向 + Canvas 交互 ──
+// 布局必须稳定：同样的数据每次打开形状一样，才能拿它做「改之前 / 改之后」的对比。
+// 所以初始位置由节点 seed（FNV-1a 哈希）决定，力导向迭代固定次数，不用随机数。
+const GRAPH_NODE_COLORS = { person: '#4a7dff', thread: '#f0a13c', self: '#c86bff', event: '#3fbf9a' };
+const GRAPH_EDGE_COLORS = { entity: '#f0a13c', semantic: '#4a7dff', temporal: '#3fbf9a' };
+const GRAPH_TYPE_LABEL = { person: '人物', thread: '线', self: '心事', event: '事件' };
+const GRAPH_KIND_LABEL = { entity: '实体', semantic: '语义', temporal: '时间' };
+const graphState = {
+  graph: null,
+  nodes: [],
+  edges: [],
+  byId: new Map(),
+  scale: 1,
+  ox: 0,
+  oy: 0,
+  hoverId: null,
+  activeId: null,
+  dragging: false,
+  moved: false,
+  lastX: 0,
+  lastY: 0,
+  W: 1200,
+  H: 640,
+  raf: 0,
+};
+
+function graphFit() {
+  const nodes = graphState.nodes.filter((n) => !n.hidden);
+  if (!nodes.length) { graphState.scale = 1; graphState.ox = 0; graphState.oy = 0; return; }
+  let minX = Infinity; let maxX = -Infinity; let minY = Infinity; let maxY = -Infinity;
+  for (const n of nodes) {
+    if (n.x < minX) minX = n.x;
+    if (n.x > maxX) maxX = n.x;
+    if (n.y < minY) minY = n.y;
+    if (n.y > maxY) maxY = n.y;
+  }
+  const pad = 70;
+  const w = Math.max(1, maxX - minX);
+  const h = Math.max(1, maxY - minY);
+  const scale = Math.min((graphState.W - pad * 2) / w, (graphState.H - pad * 2) / h, 2.2);
+  graphState.scale = Math.max(0.15, scale);
+  graphState.ox = -((minX + maxX) / 2) * graphState.scale;
+  graphState.oy = -((minY + maxY) / 2) * graphState.scale;
+}
+
+function graphLayout() {
+  const nodes = graphState.nodes.filter((n) => !n.hidden);
+  const visible = new Set(nodes.map((n) => n.id));
+  const edges = graphState.edges.filter((e) => visible.has(e.source) && visible.has(e.target));
+  for (const n of graphState.nodes) {
+    if (!n._seeded) {
+      const seed = n.seed >>> 0;
+      const a = ((seed % 997) / 997) * Math.PI * 2;
+      const r = 60 + ((seed >>> 9) % 997) / 997 * 240;
+      n.x = Math.cos(a) * r;
+      n.y = Math.sin(a) * r * 0.66;
+      n.vx = 0;
+      n.vy = 0;
+      n._seeded = true;
+    }
+  }
+  const REPULSE = 2400;
+  const SPRING = 0.014;
+  const LEN = 96;
+  const CENTER = 0.0022;
+  for (let it = 0; it < 340; it += 1) {
+    for (let i = 0; i < nodes.length; i += 1) {
+      const a = nodes[i];
+      for (let j = i + 1; j < nodes.length; j += 1) {
+        const b = nodes[j];
+        let dx = a.x - b.x;
+        let dy = a.y - b.y;
+        let d2 = dx * dx + dy * dy;
+        if (d2 < 1) { d2 = 1; dx = (i - j) * 0.7 || 0.7; dy = 0.4; }
+        const f = REPULSE / d2;
+        const d = Math.sqrt(d2);
+        a.vx += (dx / d) * f;
+        a.vy += (dy / d) * f;
+        b.vx -= (dx / d) * f;
+        b.vy -= (dy / d) * f;
+      }
+    }
+    for (const e of edges) {
+      const a = graphState.byId.get(e.source);
+      const b = graphState.byId.get(e.target);
+      if (!a || !b) continue;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const d = Math.sqrt(dx * dx + dy * dy) || 1;
+      const target = LEN * (1.5 - Math.min(1, e.weight));
+      const f = (d - target) * SPRING;
+      a.vx += (dx / d) * f;
+      a.vy += (dy / d) * f;
+      b.vx -= (dx / d) * f;
+      b.vy -= (dy / d) * f;
+    }
+    for (const n of nodes) {
+      n.vx -= n.x * CENTER;
+      n.vy -= n.y * CENTER;
+      n.x += n.vx;
+      n.y += n.vy;
+      n.vx *= 0.84;
+      n.vy *= 0.84;
+    }
+  }
+}
+
+function graphScreen(n) {
+  return {
+    x: (n.x - 0) * graphState.scale + graphState.W / 2 + graphState.ox,
+    y: (n.y - 0) * graphState.scale + graphState.H / 2 + graphState.oy,
+  };
+}
+
+function graphDraw() {
+  const canvas = document.getElementById('memoryGraphCanvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  if (canvas.width !== Math.round(graphState.W * dpr)) {
+    canvas.width = Math.round(graphState.W * dpr);
+    canvas.height = Math.round(graphState.H * dpr);
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, graphState.W, graphState.H);
+
+  const visible = new Set(graphState.nodes.filter((n) => !n.hidden).map((n) => n.id));
+  const edges = graphState.edges.filter((e) => visible.has(e.source) && visible.has(e.target));
+  const focusId = graphState.hoverId || graphState.activeId;
+  const neighbor = new Set();
+  if (focusId) {
+    neighbor.add(focusId);
+    for (const e of edges) {
+      if (e.source === focusId) neighbor.add(e.target);
+      if (e.target === focusId) neighbor.add(e.source);
+    }
+  }
+
+  for (const e of edges) {
+    const a = graphState.byId.get(e.source);
+    const b = graphState.byId.get(e.target);
+    if (!a || !b || a.hidden || b.hidden) continue;
+    const pa = graphScreen(a);
+    const pb = graphScreen(b);
+    const dim = focusId && !(neighbor.has(e.source) && neighbor.has(e.target));
+    ctx.globalAlpha = dim ? 0.08 : 0.34 + Math.min(0.5, e.weight * 0.7);
+    ctx.strokeStyle = GRAPH_EDGE_COLORS[e.kind] || '#999';
+    ctx.lineWidth = 0.8 + Math.min(1.6, e.weight * 2);
+    ctx.beginPath();
+    ctx.moveTo(pa.x, pa.y);
+    ctx.lineTo(pb.x, pb.y);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  for (const n of graphState.nodes) {
+    if (n.hidden) continue;
+    const p = graphScreen(n);
+    const r = 5 + Math.min(11, n.degree * 1.15);
+    const dim = focusId && !neighbor.has(n.id);
+    ctx.globalAlpha = dim ? 0.18 : 1;
+    const color = GRAPH_NODE_COLORS[n.type] || '#999';
+    // 连接越多越亮：一眼看出枢纽（Hindsight 的「node brightness = connectivity」）
+    if (n.degree >= 3 && !dim) {
+      const glow = ctx.createRadialGradient(p.x, p.y, r * 0.4, p.x, p.y, r * 2.6);
+      glow.addColorStop(0, color + '66');
+      glow.addColorStop(1, color + '00');
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r * 2.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    ctx.fill();
+    if (focusId === n.id) {
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+    // 人物标签始终显示（即使缩得很小）；其它节点在放大、且连接 ≥2 时才标，
+    // 否则几十条事件标签会把图糊成一片。
+    if (n.type === 'person' || (graphState.scale > 0.9 && n.degree >= 2)) {
+      ctx.fillStyle = 'rgba(86,94,112,.95)';
+      ctx.font = `${n.type === 'person' ? 12 : 11}px system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      const label = n.label.length > 12 ? `${n.label.slice(0, 12)}…` : n.label;
+      ctx.fillText(label, p.x, p.y + r + 13);
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+function graphPick(clientX, clientY) {
+  const canvas = document.getElementById('memoryGraphCanvas');
+  const rect = canvas.getBoundingClientRect();
+  const sx = ((clientX - rect.left) / rect.width) * graphState.W;
+  const sy = ((clientY - rect.top) / rect.height) * graphState.H;
+  let best = null;
+  let bestD = Infinity;
+  for (const n of graphState.nodes) {
+    if (n.hidden) continue;
+    const p = graphScreen(n);
+    const r = 7 + Math.min(11, n.degree * 1.15);
+    const d = Math.hypot(p.x - sx, p.y - sy);
+    if (d <= r + 4 && d < bestD) { best = n; bestD = d; }
+  }
+  return best;
+}
+
+function graphTooltipHtml(n) {
+  const m = n.meta || {};
+  const lines = [`<b>${esc(n.label)}</b>`, `<span class="meta">${GRAPH_TYPE_LABEL[n.type] || n.type} · 连接 ${n.degree}</span>`];
+  if (n.type === 'person') lines.push(`<span class="meta">${m.facts || 0} 条事实 · 聊过 ${m.count || 0} 次</span>`);
+  if (n.type === 'thread') lines.push(`<span class="meta">${m.state === 'done' ? '已了结' : '未完结'}${m.with?.length ? ' · ' + esc(m.with.join('、')) : ''}</span>`);
+  if (n.type === 'event') lines.push(`<span class="meta">${esc(m.who || '（没记发送者）')} · 重要度 S${m.s || 1}</span>`);
+  return lines.join('<br>');
+}
+
+function graphShowTip(html, clientX, clientY) {
+  const tip = document.getElementById('graphTooltip');
+  const wrap = tip.parentElement.getBoundingClientRect();
+  tip.innerHTML = html;
+  tip.hidden = false;
+  const x = Math.min(clientX - wrap.left + 14, wrap.width - tip.offsetWidth - 8);
+  const y = Math.max(6, clientY - wrap.top - tip.offsetHeight - 10);
+  tip.style.left = `${Math.max(6, x)}px`;
+  tip.style.top = `${y}px`;
+}
+
+function graphDetailHtml(n) {
+  if (!n) return '点一个点，看它是什么。';
+  const m = n.meta || {};
+  const head = `<b>${esc(n.label)}</b> <span class="meta">（${GRAPH_TYPE_LABEL[n.type] || n.type} · 连接 ${n.degree}）</span>`;
+  const tags = [];
+  if (n.type === 'person') tags.push(`${m.facts || 0} 条事实`, `聊过 ${m.count || 0} 次`, m.lastSeen ? `最近 ${fmtDay(m.lastSeen)}` : '');
+  if (n.type === 'thread') tags.push(m.state === 'done' ? '已了结' : '未完结', m.with?.length ? `和 ${esc(m.with.join('、'))}` : '', m.at ? fmtDay(m.at) : '');
+  if (n.type === 'event') tags.push(esc(m.who || '没记发送者'), `S${m.s || 1}`, m.at ? new Date(m.at).toLocaleString('zh-CN') : '');
+  if (n.type === 'self') tags.push(m.at ? `记于 ${fmtDay(m.at)}` : '');
+  const links = graphState.edges
+    .filter((e) => e.source === n.id || e.target === n.id)
+    .sort((a, b) => b.weight - a.weight)
+    .slice(0, 6)
+    .map((e) => {
+      const other = graphState.byId.get(e.source === n.id ? e.target : e.source);
+      return other && !other.hidden ? `「${esc(other.label.slice(0, 18))}」<span class="meta">${GRAPH_KIND_LABEL[e.kind]}</span>` : '';
+    })
+    .filter(Boolean);
+  return `${head}<div class="graph-kv">${tags.filter(Boolean).map((t) => `<span>${t}</span>`).join('')}</div>`
+    + (links.length ? `<div class="meta" style="margin-top:6px">连着：${links.join('、')}</div>` : '<div class="meta" style="margin-top:6px">没有连线——它悬在记忆外面。</div>');
+}
+
+function renderGraphStats(stats) {
+  const box = document.getElementById('graphStats');
+  if (!box || !stats) return;
+  const parts = [
+    `点 <b>${stats.nodes}</b> · 连 <b>${stats.edges}</b>（实体 ${stats.byKind.entity} / 语义 ${stats.byKind.semantic} / 时间 ${stats.byKind.temporal}）`,
+    `簇 <b>${stats.clusters}</b> · 悬空点 <b>${stats.isolated.length}</b>`,
+  ];
+  if (stats.hubs.length) parts.push(`最中心的点：${stats.hubs.map((h) => `${esc(h.label.slice(0, 12))}(${h.degree})`).join('、')}`);
+  const warns = [];
+  if (stats.isolated.length > stats.nodes * 0.4) warns.push('过半的点没有连线：说明这些记忆还没跟任何东西挂上钩（或事件流的发送者字段缺失）。');
+  if (stats.hubs.length && stats.hubs[0].degree > stats.nodes * 0.45) warns.push(`「${esc(stats.hubs[0].label.slice(0, 12))}」连了一半以上的点，可能是个噪声枢纽。`);
+  if (stats.clusters > stats.nodes * 0.6) warns.push('簇太多、几乎每个点各成一簇：记忆之间缺少语义关联。');
+  box.innerHTML = parts.join('<br>') + (warns.length ? `<div class="graph-warn" style="margin-top:6px">${warns.map((w) => `· ${w}`).join('<br>')}</div>` : '');
+}
+
+function graphRebuildVisible() {
+  const types = new Set();
+  document.querySelectorAll('[data-graph-type]').forEach((el) => { if (el.checked) types.add(el.dataset.graphType); });
+  for (const n of graphState.nodes) n.hidden = !types.has(n.type);
+  graphFit();
+  graphDraw();
+}
+
+async function loadMemoryGraph() {
+  const msg = document.getElementById('graphMsg');
+  if (!msg) return;
+  msg.textContent = '加载中…';
+  msg.className = 'meta';
+  try {
+    const days = Number(document.getElementById('graphDays')?.value) || 5;
+    const r = await api(`/api/memory/graph?days=${days}`);
+    if (!r || !r.ok) throw new Error((r && r.error) || '加载失败');
+    const g = r.graph || { nodes: [], edges: [], stats: null };
+    graphState.graph = g;
+    graphState.nodes = (g.nodes || []).map((n) => ({ ...n }));
+    graphState.edges = (g.edges || []).map((e) => ({ ...e }));
+    graphState.byId = new Map(graphState.nodes.map((n) => [n.id, n]));
+    graphState.hoverId = null;
+    graphState.activeId = null;
+    document.getElementById('graphHint').textContent = `最近 ${r.days || days} 天的事件`;
+    graphLayout();
+    graphRebuildVisible();
+    renderGraphStats(g.stats);
+    document.getElementById('graphDetail').innerHTML = '点一个点，看它是什么。';
+    msg.textContent = `已更新 · ${g.stats?.nodes || 0} 个点 / ${g.stats?.edges || 0} 条连线`;
+    msg.className = 'meta ok';
+  } catch (e) {
+    msg.textContent = '加载失败：' + ((e && e.message) || e);
+    msg.className = 'meta err';
+  }
+}
+
+function graphBindEvents() {
+  const canvas = document.getElementById('memoryGraphCanvas');
+  if (!canvas) return;
+  canvas.addEventListener('wheel', (ev) => {
+    ev.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const mx = ((ev.clientX - rect.left) / rect.width) * graphState.W;
+    const my = ((ev.clientY - rect.top) / rect.height) * graphState.H;
+    const before = { x: (mx - graphState.W / 2 - graphState.ox) / graphState.scale, y: (my - graphState.H / 2 - graphState.oy) / graphState.scale };
+    const factor = ev.deltaY < 0 ? 1.12 : 1 / 1.12;
+    graphState.scale = Math.min(6, Math.max(0.12, graphState.scale * factor));
+    graphState.ox = mx - graphState.W / 2 - before.x * graphState.scale;
+    graphState.oy = my - graphState.H / 2 - before.y * graphState.scale;
+    graphDraw();
+  }, { passive: false });
+
+  canvas.addEventListener('pointerdown', (ev) => {
+    graphState.dragging = true;
+    graphState.moved = false;
+    graphState.lastX = ev.clientX;
+    graphState.lastY = ev.clientY;
+    canvas.classList.add('dragging');
+    canvas.setPointerCapture?.(ev.pointerId);
+  });
+  canvas.addEventListener('pointermove', (ev) => {
+    if (graphState.dragging) {
+      const dx = ev.clientX - graphState.lastX;
+      const dy = ev.clientY - graphState.lastY;
+      if (Math.abs(dx) + Math.abs(dy) > 2) graphState.moved = true;
+      graphState.lastX = ev.clientX;
+      graphState.lastY = ev.clientY;
+      graphState.ox += dx * (graphState.W / canvas.getBoundingClientRect().width);
+      graphState.oy += dy * (graphState.H / canvas.getBoundingClientRect().height);
+      graphDraw();
+      return;
+    }
+    const hit = graphPick(ev.clientX, ev.clientY);
+    const next = hit ? hit.id : null;
+    if (next !== graphState.hoverId) {
+      graphState.hoverId = next;
+      graphDraw();
+    }
+    if (hit) {
+      graphShowTip(graphTooltipHtml(hit), ev.clientX, ev.clientY);
+      canvas.style.cursor = 'pointer';
+    } else {
+      document.getElementById('graphTooltip').hidden = true;
+      canvas.style.cursor = '';
+    }
+  });
+  canvas.addEventListener('pointerup', (ev) => {
+    graphState.dragging = false;
+    canvas.classList.remove('dragging');
+    if (graphState.moved) return;
+    const hit = graphPick(ev.clientX, ev.clientY);
+    graphState.activeId = hit ? hit.id : null;
+    document.getElementById('graphDetail').innerHTML = graphDetailHtml(hit);
+    graphDraw();
+  });
+  canvas.addEventListener('pointerleave', () => {
+    graphState.hoverId = null;
+    document.getElementById('graphTooltip').hidden = true;
+    graphDraw();
+  });
+  document.querySelectorAll('[data-graph-type]').forEach((el) => el.addEventListener('change', graphRebuildVisible));
+  document.getElementById('graphDays')?.addEventListener('change', loadMemoryGraph);
+  document.getElementById('graphReset')?.addEventListener('click', () => { graphFit(); graphDraw(); });
+  document.getElementById('graphReload')?.addEventListener('click', loadMemoryGraph);
+}
+graphBindEvents();
 </script>
 </body>
 </html>

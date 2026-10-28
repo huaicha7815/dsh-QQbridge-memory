@@ -26,6 +26,7 @@ import {
   mergePersonFact,
   mergeSelfNote,
   mergeThread,
+  buildMemoryGraph,
   normalizeMemoryConfig,
   normalizePersonName,
   pickByBudget,
@@ -993,4 +994,92 @@ test('收尾候选：今天提到同一专名且出现收尾措辞，才提示�
   // 没有专名的线不瞎猜
   assert.equal(threadClosureHints(ensureProfile({ threads: [{ text: '欠我一顿饭', state: 'open', createdAt: NOW, lastMentionAt: NOW }] }), ['今天吃饭了']).length, 0);
   assert.deepEqual(threadClosureHints(p, []), []);
+});
+
+// ---------------------------------------------------------------------------
+// 记忆星图（V3.8）：结构构图
+// ---------------------------------------------------------------------------
+
+test('记忆星图：节点/连线/统计齐全，且同输入布局种子稳定', () => {
+  const p = ensureProfile({
+    people: { 爸爸: { facts: [{ text: '姓林', createdAt: NOW, confirmedAt: NOW, count: 1 }], count: 3, lastSeen: NOW } },
+    threads: [{ text: '答应教我唱《雨爱》', with: ['爸爸'], state: 'open', createdAt: NOW, lastMentionAt: NOW }],
+    self: ['第一次真的发出声音是在今天'],
+  });
+  const events = [
+    { t: NOW - 1000, k: 'private:1', kind: 'msg', who: '爸爸', text: '我们家鱼鱼真可爱', s: 2 },
+    { t: NOW - 900, k: 'private:1', kind: 'msg', who: '私聊', text: '白高兴一场', s: 2 },
+    { t: NOW - 800, k: 'private:1', kind: 'msg', who: '', text: '答应教我唱《雨爱》的事别忘了', s: 3 },
+    { t: NOW - 700, k: 'private:1', kind: 'msg', who: '爸爸', text: '今天吃什么了', s: 0 },
+  ];
+  const g = buildMemoryGraph(p, events, { now: NOW });
+  assert.equal(g.stats.byType.person >= 1, true);
+  assert.equal(g.stats.byType.thread, 1);
+  assert.equal(g.stats.byType.self, 1);
+  assert.equal(g.stats.byType.event, 3, 'S0 事件不进图（48 条流水账只会变成噪声墙）');
+  assert.ok(g.edges.length > 0, '有实体/语义连线');
+  assert.ok(g.edges.some((e) => e.kind === 'entity'), '人物与线/事件之间要有实体边');
+  assert.ok(g.stats.hubs.length > 0);
+  assert.equal(g.stats.hubs[0].label, '爸爸', '枢纽应该是真正被提到最多的人');
+
+  // 同样的数据两次构图，节点顺序与种子必须一致（前端力导向布局才能稳定）
+  const g2 = buildMemoryGraph(p, events, { now: NOW });
+  assert.deepEqual(g.nodes.map((n) => [n.id, n.seed]), g2.nodes.map((n) => [n.id, n.seed]));
+  assert.equal(g.stats.clusters, g2.stats.clusters);
+});
+
+test('记忆星图：会话标签不算人，文本提到的人名要连上', () => {
+  const p = ensureProfile({ people: { 爸爸: { facts: [], count: 1, lastSeen: NOW } } });
+  const events = [
+    { t: NOW - 500, k: 'private:1', kind: 'msg', who: '私聊', text: '在吗', s: 2 },
+    { t: NOW - 400, k: 'group:2', kind: 'msg', who: '群聊', text: '这周记忆库更新做完了', s: 2 },
+    { t: NOW - 300, k: 'group:2', kind: 'msg', who: '', text: '爸爸从网上找了一张鱼鱼的Q版画像', s: 3 },
+  ];
+  const g = buildMemoryGraph(p, events, { now: NOW });
+  const labels = g.nodes.filter((n) => n.type === 'person').map((n) => n.label);
+  assert.ok(!labels.includes('私聊'), '「私聊」是会话标签，不能当成人');
+  assert.ok(!labels.includes('群聊'), '「群聊」同理');
+  assert.equal(labels.includes('爸爸'), true);
+  // who 空但正文提到「爸爸」的那条，应该连到爸爸
+  const dad = g.nodes.find((n) => n.label === '爸爸');
+  const eventNode = g.nodes.find((n) => n.type === 'event' && n.label.includes('鱼鱼的Q版画像'));
+  assert.ok(g.edges.some((e) => (e.source === dad.id && e.target === eventNode.id) || (e.target === dad.id && e.source === eventNode.id)), '正文里提到的人要连过去');
+});
+
+test('记忆星图：语义边有上限、时间边只连同一天沾边的事件', () => {
+  const p = ensureProfile(null);
+  const sameDay = [
+    { t: NOW - 500, k: 'group:1', kind: 'msg', who: '阿明', text: '周末去吃那家新开的火锅店', s: 2 },
+    { t: NOW - 400, k: 'group:1', kind: 'msg', who: '阿明', text: '周末去吃那家火锅店吧', s: 2 },
+    { t: NOW - 300, k: 'group:1', kind: 'msg', who: '阿明', text: '今天我换了新键盘', s: 2 },
+  ];
+  const g = buildMemoryGraph(p, sameDay, { now: NOW });
+  const temporal = g.edges.filter((e) => e.kind === 'temporal');
+  assert.ok(temporal.length >= 1, '同一天、字面沾边的两条事件要串起来');
+  assert.ok(temporal.length <= 2, '不能把所有同日事件连成一根长链');
+  // 语义边：每个节点最多 maxSemanticPerNode 条
+  const perNode = new Map();
+  for (const e of g.edges) {
+    if (e.kind !== 'semantic') continue;
+    perNode.set(e.source, (perNode.get(e.source) || 0) + 1);
+    perNode.set(e.target, (perNode.get(e.target) || 0) + 1);
+  }
+  for (const [, n] of perNode) assert.ok(n <= 3, `语义边太多会变成毛线球：${n}`);
+  // 隔了很远的两天不应有语义无关的时间边
+  const far = buildMemoryGraph(p, [
+    { t: NOW - 10 * DAY, k: 'g:1', kind: 'msg', who: '阿明', text: '十天后要考试了', s: 2 },
+    { t: NOW, k: 'g:1', kind: 'msg', who: '阿明', text: '考完了', s: 2 },
+  ], { now: NOW });
+  assert.equal(far.edges.filter((e) => e.kind === 'temporal').length, 0);
+});
+
+test('记忆星图：悬空点要如实报出来（这是诊断信号，不是 bug）', () => {
+  const p = ensureProfile(null);
+  const events = [
+    { t: NOW - 200, k: 'group:1', kind: 'msg', who: '', text: '一句没有任何人和事与之相关的独白', s: 2 },
+  ];
+  const g = buildMemoryGraph(p, events, { now: NOW });
+  assert.equal(g.stats.nodes, 1);
+  assert.equal(g.stats.isolated.length, 1, '没有连线的事件节点应被列为悬空');
+  assert.equal(g.stats.clusters, 1);
 });
