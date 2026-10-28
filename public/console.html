@@ -1740,6 +1740,22 @@ button:active:not(:disabled) {
 #section-usage .usage-legend i.off { background:var(--accent) }
 #section-usage .usage-legend i.mixed { background:var(--accent-hover) }
 
+/* 她的记忆（长期记忆 V3） */
+.connection-alert.ok { border-color:var(--ok-border, #2f7d4f); background:var(--ok-bg, rgba(47,125,79,.10)); color:var(--ok-fg, #2f7d4f) }
+#section-memory .memory-heading { margin:22px 0 8px; font-size:13px; letter-spacing:.04em; color:var(--muted); text-transform:none }
+.memory-list { display:flex; flex-direction:column; gap:8px; font-size:13px; line-height:1.6 }
+.memory-item, .memory-recall { padding:9px 12px; border:1px solid var(--border, rgba(128,128,128,.22)); border-radius:9px; background:var(--surface-soft, rgba(128,128,128,.05)) }
+.memory-item.is-done { opacity:.62 }
+.memory-who { display:inline-block; margin-right:6px; padding:0 7px; border-radius:6px; background:var(--accent-soft, rgba(80,120,255,.14)); font-size:11px; color:var(--accent, #4569ff) }
+.memory-when { margin-left:8px; font-size:11px; color:var(--muted) }
+.memory-sub { margin-top:4px; font-size:11px; color:var(--muted) }
+.memory-fact { padding:5px 0 5px 10px; border-left:2px solid var(--border, rgba(128,128,128,.22)) }
+.memory-empty { padding:10px 12px; font-size:12px; color:var(--muted) }
+.memory-person, .memory-done { border:none }
+.memory-person > summary, .memory-done > summary { cursor:pointer; padding:6px 0; font-size:13px }
+.memory-recall { display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap }
+.memory-query { color:var(--text-strong, inherit) }
+
 </style>
 </head>
 <body>
@@ -1757,6 +1773,7 @@ button:active:not(:disabled) {
       <button data-view="social-v1" class="nav-item"><span class="nav-icon" aria-hidden="true">◇</span>一代仿真<span class="nav-note">V1</span></button>
       <button data-view="slang" class="nav-item"><span class="nav-icon" aria-hidden="true">▤</span>黑话词库</button>
       <div class="nav-label">管理</div>
+      <button data-view="memory" class="nav-item"><span class="nav-icon" aria-hidden="true">◍</span>她的记忆<span class="nav-note">V3</span></button>
       <button data-view="usage" class="nav-item"><span class="nav-icon" aria-hidden="true">◧</span>令牌与花费</button>
       <button data-view="access" class="nav-item"><span class="nav-icon" aria-hidden="true">⊙</span>访问与安全</button>
       <button data-view="operations" class="nav-item"><span class="nav-icon" aria-hidden="true">⌘</span>调试与运维</button>
@@ -2264,6 +2281,24 @@ button:active:not(:disabled) {
       <div class="meta" style="margin-top:4px">修改上面任意推荐/默认参数后，必须点这个按钮才会持久化；保存后会自动应用到仍使用默认唤醒配置的会话，重启后仍然保留。</div>
 
       </div></section>
+<section id="section-memory" data-page="memory" class="card span-all">
+      <h2>她的长期记忆（V3）</h2>
+      <div class="meta">四层结构：事件流（永久、不删）→ 日/周/月摘要 → 长期档案 → 唤醒注入（1000 字符硬上限）。全部纯本地规则，零 LLM 成本。这一页看的是<b>她记得对不对</b>，不只是「有没有在跑」。</div>
+      <div class="row" style="margin-top:10px">
+        <button id="memoryReload" class="small">刷新</button>
+        <span class="meta" id="memoryMsg"></span>
+      </div>
+      <div id="memorySummary" class="overview-summary" style="margin-top:12px"></div>
+      <div id="memoryAudit" class="connection-alert" role="status" hidden></div>
+      <h3 class="memory-heading">未完结的线 <span class="meta" id="memoryThreadHint"></span></h3>
+      <div id="memoryThreads" class="memory-list">（加载中…）</div>
+      <h3 class="memory-heading">人物档案</h3>
+      <div id="memoryPeople" class="memory-list">（加载中…）</div>
+      <h3 class="memory-heading">她心里的心事</h3>
+      <div id="memorySelf" class="memory-list">（加载中…）</div>
+      <h3 class="memory-heading">最近检索（她查过什么、命中多少）</h3>
+      <div id="memoryRecalls" class="memory-list">（加载中…）</div>
+    </section>
 <section id="section-slang" data-page="slang" class="card span-all">
       <h2>群聊黑话 / 网络用语库</h2>
       <div class="meta">DSH 会从群聊中自动提取疑似黑话候选；二代仿真模式下 AI 也可用 <code>qq_slang_submit</code> 主动提交陌生词。候选可批量送 DSH 深度联网研究，研究结果回到控制台由你删改修正后转正；确认后的词条会写入“黑话提示词”，注入一代/二代 AI 的聊天上下文，成为 AI 可查询和使用的记忆。</div>
@@ -4241,6 +4276,7 @@ const consolePages = {
   'social-v1': ['一代仿真', '为自然对话，设定合适的节奏。', '调整参与概率、活跃周期和分条发送；所有配置项完整保留。'],
   slang: ['黑话词库', '读懂群聊里的，言外之意。', '从候选到确认，让 AI 逐渐熟悉大家的表达习惯。'],
   usage: ['令牌与花费', '每一次思考，都算得清楚。', '实时查看 AI 的 token 消耗与花费，可下钻到每个群、每个好友、每一轮对话。'],
+  memory: ['她的记忆', '记住的不是数据，是走过的时间。', '看清她的四层长期记忆：事件流、摘要、长期档案与唤醒注入，并检查档案有没有记歪。'],
   access: ['访问与安全', '明确边界，安心连接。', '管理允许对话的对象、管理员权限与控制台访问凭证。'],
   operations: ['调试与运维', '让桥接，始终井然有序。', '测试消息、引导 AI，或维护桥接进程与会话工作区。'],
   reference: ['工具参考', '每一种能力，都清晰可见。', '查看桥接提供给 DSH 的 MCP 工具与用途。']
@@ -4272,6 +4308,8 @@ function setConsolePage(page, { updateHash = true, focus = false, target = '' } 
   closeConsoleSearch();
   // 语音库按需加载：进入二代仿真页时才探测（避免每次开控制台都压网关）。
   if (page === 'social-v2' && typeof loadVoiceLibrary === 'function') loadVoiceLibrary();
+  // 长期记忆同样按需加载：只有进这个页面才读档案（档案会随时间变大）。
+  if (page === 'memory' && typeof loadMemoryPanel === 'function') loadMemoryPanel();
   if (focus) {
     document.getElementById('mainContent').focus({ preventScroll: true });
     document.getElementById(target || 'mainContent')?.scrollIntoView({ block: 'start', behavior: 'instant' });
@@ -4880,6 +4918,135 @@ setInterval(() => { if (currentConsolePage !== 'usage') return; refreshUsage(); 
     if (!stored()) apply(event.matches ? 'dark' : 'light', false);
   });
 })();
+
+// ── 她的记忆（长期记忆 V3）：把 /api/memory/overview 的数据渲染成可读的一页 ──
+// 这一页的重点是「记歪了没有」——同人分裂、同一件事记成两条、已了结还挂着 open，
+// 这三类错不会报错，只会让她记错。判据来自 core 的 auditProfile，和 npm run memory-health 一致。
+const MEMORY_TIER_LABEL = ['S0 寒暄', 'S1 日常', 'S2 值得记', 'S3 关键'];
+function fmtDay(ms) {
+  const n = Number(ms) || 0;
+  if (!n) return '—';
+  const d = new Date(n);
+  const p = (v) => String(v).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+function fmtAgo(ms) {
+  const n = Number(ms) || 0;
+  if (!n) return '';
+  const mins = Math.round((Date.now() - n) / 60000);
+  if (mins < 1) return '刚刚';
+  if (mins < 60) return `${mins} 分钟前`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  return `${Math.round(hours / 24)} 天前`;
+}
+function memoryMetric(label, value, hint) {
+  return `<div class="metric"><span>${esc(label)}</span><strong>${esc(value)}</strong><small>${esc(hint)}</small></div>`;
+}
+function renderMemoryPanel(data) {
+  const st = data.stats || {};
+  const cfg = st.config || {};
+  const tiers = Array.isArray(st.tiers) ? st.tiers : [0, 0, 0, 0];
+  const total = Number(st.events) || 0;
+  const pct = (n) => (total ? `${Math.round((n / total) * 100)}%` : '0%');
+
+  document.getElementById('memorySummary').innerHTML = [
+    memoryMetric('事件流（永久）', `${total} 条`, `覆盖 ${st.eventDays || 0} 天 · ${st.firstDay || '—'} ~ ${st.lastDay || '—'}`),
+    memoryMetric('分档', `${tiers[0]}/${tiers[1]}/${tiers[2]}/${tiers[3]}`, `S0 ${pct(tiers[0])} · S3 ${pct(tiers[3])}`),
+    memoryMetric('压缩层', `日 ${st.summaryFiles || 0} · 周 ${st.weekFiles || 0} · 月 ${st.monthFiles || 0}`, `归档 ${data.archiveMonths || 0} 个月 · 事件 ${Math.round((Number(st.eventBytes) || 0) / 1024)} KB`),
+    memoryMetric('档案', `${(data.people || []).length} 人 · ${(data.threads || []).filter((t) => t.state === 'open').length} 条线`, `心事 ${(data.self || []).length} 条 · 注入上限 ${cfg.injectMaxChars || 0} 字符`),
+  ].join('');
+
+  const audit = data.audit || { problems: 0 };
+  const auditBox = document.getElementById('memoryAudit');
+  if (audit.problems) {
+    const lines = [];
+    for (const names of audit.samePersonGroups || []) lines.push(`疑似同人：${names.join(' / ')}`);
+    for (const d of audit.duplicateThreads || []) lines.push(`疑似重复线：「${d.keep.slice(0, 30)}」≈「${d.drop.slice(0, 30)}」`);
+    for (const c of audit.contradictedOpen || []) lines.push(`已了结却还算 open：「${c.text.slice(0, 36)}」`);
+    auditBox.hidden = false;
+    auditBox.className = 'connection-alert';
+    auditBox.innerHTML = `<b>档案自检发现 ${audit.problems} 处一致性问题</b>（不影响运行，但会让她记错）：<br>`
+      + lines.map((l) => `· ${esc(l)}`).join('<br>')
+      + '<br><span class="meta">修复：在项目目录运行 <code>npm run memory-repair</code> 预览，加 <code>--apply</code> 写回（会先备份 profile.json）。</span>';
+  } else {
+    auditBox.hidden = false;
+    auditBox.className = 'connection-alert ok';
+    auditBox.innerHTML = '档案一致：没有同人分裂、重复线、已了结却还挂着 open 的矛盾。';
+  }
+
+  const threads = data.threads || [];
+  const open = threads.filter((t) => t.state === 'open');
+  const done = threads.filter((t) => t.state === 'done');
+  document.getElementById('memoryThreadHint').textContent = `未完结 ${open.length} · 已了结 ${done.length}`;
+  const threadRow = (t) => {
+    const who = (t.with || []).length ? `<span class="memory-who">${esc(t.with.join('、'))}</span>` : '';
+    const when = t.state === 'open' ? fmtAgo(t.lastMentionAt || t.createdAt) : fmtDay(t.lastMentionAt || t.createdAt);
+    const resolved = t.resolvedBy ? `<div class="memory-sub">由「${esc(t.resolvedBy)}」了结</div>` : '';
+    return `<div class="memory-item ${t.state === 'done' ? 'is-done' : ''}">${who}${esc(t.text)}<span class="memory-when">${esc(when)}</span>${resolved}</div>`;
+  };
+  document.getElementById('memoryThreads').innerHTML = open.length
+    ? open.map(threadRow).join('')
+    : '<div class="memory-empty">她心里没有挂着没还的账。</div>';
+  if (done.length) {
+    document.getElementById('memoryThreads').innerHTML += `<details class="memory-done"><summary>已了结 ${done.length} 条（不会注入，只是留个底）</summary>${done.map(threadRow).join('')}</details>`;
+  }
+
+  const people = data.people || [];
+  document.getElementById('memoryPeople').innerHTML = people.length ? people.map((p) => {
+    const facts = (p.facts || []).map((f) => {
+      const prev = f.previous ? `<div class="memory-sub">纠正前：${esc(f.previous)}</div>` : '';
+      return `<div class="memory-fact">${esc(f.text)}<span class="memory-when">确认 ${fmtDay(f.confirmedAt)}${f.count > 1 ? ` · ×${f.count}` : ''}</span>${prev}</div>`;
+    }).join('');
+    const more = (p.facts || []).length >= 6 ? '<div class="meta">（只显示最近确认的 6 条）</div>' : '';
+    return `<details class="memory-person" open><summary><b>${esc(p.name)}</b> <span class="meta">${(p.facts || []).length} 条事实 · 聊过 ${p.count} 次 · 最近 ${fmtDay(p.lastSeen)}</span></summary>${facts}${more}</details>`;
+  }).join('') : '<div class="memory-empty">还没有人物档案。</div>';
+
+  const self = data.self || [];
+  document.getElementById('memorySelf').innerHTML = self.length
+    ? self.map((t) => `<div class="memory-item">${esc(t)}</div>`).join('')
+    : '<div class="memory-empty">还没有写下自己的心事。</div>';
+
+  const recalls = data.recalls || [];
+  // 同类查询会连续出现很多次（同一个「唱一首xx」反复查），按查询聚合后再展示，
+  // 否则列表只会被同一条刷屏，看不出她真正在关心什么。
+  const recallGroups = new Map();
+  for (const r of recalls) {
+    const q = String(r.q || '').trim();
+    if (!q) continue;
+    const prev = recallGroups.get(q);
+    const t = Number(r.t) || 0;
+    if (prev) {
+      prev.count += 1;
+      prev.hits += Number(r.n) || 0;
+      prev.latest = Math.max(prev.latest, t);
+    } else {
+      recallGroups.set(q, { q, count: 1, hits: Number(r.n) || 0, latest: t });
+    }
+  }
+  const recallRows = [...recallGroups.values()].sort((a, b) => b.latest - a.latest).slice(0, 8);
+  document.getElementById('memoryRecalls').innerHTML = recallRows.length ? recallRows.map((r) => {
+    const times = r.count > 1 ? ` ×${r.count}` : '';
+    return `<div class="memory-recall"><span class="memory-query">${esc(String(r.q).slice(0, 44))}${times}</span><span class="memory-when">命中 ${r.hits} · ${esc(fmtAgo(r.latest))}</span></div>`;
+  }).join('') : '<div class="memory-empty">还没有检索记录。</div>';
+}
+async function loadMemoryPanel() {
+  const msg = document.getElementById('memoryMsg');
+  if (!msg) return;
+  msg.textContent = '加载中…';
+  msg.className = 'meta';
+  try {
+    const r = await api('/api/memory/overview');
+    if (!r || !r.ok) throw new Error((r && r.error) || '加载失败');
+    renderMemoryPanel(r);
+    msg.textContent = '已更新 · ' + new Date(r.time || Date.now()).toLocaleTimeString('zh-CN');
+    msg.className = 'meta ok';
+  } catch (e) {
+    msg.textContent = '加载失败：' + ((e && e.message) || e);
+    msg.className = 'meta err';
+  }
+}
+document.getElementById('memoryReload')?.addEventListener('click', loadMemoryPanel);
 </script>
 </body>
 </html>

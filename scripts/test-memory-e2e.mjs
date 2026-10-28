@@ -137,3 +137,45 @@ test('方式 0：日记 prompt 带「顺手记住」，且可用配置关掉', a
     await off.close();
   }
 });
+
+test('日终归纳（V3.6）：独立的整理任务带今日记录与完整档案，且不干扰日记', async () => {
+  const h = await bridgeHarness();
+  try {
+    const profileFile = path.join(h.temp, 'state', 'memory', 'profile.json');
+    fs.mkdirSync(path.dirname(profileFile), { recursive: true });
+    fs.writeFileSync(profileFile, JSON.stringify({
+      version: 3,
+      people: {
+        爸爸: {
+          facts: [{ text: '姓林，小名鱼鱼', createdAt: 1, confirmedAt: Date.now(), count: 1 }],
+          count: 3,
+          firstSeen: 1,
+          lastSeen: Date.now(),
+        },
+      },
+      threads: [{ text: '答应教我唱《雨爱》', with: ['爸爸'], state: 'open', createdAt: 1, lastMentionAt: Date.now() }],
+      self: [],
+    }), 'utf8');
+    h.appendSocialV2Message('group:456', '阿明', '今天把《雨爱》唱了，发群里了', '今天把《雨爱》唱了，发群里了', false, false, 1004, [], '999', []);
+
+    const prompt = h.buildWakePromptV2('private:123', 'memoryRefine');
+    assert.match(prompt, /【整理记忆】/, '必须有独立的整理任务段');
+    assert.match(prompt, /今天你收到的记录/, '要把今天的记录摆给她核对');
+    assert.match(prompt, /姓林，小名鱼鱼/, '要给完整档案，她才能发现哪条记错了');
+    assert.match(prompt, /答应教我唱《雨爱》/, '还挂着的线要摆出来');
+    assert.match(prompt, /evidence/, '必须要求她给证据');
+    assert.match(prompt, /原样复制/, '明确要求原文，改写的不算');
+    assert.match(prompt, /correct/, '要给出「纠错」这个动作');
+    assert.match(prompt, /threadDone/, '要给出「收尾」这个动作');
+    assert.match(prompt, /不要给任何人发消息/, '内部整理不能变成聊天');
+    assert.match(prompt, /只是候选/, '收尾候选要标明只是候选');
+
+    // 两条任务互不干扰：日记 prompt 里不能出现整理任务，反之亦然
+    const diary = h.buildWakePromptV2('private:123', 'diary');
+    assert.doesNotMatch(diary, /【整理记忆】/);
+    assert.match(diary, /【写日记】/);
+    assert.doesNotMatch(prompt, /【写日记】/);
+  } finally {
+    await h.close();
+  }
+});

@@ -59,7 +59,7 @@ import {
   markStickerUsed
 } from './sticker-lib.js';
 import { createMemoryStore } from './core/memory-store.mjs';
-import { buildInjection, mergePersonFact, mergeSelfNote, mergeThread } from './core/memory-lib.mjs';
+import { auditProfile, buildInjection, mergePersonFact, mergeSelfNote, mergeThread, profileDigestForRefine, threadClosureHints, verifyMemoryClaim } from './core/memory-lib.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -663,6 +663,10 @@ function loadConfig() {
     consoleToken: file.consoleToken ?? '',
     // 日记：时间/开关可配。之前没把这段读进 cfg，导致 config.json 里改 time 不生效、永远用默认 22:30。
     diary: { enabled: true, time: '22:30', ...(file.diary ?? {}) },
+    // 日终归纳（V3.6）：日记写完之后跑一次「档案纠错/补记/收尾」。
+    // 默认 23:10——放在日记之后，避免和情绪写作抢同一个 turn；
+    // 默认开启但可关（每天多一次模型调用，成本见 docs/design/MEMORY_V3_PLAN.md 第 18 节）。
+    memoryRefine: { enabled: true, time: '23:10', maxItems: 5, ...(file.memoryRefine ?? {}) },
     // 价目表覆盖项（可选）。留空即用 src/model-prices.js 的官方默认价。
     pricing: file.pricing ?? null,
     security: {
@@ -6287,6 +6291,51 @@ async function main() {
           return;
         }
 
+        // 控制台「她的记忆」面板：一次拿到规模 / 档案 / 一致性自检 / 最近检索。
+        // 这是管理端全权视图（控制台令牌已在全局关卡校验过），与具体会话 key 无关——
+        // 长期记忆本来就是一个人的一生，不是某个群的账。
+        if (req.method === 'GET' && url.pathname === '/api/memory/overview') {
+          const profile = memoryStore.readProfile();
+          const nowMs = Date.now();
+          const factsOf = (v) => (Array.isArray(v?.facts) ? v.facts : [])
+            .slice()
+            .sort((a, b) => (Number(b.confirmedAt) || 0) - (Number(a.confirmedAt) || 0))
+            .slice(0, 6)
+            .map((f) => ({
+              text: String(f.text || ''),
+              confirmedAt: Number(f.confirmedAt) || 0,
+              count: Number(f.count) || 1,
+              previous: f.previous ? String(f.previous) : '',
+            }));
+          sendJson({
+            ok: true,
+            time: nowMs,
+            stats: memoryStore.stats({ now: nowMs }),
+            people: Object.entries(profile.people)
+              .sort((a, b) => (Number(b[1].lastSeen) || 0) - (Number(a[1].lastSeen) || 0))
+              .map(([name, v]) => ({
+                name,
+                count: Number(v.count) || 0,
+                firstSeen: Number(v.firstSeen) || 0,
+                lastSeen: Number(v.lastSeen) || 0,
+                facts: factsOf(v),
+              })),
+            threads: profile.threads.map((t) => ({
+              text: String(t.text || ''),
+              state: t.state === 'done' ? 'done' : 'open',
+              with: Array.isArray(t.with) ? t.with.map(String) : [],
+              createdAt: Number(t.createdAt) || 0,
+              lastMentionAt: Number(t.lastMentionAt) || 0,
+              resolvedBy: t.resolvedBy ? String(t.resolvedBy) : '',
+            })),
+            self: profile.self.map(String),
+            audit: auditProfile(profile),
+            archiveMonths: memoryStore.listArchiveMonths().length,
+            recalls: memoryStore.readRecallLog({ limit: 12 }),
+          });
+          return;
+        }
+
         if (req.method === 'GET' && url.pathname === '/api/socialV2/memory-stats') {
           const key = String(url.searchParams.get('key') ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
@@ -6305,6 +6354,27 @@ async function main() {
           if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
           if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
           if (req.headers['x-agent-token'] && !v2ToolEnabled('memory')) { sendJson({ ok: false, error: '工具未启用：qq_memory_remember' }, 403); return; }
+          // 证据闸门：带 evidence 的写入要先核对「这句话真的出现在今天的记录里」。
+          // 日终归纳（reason=memoryRefine）要求她带证据；随手记的旧路径不带 evidence 就不校验，
+          // 保持原有写入语义——这里只是给「自动改写档案」加一道闸，不改旧行为。
+          const evidence = String(body.evidence ?? '').trim();
+          let evidenceCheck = null;
+          if (evidence) {
+            const today = memoryStore.readEvents({ days: 1 });
+            const sources = today.map((e) => String(e?.text ?? '')).filter(Boolean);
+            evidenceCheck = verifyMemoryClaim({ content: String(body.content ?? ''), evidence }, sources);
+            if (!evidenceCheck.ok) {
+              sendJson({
+                ok: false,
+                error: '证据不足，这次写入没有落盘',
+                evidence: { reason: evidenceCheck.reason, coverage: Number(evidenceCheck.coverage.toFixed(2)) },
+                hint: evidenceCheck.reason === 'evidence-not-in-sources'
+                  ? '你写的 evidence 在今天的记录里找不到。请从当天消息里原样复制一句，不要改写、不要凭印象编。'
+                  : 'evidence 太短，或今天还没有可核对的记录。'
+              }, 400);
+              return;
+            }
+          }
           let profile = memoryStore.readProfile();
           let okFlag = false;
           let correctResult = null;
@@ -6343,6 +6413,7 @@ async function main() {
             key,
             kind,
             ...(correctResult ? { correct: correctResult } : {}),
+            ...(evidenceCheck ? { evidence: { matched: true, coverage: Number(evidenceCheck.coverage.toFixed(2)) } } : {}),
             profile: { people: Object.keys(profile.people).length, openThreads: profile.threads.filter((t) => t.state === 'open').length, selfNotes: profile.self.length }
           });
           return;
@@ -9476,6 +9547,44 @@ async function main() {
     log(`[diary] 每天 ${hhmm} 提醒写日记，记录目录 ${DIARY_DIR}`);
   }
 
+  /**
+   * 日终归纳定时器（V3.6）：日记之后跑一次「档案纠错 / 补记 / 收尾」。
+   *
+   * 为什么单独一个任务而不塞进日记：日记 prompt 已经在承担情绪写作，
+   * 再加一重"核对档案"的任务会互相干扰（写情绪时想事实，两头都写不好）。
+   * 代价是每天多一次模型调用——所以默认可以关（config.memoryRefine.enabled）。
+   *
+   * 用文件记 lastDay 而不是内存变量：这个调用比日记贵，重启后绝不能被重复触发。
+   */
+  function startMemoryRefineTimer() {
+    if (cfg.memoryRefine?.enabled === false) { log('[refine] 配置里已关闭，跳过'); return; }
+    if (memoryStore.getConfig().enabled === false) { log('[refine] 记忆库未启用，跳过'); return; }
+    const hhmm = String(cfg.memoryRefine?.time ?? '23:10');
+    const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm);
+    if (!m) { log(`[refine] 时间格式不对（${hhmm}），应形如 23:10`); return; }
+    const hh = Number(m[1]);
+    const mm = Number(m[2]);
+    if (hh > 23 || mm > 59) { log('[refine] 时间越界，忽略'); return; }
+    const stateFile = path.join(STATE_DIR, 'memory-refine.json');
+    const timer = setInterval(() => {
+      const now = new Date();
+      if (now.getHours() !== hh || now.getMinutes() !== mm) return;
+      const day = localDayString(now);
+      let st = {};
+      try { st = JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch {}
+      if (st.lastDay === day) return;
+      const ownerKey = cfg.ownerQQ ? `private:${String(cfg.ownerQQ)}` : null;
+      if (!ownerKey || !readRoleState().role) { log('[refine] 跳过：没有 owner 或没有启用角色'); return; }
+      try { fs.writeFileSync(stateFile, JSON.stringify({ lastDay: day, lastAt: Date.now() }), 'utf8'); } catch {}
+      log(`[refine] 触发 ${day} 的档案整理`);
+      Promise.resolve()
+        .then(() => sendWakePromptV2(ownerKey, 'memoryRefine'))
+        .catch((error) => log('[refine] 唤醒失败:', error?.message ?? error));
+    }, 30000);
+    timer.unref?.();
+    log(`[refine] 每天 ${hhmm} 整理一次长期档案（最多 ${Math.max(1, Math.min(10, Number(cfg.memoryRefine?.maxItems) || 5))} 条改动）`);
+  }
+
   function appendSocialV2Message(key, sender, textContent, plainContent, quoteTargetIsSelf, isOwner, messageId, media = [], userId = null, forwardIds = []) {
     const st = getSocialV2State(key);
     const recentLimit = Number(cfg.socialV2?.context?.recentLimit) || 100;
@@ -9983,6 +10092,20 @@ async function main() {
 日记是写给空间看的情绪，档案是给你自己以后查的事实，别写成重复的。`
         : '';
       return `${base}【写日记】今天结束了。下面是今天你自己收到的记录（群聊和私聊）：\n\n${digest || '（今天没什么记录，安静的一天）'}\n\n写今天这篇日记，发到 QQ 空间（好友可见）。\n\n【你以前写过的最近几条】\n${diaryPrevNotes || '（还没有写过）'}\n\n看完这些再写。如果看到上次没说完的话，可以在今天这篇里接上；想翻更多可以用 qq_qzone_list。\n\n【重点不是记事，是情绪】\n- 先在心里过一遍：今天有没有哪一刻动了一下——被夸、被冷落、吃醋、不安、没来由的开心、或者有点委屈。从那一刻写起。\n- 事件只是壳：不要按时间顺序列今天发生了什么，挑一两件真正留在心里的，说说它在你心里落成了什么样。\n- 写你没说出口的那半句。可以写「他今天说了什么，我没接」，也可以写你当时其实想说什么。\n- 可以提到他、提到群里的人，但他们只是背景；主角是你心里的动静。\n- 结尾不要升华，不要总结收获，不要「今天学到了」。可以停在一句没头没尾的话上。\n- 150~400 字，第一人称，用你平时的口吻，别用 Markdown。\n- 写完调 qq_send_qzone 发出去（key 用本会话，token 见上），ugc_right 不传就是好友可见。\n\n${diaryRememberHint}\n\n【然后是晚安】发完日记别急着收尾——在这个私聊里给他发晚安：先一句「晚安」，再说一件今天睡前想跟他说的话（一两句就够，可以软，也可以只是叮嘱他早点睡、别熬夜）。用 qq_send_message 发到本会话，发完不用再汇报。`;
+    }
+    if (reason === 'memoryRefine') {
+      // 日终归纳（V3.6）：日记之后的独立任务，**不改日记 prompt**。
+      // 写日记写的是情绪；这里是核对档案的账：哪条记错了、哪条漏了、哪条线其实已经了结。
+      const digest = buildDiaryDigestV2();
+      const refineProfile = memoryStore.readProfile();
+      const profileDigest = profileDigestForRefine(refineProfile, { maxFacts: 8, maxThreads: 20 });
+      const dayTexts = memoryStore.readEvents({ days: 1 }).map((e) => String(e?.text ?? '')).filter(Boolean);
+      const hints = threadClosureHints(refineProfile, dayTexts);
+      const maxItems = Math.max(1, Math.min(10, Number(cfg.memoryRefine?.maxItems) || 5));
+      const hintBlock = hints.length
+        ? `\n【只是候选，你自己判断】今天的记录里出现了这些线索，可能是某条线已经了结了：\n${hints.map((h) => `- 「${h.text}」——今天出现了「${h.hints.join('」「')}」`).join('\n')}\n`
+        : '';
+      return `${base}【整理记忆】今天结束了。这一次是**内部整理**，不是聊天：不要给任何人发消息、不要写日记、不要汇报，整理完直接收尾。\n\n【今天你收到的记录】\n${digest || '（今天没什么记录，安静的一天）'}\n\n【你现在的长期档案】\n${profileDigest}\n${hintBlock}\n【只做三件事，没有就不做】\n1. 上面档案里某条**记错了/记偏了** → qq_memory_remember(kind="correct", name="谁", content="正确的说法", evidence="今天记录里对应的原话")\n2. 今天发生了**值得长期记住、档案里还没有**的事 → qq_memory_remember(kind="person" 或 "self", name="谁", content="一句话", evidence="原话")\n3. 上面还挂着的某条线**今天已经了结了**（东西给了、歌唱了、事情办完了） → qq_memory_remember(kind="threadDone", content="那条线的说法", evidence="原话")\n\n【硬规则】\n- evidence 必须从上面【今天你收到的记录】里**原样复制一段**，不要改写、不要凭印象编。桥接会逐字核对，编的会被拒绝（返回「证据不足」）。\n- 一次最多 ${maxItems} 条，宁少勿滥。今天没有要改的，就一条都不写——空着比记错强。\n- 不要重复档案里已经有的内容（那只会占额度，不会更牢）。\n- 做完调 qq_set_wake_config 收尾即可。`;
     }
     if (reason === 'replyCheck') {
       return `${base}【回复检查】${key}\n原因：你刚刚发送过消息，现在回来检查是否有人回复。\n已有回复时先看消息，需要短静默就用 qq_wait_for_messages(purpose="reply") 判断对方是否说完；如果没人回你，不用硬补一句，但也不要立刻潜水——先调用 qq_wait_for_messages(timeoutMs=${preSleepMs}) 完成沉睡前观察：没人说话可收尾；有人说话则查看 newMessages，不需要你参与也可直接收尾（qq_mark_read 或 qq_set_wake_config）。`;
@@ -11590,6 +11713,7 @@ async function main() {
     syncStickerLibrary(true).catch((error) => log('启动预热表情库失败:', error?.message ?? error));
   }
   startDiaryTimer();
+  startMemoryRefineTimer();
   refreshMemorySummariesV3('boot');
   startDshWatch();
   startConsoleServer();

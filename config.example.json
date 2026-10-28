@@ -271,5 +271,10 @@
       "usageRetentionDays": 30,
       "eventArchiveAfterDays": 90
     }
+  },
+  "memoryRefine": {
+    "enabled": true,
+    "time": "23:10",
+    "maxItems": 5
   }
 }

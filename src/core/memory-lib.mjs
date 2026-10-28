@@ -597,6 +597,158 @@ export function pruneProfile(profile, limits = PROFILE_LIMITS) {
   return p;
 }
 
+// ---------------------------------------------------------------------------
+// 记忆动作的证据校验（日终归纳那次调用的安全阀）
+// ---------------------------------------------------------------------------
+
+/**
+ * 校验一条「档案里这条记错了 / 该补一句」的说法有没有当天记录支撑。
+ *
+ * 为什么需要：日终归纳是模型写的，而模型会编。凭空改写一条档案，比不写更糟——
+ * 她以后会拿这条错事实去说话。所以要求她给出 `evidence`（今天记录里的原话片段），
+ * 这里用 bigram 覆盖率确认这段话确实来自当天记录，而不是自己编出来的漂亮句子。
+ *
+ * 只看二字词：单字覆盖率天然虚高（「的」「我」到处都有），用它判等于没判。
+ *
+ * @param {{content?:string, evidence?:string}} claim
+ * @param {string[]} sources 当天记录的原文列表
+ * @returns {{ok:boolean, reason:string, coverage:number}}
+ */
+export function verifyMemoryClaim(claim, sources, { threshold = 0.5, minChars = 6 } = {}) {
+  const evidence = String(claim?.evidence ?? '').trim();
+  const list = (Array.isArray(sources) ? sources : []).map((s) => String(s ?? '')).filter(Boolean);
+  if (!list.length) return { ok: false, reason: 'no-sources', coverage: 0 };
+  if (Array.from(evidence).length < minChars) return { ok: false, reason: 'evidence-too-short', coverage: 0 };
+  const src = new Set();
+  for (const s of list) {
+    for (const t of tokenize(s)) {
+      if (!t.startsWith('#')) src.add(t);
+    }
+  }
+  if (!src.size) return { ok: false, reason: 'no-sources', coverage: 0 };
+  const evAll = tokenize(evidence);
+  const ev = evAll.filter((t) => !t.startsWith('#'));
+  const use = ev.length ? ev : evAll;
+  let hit = 0;
+  for (const t of use) if (src.has(t)) hit += 1;
+  const coverage = use.length ? hit / use.length : 0;
+  const ok = coverage >= threshold;
+  return { ok, reason: ok ? 'ok' : 'evidence-not-in-sources', coverage };
+}
+
+/**
+ * 判断一条「未完结的线」是不是已经被今天的记录兑现/取消了——给日终归纳的提示用。
+ *
+ * 只做「这条线里的专名 + 关键词是否在今天出现过」的粗筛，不判断语义：
+ * 今天提到过《雨爱》且提到「唱了/发了」，就提示她考虑 threadDone。
+ * 真正的判断仍由模型做，这里只负责把候选摆到她面前，省得她漏看。
+ *
+ * @returns {Array<{text:string, hints:string[]}>}
+ */
+export function threadClosureHints(profile, dayTexts) {
+  const p = ensureProfile(profile);
+  const sources = (Array.isArray(dayTexts) ? dayTexts : []).map((s) => String(s ?? '')).filter(Boolean);
+  if (!sources.length) return [];
+  const srcTokens = new Set();
+  for (const s of sources) for (const t of tokenize(s)) if (!t.startsWith('#')) srcTokens.add(t);
+  const out = [];
+  for (const t of p.threads) {
+    if (t.state !== 'open') continue;
+    const slots = quotedSlots(t.text);
+    if (!slots.size) continue;
+    const slotHits = [...slots].filter((slot) => {
+      const tokens = tokenize(slot).filter((x) => !x.startsWith('#'));
+      return tokens.length > 0 && tokens.every((x) => srcTokens.has(x));
+    });
+    if (!slotHits.length) continue;
+    // 找出今天一起出现的「收尾类」措辞，作为提示（不自动判定完成）
+    const hints = [];
+    for (const s of sources) {
+      if (!slotHits.some((slot) => String(s).toLowerCase().includes(slot))) continue;
+      const m = /(唱了|发了|完成|做到|给我了|实现了|不用还|算了|取消了|不想了|已经)/.exec(s);
+      if (m) hints.push(m[1]);
+    }
+    if (hints.length) out.push({ text: t.text, hints: [...new Set(hints)].slice(0, 3) });
+  }
+  return out;
+}
+
+/**
+ * 把档案整理成「日终归纳」能逐条核对的清单（编号方便她在工具参数里引用）。
+ *
+ * 和注入不同：注入只给最近最有用的几条，这里给**全量**——
+ * 要找矛盾，就得让她看见自己以前到底记了些什么。
+ */
+export function profileDigestForRefine(profile, { maxFacts = 8, maxThreads = 20 } = {}) {
+  const p = ensureProfile(profile);
+  const lines = [];
+  const people = Object.entries(p.people).sort((a, b) => (Number(b[1].lastSeen) || 0) - (Number(a[1].lastSeen) || 0));
+  if (people.length) {
+    lines.push('【人物档案】（每条都可以被纠正）');
+    for (const [name, v] of people) {
+      const facts = (v.facts || [])
+        .slice()
+        .sort((a, b) => (Number(b.confirmedAt) || 0) - (Number(a.confirmedAt) || 0))
+        .slice(0, Math.max(1, Number(maxFacts) || 8));
+      lines.push(`- ${name}`);
+      for (const f of facts) lines.push(`  · ${f.text}`);
+    }
+  }
+  const open = p.threads.filter((t) => t.state === 'open');
+  if (open.length) {
+    lines.push('【还挂着的线】（已经了结的要用 threadDone 收掉）');
+    open.slice(0, Math.max(1, Number(maxThreads) || 20)).forEach((t, i) => {
+      const who = t.with && t.with.length ? `${t.with.join('、')}：` : '';
+      lines.push(`${i + 1}. ${who}${t.text}`);
+    });
+  }
+  if (!lines.length) return '（档案还是空的：今天是第一笔账）';
+  return lines.join('\n');
+}
+
+/**
+ * 档案一致性检查：只读，不动数据。给 `memory-health` 和控制台记忆面板共用。
+ *
+ * 检查三类「能跑但记错」的问题——它们不会报错，只会让她记错：
+ *   1. 同人分裂（归一化后重名）
+ *   2. 同一件事两条 open 线
+ *   3. 已了结（done）却还挂着 open
+ *
+ * @returns {{samePersonGroups:string[][], duplicateThreads:Array, contradictedOpen:Array, problems:number}}
+ */
+export function auditProfile(profile) {
+  const p = ensureProfile(profile);
+  const groups = new Map();
+  for (const name of Object.keys(p.people)) {
+    const norm = normalizePersonName(name) || name;
+    if (!groups.has(norm)) groups.set(norm, []);
+    groups.get(norm).push(name);
+  }
+  const samePersonGroups = [...groups.values()].filter((names) => names.length > 1);
+
+  const open = p.threads.filter((t) => t.state === 'open');
+  const done = p.threads.filter((t) => t.state === 'done');
+  const duplicateThreads = [];
+  for (let i = 0; i < open.length; i += 1) {
+    for (let j = i + 1; j < open.length; j += 1) {
+      if (threadStoryMatch(open[i].text, open[j].text).same) {
+        duplicateThreads.push({ keep: open[i].text, drop: open[j].text });
+      }
+    }
+  }
+  const contradictedOpen = [];
+  for (const t of open) {
+    const hit = done.find((d) => threadStoryMatch(t.text, d.text).slotShared > 0);
+    if (hit) contradictedOpen.push({ text: t.text, by: hit.text });
+  }
+  return {
+    samePersonGroups,
+    duplicateThreads,
+    contradictedOpen,
+    problems: samePersonGroups.length + duplicateThreads.length + contradictedOpen.length,
+  };
+}
+
 /**
  * 档案自愈：把「同人分裂 / 同一件事记成多条 / 已了结却还挂着 open」一次理干净。
  *

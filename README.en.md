@@ -32,11 +32,20 @@ Four layers + retrieval + profile, all local rules: **no model calls, no embeddi
 
 Retrieval uses **BM25 + per-tier time decay + memory heat + same-day/same-person deduplication + same-person association expansion**, all computed locally.
 
+**Profile consistency (V3.6)** — "it runs" is not the same as "she remembers it right". Deciding whether two threads are the same thing looks beyond literal similarity at **quoted proper nouns** (names inside 《》 or quotes) and **content-word anchors**:
+
+- The same promise rephrased is recognised as one thread: "答应教我唱《雨爱》，一直欠着没唱" ≈ "答应要教我唱《雨爱》，我还没唱";
+- A different proper noun is a different thing: 《雨爱》 vs 《小幸运》 score 0.86 on literal similarity, but the slot conflict vetoes the merge;
+- Closing a thread (`threadDone`) also closes every open thread about the same topic and records which sentence closed it — so she can no longer believe she still owes something she already delivered;
+- A person written with a parenthetical note (`爸爸（凉州词）`) is merged back into one profile instead of splitting into two.
+
 She also has four memory tools: `qq_memory_search` (recall), `qq_memory_remember` (write; supports `correct` for fixing a wrong fact),
 `qq_memory_profile` (read the whole profile), `qq_memory_inspect` (self-inspection: what do I remember, and what will be injected next).
+The console's **"Her Memory"** page shows scale, salience tiers, profile, recent recalls and the consistency audit on one screen.
 
 ```bash
-npm run memory-health   # size / salience tiers / retrieval quality / actionable advice
+npm run memory-health   # size / salience tiers / retrieval quality / profile audit / actionable advice
+npm run memory-repair   # preview the profile self-repair; add --apply to write back (backup first)
 ```
 
 - Design document: [`docs/design/MEMORY_V3_PLAN.md`](docs/design/MEMORY_V3_PLAN.md)
@@ -53,7 +62,7 @@ QQ messages ──► SnowLuma (OneBot v11 WS) ──► qq-bridge ──► DSH
 - **QQ side**: `@snowluma/sdk` provides the OneBot v11 WebSocket client.
 - **DSH side**: adapted for DSH 0.1.2+ and re-verified on 0.1.5 — launch-token Cookie auth, `/api/<namespace>/<method>` slash RPC, and `/api/remote.mux` + `session/follow` event stream. The per-session model is pinned by the bridge via `session.selectModel` from `config.json`'s `dsh.model` (default `deepseek-flash` = DeepSeek-V41-Flash, multimodal).
 - **Agent tools**: safe MCP servers expose a restricted QQ toolset (`qq_status`, `qq_list_groups`, `qq_get_group_history`, `qq_send_group_message`, `qq_reply`, etc.) plus an admin-only host server (`snowluma_status`, and `start_snowluma`/`stop_snowluma` when `snowluma.allowProcessControl` is enabled).
-- **Console**: a local web console at `http://127.0.0.1:3100`, organised into ten task-based pages (Overview, Sessions & Approvals, Persona, Social v2, Social v1, Slang, Usage & Cost, Access & Security, Operations, Tool Reference) with cross-page feature search and a **light / dark theme** (one-click toggle in the header; follows the OS preference until you choose), for mode switching, role management, whitelist/admin settings, slang management, memory, stickers and more. The Persona page manages roles (view/edit/rename/duplicate/delete the prompt of each persona), shows and edits both prompt layers separately — the **simulation prompt** built into the preset (tool/behaviour protocol; synced to DSH, restart required) and the **persona prompt** (`roles/*.md`; applied immediately) — and sets the **DSH reasoning effort** (`max` by default, `high`/`low` selectable). The **Usage & Cost** page shows real-time token consumption and its price in CNY, broken down per group/friend and per conversation turn (see [docs/guides/TOKEN_USAGE_CONSOLE.md](docs/guides/TOKEN_USAGE_CONSOLE.md)).
+- **Console**: a local web console at `http://127.0.0.1:3100`, organised into eleven task-based pages (Overview, Sessions & Approvals, Persona, Social v2, Social v1, Slang, Her Memory, Usage & Cost, Access & Security, Operations, Tool Reference) with cross-page feature search and a **light / dark theme** (one-click toggle in the header; follows the OS preference until you choose), for mode switching, role management, whitelist/admin settings, slang management, memory, stickers and more. The Persona page manages roles (view/edit/rename/duplicate/delete the prompt of each persona), shows and edits both prompt layers separately — the **simulation prompt** built into the preset (tool/behaviour protocol; synced to DSH, restart required) and the **persona prompt** (`roles/*.md`; applied immediately) — and sets the **DSH reasoning effort** (`max` by default, `high`/`low` selectable). The **Usage & Cost** page shows real-time token consumption and its price in CNY, broken down per group/friend and per conversation turn (see [docs/guides/TOKEN_USAGE_CONSOLE.md](docs/guides/TOKEN_USAGE_CONSOLE.md)).
 
 ## Features
 
@@ -163,6 +172,14 @@ lives in the sibling folder **`../voice-tool/`** — it only needs SnowLuma, and
 ## Testing
 
 `npm run test:audit` runs isolated regression tests without production credentials, DSH, or QQ messages. Historical audit reports are not included in this repository.
+
+Long-term memory has its own two offline suites (temporary directories, never touches the real memory store):
+
+```bash
+node scripts/test-memory-lib.mjs   # 54 checks: injection budget, consolidation chain, retrieval, profile consistency & self-repair
+node scripts/test-memory-e2e.mjs   # 4 checks: end-to-end injection and tool contracts
+npm run memory-health              # read-only: real store scale, retrieval quality, profile audit
+```
 
 After upgrading, legacy QQ session mappings without permission metadata are recreated once. Mode or preset changes also retire the old mapping and recreate the session on the next message; DSH history is retained.
 

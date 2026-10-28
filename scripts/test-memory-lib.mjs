@@ -30,15 +30,18 @@ import {
   normalizePersonName,
   pickByBudget,
   pruneProfile,
+  profileDigestForRefine,
   quotedSlots,
   rankDocuments,
   repairProfile,
   salience,
   salienceSummary,
   summarizeDay,
+  threadClosureHints,
   threadStoryMatch,
   tokenize,
   truncateChars,
+  verifyMemoryClaim,
 } from '../src/core/memory-lib.mjs';
 import { createMemoryStore, dayString, isoWeekString, monthString } from '../src/core/memory-store.mjs';
 
@@ -920,4 +923,74 @@ test('repairProfile：同人合并 + 重复线合并 + 已了结收尾，且幂�
 
   const again = repairProfile(out.profile, { now: NOW + 1000 });
   assert.equal(again.changes.length, 0, '干净的档案再跑一遍不应有改动（幂等）');
+});
+
+// ---------------------------------------------------------------------------
+// 日终归纳（V3.6）：证据校验 / 材料清单 / 收尾候选
+// ---------------------------------------------------------------------------
+
+test('证据校验：当天记录里抄的原话能过，编出来的句子被拒', () => {
+  const sources = [
+    '爸爸：鱼鱼，我答应下次教你唱《雨爱》',
+    '阿明：晚上吃火锅吗',
+    '群主：这周的记忆库更新做完了',
+  ];
+  const good = verifyMemoryClaim({ content: '爸爸答应教她唱《雨爱》', evidence: '我答应下次教你唱《雨爱》' }, sources);
+  assert.equal(good.ok, true);
+  assert.ok(good.coverage >= 0.5, `原话覆盖率应该很高：${good.coverage}`);
+
+  const made = verifyMemoryClaim({ content: '爸爸答应买房子', evidence: '爸爸说要给我买一套海边的房子' }, sources);
+  assert.equal(made.ok, false, '编出来的证据必须被拒');
+  assert.equal(made.reason, 'evidence-not-in-sources');
+
+  // 太短的证据不算证据（「雨爱」这种两字片段可以过，但要有长度门槛挡掉「嗯」「好」）
+  assert.equal(verifyMemoryClaim({ content: 'x', evidence: '好' }, sources).reason, 'evidence-too-short');
+  assert.equal(verifyMemoryClaim({ content: 'x', evidence: '晚上吃火锅吗' }, []).reason, 'no-sources');
+  // 每个字单独看都在记录里、连起来却是编的：单字不该被当成证据
+  assert.equal(verifyMemoryClaim({ content: 'x', evidence: '我在吗你他火锅' }, sources).ok, false);
+});
+
+test('日终归纳材料：档案清单给全量事实与带编号的未完结线', () => {
+  const p = ensureProfile({
+    people: {
+      爸爸: {
+        facts: [
+          { text: '姓林，小名鱼鱼', createdAt: NOW, confirmedAt: NOW, count: 1 },
+          { text: '爱喝手冲咖啡', createdAt: NOW - DAY, confirmedAt: NOW - DAY, count: 1 },
+        ],
+        count: 2,
+        lastSeen: NOW,
+      },
+    },
+    threads: [
+      { text: '答应教我唱《雨爱》', with: ['爸爸'], state: 'open', createdAt: NOW, lastMentionAt: NOW },
+      { text: '《小幸运》已经唱完了', with: ['爸爸'], state: 'done', createdAt: NOW, lastMentionAt: NOW },
+    ],
+  });
+  const out = profileDigestForRefine(p);
+  assert.match(out, /人物档案/, '要给她能逐条核对的档案');
+  assert.match(out, /姓林/);
+  assert.match(out, /爱喝手冲咖啡/);
+  assert.match(out, /还挂着的线/);
+  assert.match(out, /1\. 爸爸：答应教我唱《雨爱》/, '未完结的线要编号，方便她在工具参数里引用');
+  assert.doesNotMatch(out, /已经唱完了/, '已了结的线不该再出现在待办清单里');
+  assert.match(profileDigestForRefine(ensureProfile(null)), /档案还是空的/);
+});
+
+test('收尾候选：今天提到同一专名且出现收尾措辞，才提示她考虑了结', () => {
+  const p = ensureProfile({
+    threads: [
+      { text: '爸爸答应教我唱《雨爱》', with: ['爸爸'], state: 'open', createdAt: NOW, lastMentionAt: NOW },
+      { text: '答应教我唱《小幸运》', with: ['爸爸'], state: 'open', createdAt: NOW, lastMentionAt: NOW },
+    ],
+  });
+  const hints = threadClosureHints(p, ['爸爸：今天把《雨爱》唱了，发群里了']);
+  assert.equal(hints.length, 1, '只有《雨爱》那条该被列为候选');
+  assert.match(hints[0].text, /雨爱/);
+  assert.ok(hints[0].hints.includes('唱了'));
+  // 只是又聊到，不算收尾
+  assert.equal(threadClosureHints(p, ['爸爸：今天又提到《雨爱》了']).length, 0);
+  // 没有专名的线不瞎猜
+  assert.equal(threadClosureHints(ensureProfile({ threads: [{ text: '欠我一顿饭', state: 'open', createdAt: NOW, lastMentionAt: NOW }] }), ['今天吃饭了']).length, 0);
+  assert.deepEqual(threadClosureHints(p, []), []);
 });

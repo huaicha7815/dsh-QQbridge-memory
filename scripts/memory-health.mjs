@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createMemoryStore } from '../src/core/memory-store.mjs';
-import { PROFILE_LIMITS, normalizePersonName, threadStoryMatch } from '../src/core/memory-lib.mjs';
+import { PROFILE_LIMITS, auditProfile } from '../src/core/memory-lib.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const store = createMemoryStore({ dir: path.join(root, 'state', 'memory'), config: {} });
@@ -76,28 +76,30 @@ say('');
 // 「能跑」不等于「记得对」：档案里可能出现同一个人两份档案、
 // 同一件事两条线、已经了结却还挂着 open 的线。这些不会报错，只会让她记错。
 say('【档案自检】');
-const dupPeople = new Map();
-for (const name of Object.keys(profile.people)) {
-  const norm = normalizePersonName(name) || name;
-  if (!dupPeople.has(norm)) dupPeople.set(norm, []);
-  dupPeople.get(norm).push(name);
-}
-const samePersonGroups = [...dupPeople.values()].filter((names) => names.length > 1);
-const dupThreads = [];
-for (let i = 0; i < open.length; i += 1) {
-  for (let j = i + 1; j < open.length; j += 1) {
-    if (threadStoryMatch(open[i].text, open[j].text).same) dupThreads.push([open[i], open[j]]);
-  }
-}
-const contradicted = open.filter((t) => done.some((d) => threadStoryMatch(t.text, d.text).slotShared > 0));
-const problems = samePersonGroups.length + dupThreads.length + contradicted.length;
+const audit = auditProfile(profile);
+const problems = audit.problems;
 if (!problems) {
   say('  一致：没有同人分裂、重复线、已了结却还挂着 open 的矛盾。');
 } else {
-  for (const names of samePersonGroups) say(`  疑似同人：${names.join(' / ')}（可合并成一份档案）`);
-  for (const [a, b] of dupThreads) say(`  疑似重复线：「${a.text.slice(0, 26)}」≈「${b.text.slice(0, 26)}」`);
-  for (const t of contradicted) say(`  已了结却还算 open：「${t.text.slice(0, 40)}」`);
+  for (const names of audit.samePersonGroups) say(`  疑似同人：${names.join(' / ')}（可合并成一份档案）`);
+  for (const { keep, drop } of audit.duplicateThreads) say(`  疑似重复线：「${keep.slice(0, 26)}」≈「${drop.slice(0, 26)}」`);
+  for (const { text } of audit.contradictedOpen) say(`  已了结却还算 open：「${text.slice(0, 40)}」`);
   say('  → 用 node scripts/repair-memory-profile.mjs 预览，加 --apply 写回（会先备份）。');
+}
+say('');
+
+// ── 4.6 日终归纳（V3.7）是否在跑 ────────────────────────────
+// 每天一次独立调用，最容易「悄悄没跑」：时间配错、记忆库关着、owner 没设。
+// 这里只报告事实，不猜原因。
+say('【日终归纳】');
+try {
+  const st = JSON.parse(fs.readFileSync(path.join(root, 'state', 'memory-refine.json'), 'utf8'));
+  const lastAt = Number(st.lastAt) || 0;
+  const days = lastAt ? Math.floor((now - lastAt) / 86400000) : -1;
+  say(`  最近一次：${st.lastDay || '—'}${lastAt ? `（${new Date(lastAt).toLocaleString('zh-CN')}）` : ''}`);
+  if (days > 2) say('  已经超过 2 天没整理过：检查 config.memoryRefine（enabled/time）与桥接是否在跑。');
+} catch {
+  say('  还从没跑过（state/memory-refine.json 不存在）。要么是新装的，要么 config.memoryRefine.enabled=false。');
 }
 say('');
 

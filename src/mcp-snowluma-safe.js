@@ -928,13 +928,14 @@ server.tool(
     kind: z.enum(['person', 'thread', 'threadDone', 'correct', 'self']).describe('档案类别'),
     content: z.string().describe('要记住的内容，一句话说清（correct 时写正确的新版本）'),
     name: z.string().optional().describe('kind=person / correct 时的人名/昵称'),
-    withWho: z.array(z.string()).optional().describe('kind=thread 时这条线牵涉到谁')
+    withWho: z.array(z.string()).optional().describe('kind=thread 时这条线牵涉到谁'),
+    evidence: z.string().optional().describe('支撑这次写入的原话片段（从当天记录里直接抄，别改写）。纠正旧事实、了结一条线时尽量带：桥接会核对它是否真的出现在当天记录里，编的会被拒绝。')
   },
-  async ({ key, token, kind, content, name, withWho }) => {
+  async ({ key, token, kind, content, name, withWho, evidence }) => {
     try {
       const data = await agentApi('/api/socialV2/memory-remember', {
         method: 'POST',
-        body: JSON.stringify({ key, kind, content, name: name || '', withWho: withWho || [] }),
+        body: JSON.stringify({ key, kind, content, name: name || '', withWho: withWho || [], evidence: evidence || '' }),
         headers: { 'x-agent-token': token }
       });
       return { content: [{ type: 'text', text: serializeModelData(data) }] };
