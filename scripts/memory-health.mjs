@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createMemoryStore } from '../src/core/memory-store.mjs';
-import { PROFILE_LIMITS } from '../src/core/memory-lib.mjs';
+import { PROFILE_LIMITS, normalizePersonName, threadStoryMatch } from '../src/core/memory-lib.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const store = createMemoryStore({ dir: path.join(root, 'state', 'memory'), config: {} });
@@ -72,8 +72,38 @@ for (const t of open.slice(0, 5)) say(`    [open] ${t.text.slice(0, 50)}`);
 say(`  心事（self）：${profile.self.length} / 上限 ${PROFILE_LIMITS.maxSelfNotes}`);
 say('');
 
+// ── 4.5 档案自检（一致性长歪了没有）────────────────────────
+// 「能跑」不等于「记得对」：档案里可能出现同一个人两份档案、
+// 同一件事两条线、已经了结却还挂着 open 的线。这些不会报错，只会让她记错。
+say('【档案自检】');
+const dupPeople = new Map();
+for (const name of Object.keys(profile.people)) {
+  const norm = normalizePersonName(name) || name;
+  if (!dupPeople.has(norm)) dupPeople.set(norm, []);
+  dupPeople.get(norm).push(name);
+}
+const samePersonGroups = [...dupPeople.values()].filter((names) => names.length > 1);
+const dupThreads = [];
+for (let i = 0; i < open.length; i += 1) {
+  for (let j = i + 1; j < open.length; j += 1) {
+    if (threadStoryMatch(open[i].text, open[j].text).same) dupThreads.push([open[i], open[j]]);
+  }
+}
+const contradicted = open.filter((t) => done.some((d) => threadStoryMatch(t.text, d.text).slotShared > 0));
+const problems = samePersonGroups.length + dupThreads.length + contradicted.length;
+if (!problems) {
+  say('  一致：没有同人分裂、重复线、已了结却还挂着 open 的矛盾。');
+} else {
+  for (const names of samePersonGroups) say(`  疑似同人：${names.join(' / ')}（可合并成一份档案）`);
+  for (const [a, b] of dupThreads) say(`  疑似重复线：「${a.text.slice(0, 26)}」≈「${b.text.slice(0, 26)}」`);
+  for (const t of contradicted) say(`  已了结却还算 open：「${t.text.slice(0, 40)}」`);
+  say('  → 用 node scripts/repair-memory-profile.mjs 预览，加 --apply 写回（会先备份）。');
+}
+say('');
+
 // ── 5. 建议 ───────────────────────────────────────────────
 const advice = [];
+if (problems) advice.push(`档案有 ${problems} 处一致性问题（同人分裂/重复线/已了结还挂着），用 node scripts/repair-memory-profile.mjs --apply 修掉。`);
 const shard = st.events ? tiers[0] / st.events : 0;
 if (st.eventDays >= 3 && st.events < 50) advice.push('事件量偏少：桥接可能没在跑，或最近很安静。');
 if (shard > 0.45) advice.push(`寒暄占比 ${Math.round(shard * 100)}% 偏高：重要度阈值可能太松，可调 socialV2.memory.weekMinSalience。`);

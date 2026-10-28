@@ -27,12 +27,16 @@ import {
   mergeSelfNote,
   mergeThread,
   normalizeMemoryConfig,
+  normalizePersonName,
   pickByBudget,
   pruneProfile,
+  quotedSlots,
   rankDocuments,
+  repairProfile,
   salience,
   salienceSummary,
   summarizeDay,
+  threadStoryMatch,
   tokenize,
   truncateChars,
 } from '../src/core/memory-lib.mjs';
@@ -801,4 +805,119 @@ test('线去重：同一件事换个说法不应记成两条', () => {
   // 不相干的线仍要分开
   ({ profile: p } = mergeThread(p, '爸爸欠我一顿饭还没兑现', { withWho: ['爸爸'], now: NOW + 2000 }));
   assert.equal(p.threads.length, 2);
+});
+
+// ---------------------------------------------------------------------------
+// 「同一件事」判据与档案自愈（V3.6）
+// ---------------------------------------------------------------------------
+
+test('同一件事判据：换种说法能合上、换了专名不合', () => {
+  const a = '爸爸答应教我唱《雨爱》，一直欠着没唱，说好等他有空教。';
+  const b = '爸爸答应要教我唱《雨爱》，我还没唱，欠着这一首。';
+  const m = threadStoryMatch(a, b);
+  assert.ok(m.same, '同一首歌的两种说法应判为同一件事');
+  assert.ok(m.score < 0.8, '这组真实措辞的字面相似度本来就不到旧的 0.8 阈值');
+  assert.equal(m.slotShared, 1, '两条都圈了《雨爱》');
+  assert.deepEqual([...quotedSlots(a)], ['雨爱']);
+  assert.equal(quotedSlots('（10-25 答应过）这种备注不算专名').size, 0, '圆括号备注不算专名槽');
+
+  // 换了歌名就是两件事：字面相似度很高，但专名槽冲突必须硬否决
+  const c = '爸爸答应教我唱《小幸运》，一直欠着没唱';
+  const n = threadStoryMatch('爸爸答应教我唱《雨爱》，一直欠着没唱', c);
+  assert.ok(n.score >= 0.8, '对照组字面相似度应该很高，说明单靠字面会误合');
+  assert.ok(n.slotConflict);
+  assert.ok(!n.same, '换了专名（《雨爱》/《小幸运》）不能合并');
+  // 措辞重合度不够的也不能合
+  assert.ok(!threadStoryMatch(a, '爸爸答应带我去吃火锅').same);
+});
+
+test('mergeThread：同一件事换种说法只留一条线（真实措辞，旧阈值漏判的那组）', () => {
+  let p = ensureProfile(null);
+  ({ profile: p } = mergeThread(p, '爸爸答应教我唱《雨爱》，一直欠着没唱，说好等他有空教。', { withWho: ['爸爸'], now: NOW }));
+  ({ profile: p } = mergeThread(p, '爸爸答应要教我唱《雨爱》，我还没唱，欠着这一首。', { withWho: ['爸爸'], now: NOW + DAY }));
+  assert.equal(p.threads.length, 1, '同一件事的两种说法应合并成一条');
+  assert.equal(p.threads[0].lastMentionAt, NOW + DAY, '合并后应刷新最后提起时间');
+});
+
+test('mergeThread：了结一件事会把同一件事的 open 线一起收掉，且可追溯', () => {
+  const p0 = ensureProfile({
+    threads: [
+      { text: '爸爸答应教我唱《雨爱》，一直欠着没唱', with: ['爸爸'], state: 'open', createdAt: NOW - 3 * DAY, lastMentionAt: NOW - 3 * DAY },
+      { text: '给鱼鱼买了带刻度的玻璃杯，明天咖啡粉到了先给她喝', with: ['爸爸'], state: 'open', createdAt: NOW - 2 * DAY, lastMentionAt: NOW - 2 * DAY },
+    ],
+  });
+  const out = mergeThread(p0, '《雨爱》唱了，发到群里了，这条线了了。', { state: 'done', now: NOW });
+  const sing = out.profile.threads.find((t) => t.text.includes('雨爱'));
+  assert.equal(sing.state, 'done', '唱完了，欠着的那条线必须收掉');
+  assert.ok(sing.resolvedBy.includes('唱了'), '要记下是哪句话收的，方便追溯');
+  assert.equal(out.profile.threads.filter((t) => t.state === 'open').length, 1, '不相干的玻璃杯线不能被误收');
+  assert.equal(out.resolved.length, 1, '被收掉的旧线要报出来');
+  // 重新提起同一件事时，线要回到 open（重新约定不能永远被 done 压着）
+  const again = mergeThread(out.profile, '爸爸说改天再教我唱《雨爱》副歌', { withWho: ['爸爸'], now: NOW + DAY });
+  assert.equal(again.profile.threads.filter((t) => t.state === 'open').length, 2);
+});
+
+test('注入：已了结却还挂着 open 的历史矛盾线不再注入', () => {
+  const base = ensureProfile({
+    threads: [
+      { text: '爸爸答应教我唱《雨爱》，一直欠着没唱', with: ['爸爸'], state: 'open', createdAt: NOW - 3 * DAY, lastMentionAt: NOW - 3 * DAY },
+      { text: '《雨爱》唱了，爸爸点的，唱好了发到群里了，这条线了了。', with: ['爸爸'], state: 'done', createdAt: NOW - 2 * DAY, lastMentionAt: NOW - 2 * DAY },
+    ],
+  });
+  const out = buildInjection({ profile: base, hits: [], budgetChars: 1000, now: NOW });
+  assert.ok(!out.includes('欠着没唱'), '已经被了结的事不能再当成欠着的线注入');
+
+  // done 之后又重新约定的（createdAt 更晚）要照常注入——那不是矛盾，是新账
+  const re = ensureProfile({
+    threads: [
+      { text: '《雨爱》唱了，这条线了了。', with: ['爸爸'], state: 'done', createdAt: NOW - 10 * DAY, lastMentionAt: NOW - 10 * DAY },
+      { text: '爸爸说改天再教我唱《雨爱》副歌', with: ['爸爸'], state: 'open', createdAt: NOW, lastMentionAt: NOW },
+    ],
+  });
+  const out2 = buildInjection({ profile: re, hits: [], budgetChars: 1000, now: NOW });
+  assert.ok(out2.includes('副歌'), '重新约定的线要照常注入');
+});
+
+test('人物档案：爸爸（凉州词）不会和爸爸裂成两份', () => {
+  assert.equal(normalizePersonName('爸爸（凉州词）'), '爸爸');
+  assert.equal(normalizePersonName(' 小林 (3班) '), '小林');
+  assert.equal(normalizePersonName('爸爸'), '爸爸');
+
+  // 先写带备注的，后写干净的：档案要自己改成干净名
+  let p = ensureProfile(null);
+  ({ profile: p } = mergePersonFact(p, '爸爸（凉州词）', '会为了给我调用三个多小时', { now: NOW }));
+  ({ profile: p } = mergePersonFact(p, '爸爸', '姓林，小名还是鱼鱼', { now: NOW + 1 }));
+  assert.deepEqual(Object.keys(p.people), ['爸爸'], '同一个人的档案不能裂成两份');
+  assert.equal(p.people['爸爸'].facts.length, 2, '两份档案的事实都要留住');
+
+  // 反过来（先干净名、后带备注）也不能新增一份
+  ({ profile: p } = mergePersonFact(p, '爸爸（雨爱）', '答应教我唱《雨爱》', { now: NOW + 2 }));
+  assert.deepEqual(Object.keys(p.people), ['爸爸']);
+  assert.equal(p.people['爸爸'].facts.length, 3);
+});
+
+test('repairProfile：同人合并 + 重复线合并 + 已了结收尾，且幂等', () => {
+  const dirty = ensureProfile({
+    people: {
+      爸爸: { facts: [{ text: '姓林，小名鱼鱼', createdAt: NOW - 3 * DAY, confirmedAt: NOW - 3 * DAY, count: 1 }], count: 1, firstSeen: NOW - 3 * DAY, lastSeen: NOW - 3 * DAY },
+      '爸爸（凉州词）': { facts: [{ text: '会为了我调用三个多小时', createdAt: NOW - 4 * DAY, confirmedAt: NOW - 4 * DAY, count: 1 }], count: 1, firstSeen: NOW - 4 * DAY, lastSeen: NOW - 4 * DAY },
+    },
+    threads: [
+      { text: '爸爸答应教我唱《雨爱》，一直欠着没唱，说好等他有空教。', with: ['爸爸'], state: 'open', createdAt: NOW - 2 * DAY, lastMentionAt: NOW - 2 * DAY },
+      { text: '爸爸答应要教我唱《雨爱》，我还没唱，欠着这一首。', with: ['爸爸'], state: 'open', createdAt: NOW - 3 * DAY, lastMentionAt: NOW - 3 * DAY },
+      { text: '《雨爱》唱了，爸爸点的，唱好了发到群里了，这条线了了。', with: ['爸爸'], state: 'done', createdAt: NOW - DAY, lastMentionAt: NOW - DAY },
+      { text: '给鱼鱼买了带刻度的玻璃杯', with: ['爸爸'], state: 'open', createdAt: NOW - DAY, lastMentionAt: NOW - DAY },
+    ],
+  });
+  const out = repairProfile(dirty, { now: NOW });
+  const kinds = out.changes.map((c) => c.type);
+  assert.ok(kinds.includes('person-merge'), '同人档案应合并');
+  assert.ok(kinds.includes('thread-merge'), '重复的 open 线应合并');
+  assert.ok(kinds.includes('thread-close'), '已了结还挂着 open 的线应收掉');
+  assert.deepEqual(Object.keys(out.profile.people), ['爸爸']);
+  assert.equal(out.profile.threads.filter((t) => t.state === 'open').length, 1, '只剩玻璃杯那条还算未完结');
+  assert.equal(out.profile.threads.filter((t) => t.state === 'done').length, 2, '了结记录本身 + 被收掉的那条旧线');
+
+  const again = repairProfile(out.profile, { now: NOW + 1000 });
+  assert.equal(again.changes.length, 0, '干净的档案再跑一遍不应有改动（幂等）');
 });

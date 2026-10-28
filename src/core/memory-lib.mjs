@@ -563,6 +563,9 @@ export function ensureProfile(raw) {
       state: t.state === 'done' ? 'done' : 'open',
       createdAt: Number(t.createdAt) || 0,
       lastMentionAt: Number(t.lastMentionAt) || 0,
+      // 这条线是被哪句「了结」收掉的：留着可追溯，也用于注入时判断哪个说法更可信。
+      ...(t.resolvedBy ? { resolvedBy: truncateChars(String(t.resolvedBy), 120) } : {}),
+      ...(Number(t.resolvedAt) ? { resolvedAt: Number(t.resolvedAt) } : {}),
     }));
   // 不在 ensureProfile 里按上限裁：那会先砍掉数组尾部，让 pruneProfile 的
   // 「完结的线优先淘汰」失效。体积收敛统一交给 pruneProfile。
@@ -595,6 +598,86 @@ export function pruneProfile(profile, limits = PROFILE_LIMITS) {
 }
 
 /**
+ * 档案自愈：把「同人分裂 / 同一件事记成多条 / 已了结却还挂着 open」一次理干净。
+ *
+ * 为什么需要它：写入路径的规则只能防新增，防不了历史账。真实库里已经长出
+ * `爸爸` 和 `爸爸（凉州词）` 两份档案、两条说同一件事的 open 线、
+ * 以及一条 done 了但 open 还挂着的《雨爱》。纯函数 + 改动清单 = 可预览、可测试、可回滚。
+ *
+ * 幂等：干净的档案跑一遍 changes 为空。
+ *
+ * @returns {{profile:object, changes:Array<{type:string}>}}
+ */
+export function repairProfile(profile, { now = Date.now(), maxChanges = 200 } = {}) {
+  let p = ensureProfile(profile);
+  const changes = [];
+  const push = (c) => {
+    if (changes.length < maxChanges) changes.push(c);
+  };
+
+  // 1) 同人合并：按归一化名字分组，代表优先取「最干净」的名字（爸爸 优于 爸爸（凉州词））。
+  const groups = new Map();
+  for (const name of Object.keys(p.people)) {
+    const norm = normalizePersonName(name) || name;
+    if (!groups.has(norm)) groups.set(norm, []);
+    groups.get(norm).push(name);
+  }
+  for (const [norm, names] of groups) {
+    if (names.length <= 1) continue;
+    const canon = names.includes(norm)
+      ? norm
+      : names.slice().sort((a, b) => Array.from(a).length - Array.from(b).length)[0];
+    for (const n of names) {
+      if (n === canon) continue;
+      const out = mergePersonEntry(p, canon, n);
+      p = out.profile;
+      push({ type: 'person-merge', from: n, into: canon, moved: out.moved });
+    }
+  }
+
+  // 2) 同一件事的重复 open 线：保留「最后提到」的那条，同级取信息量更大的。
+  const threads = p.threads.slice();
+  const dropped = new Set();
+  for (let i = 0; i < threads.length; i += 1) {
+    for (let j = i + 1; j < threads.length; j += 1) {
+      const a = threads[i];
+      const b = threads[j];
+      if (dropped.has(a) || dropped.has(b)) continue;
+      if (a.state !== 'open' || b.state !== 'open') continue;
+      if (!threadStoryMatch(a.text, b.text).same) continue;
+      const nb = Number(b.lastMentionAt) || 0;
+      const na = Number(a.lastMentionAt) || 0;
+      const bWins = nb > na || (nb === na && Array.from(b.text).length > Array.from(a.text).length);
+      const keep = bWins ? b : a;
+      const drop = bWins ? a : b;
+      keep.with = [...new Set([...(keep.with || []), ...(drop.with || [])])].slice(0, 6);
+      keep.lastMentionAt = Math.max(na, nb);
+      keep.createdAt = Math.min(Number(keep.createdAt) || 0, Number(drop.createdAt) || 0) || keep.createdAt;
+      dropped.add(drop);
+      push({ type: 'thread-merge', keep: keep.text, drop: drop.text });
+    }
+  }
+  p.threads = p.threads.filter((t) => !dropped.has(t));
+
+  // 3) 已经了结（done）却还挂着 open 的同一件事：全部收掉。
+  //    判据只看专名槽是否相同——done 的描述通常和欠着时的说法差很远
+  //    （「《雨爱》唱了」vs「答应教我唱《雨爱》、还欠着」），字面相似度靠不住。
+  const dones = p.threads.filter((t) => t.state === 'done');
+  for (const t of p.threads) {
+    if (t.state !== 'open') continue;
+    const hit = dones.find((d) => threadStoryMatch(t.text, d.text).slotShared > 0);
+    if (!hit) continue;
+    t.state = 'done';
+    t.resolvedBy = hit.text;
+    t.resolvedAt = Number(hit.resolvedAt) || Number(hit.createdAt) || now;
+    push({ type: 'thread-close', text: t.text, by: hit.text });
+  }
+
+  if (changes.length) p.updatedAt = now;
+  return { profile: pruneProfile(p), changes };
+}
+
+/**
  * 两条事实的字面相似度（0~1）。用较小集合做分母，所以「短句被长句包含」也能识别。
  *
  * 纯规则只能判断「说的是不是同一句话」，判断不了「意思相反」——
@@ -607,6 +690,156 @@ export function factSimilarity(a, b) {
   let inter = 0;
   for (const t of ta) if (tb.has(t)) inter += 1;
   return inter / Math.min(ta.size, tb.size);
+}
+
+// ---------------------------------------------------------------------------
+// 「同一件事」判据（线的判重 / done 收尾 / 注入一致性）
+// ---------------------------------------------------------------------------
+
+// 专名槽：书名号、引号里圈出来的短词（歌名、作品名、店名…）。
+// 中文里「换个说法讲同一件事」时措辞会变，但圈起来的专名基本不变；
+// 反过来「同一句式换个专名」（《雨爱》/《小幸运》）就是两件不同的事。
+// 纯字面相似度把这两类混在一起，专名槽正好补上这个盲区。
+// 故意不认圆括号：那多半是「（10-25 答应过）」这种备注，认了反而制造噪声。
+const SLOT_RE = /《([^》\n]{1,16})》|「([^」\n]{1,16})」|『([^』\n]{1,16})』|“([^”\n]{1,16})”|"([^"\n]{1,16})"/g;
+
+/** 取一段文字里「被圈出来的专名」集合（小写、去重）。 */
+export function quotedSlots(text) {
+  const out = new Set();
+  for (const m of String(text ?? '').matchAll(SLOT_RE)) {
+    const s = String(m[1] || m[2] || m[3] || m[4] || m[5] || '').trim().toLowerCase();
+    if (s) out.add(s);
+  }
+  return out;
+}
+
+/**
+ * 判断两条「线」是不是同一件事——纯字面规则，但比 factSimilarity 多两件事：
+ *   1. 专名槽冲突是硬否决：句式再像，换了歌名/作品名就是两件事。
+ *   2. 措辞高度重合（共享二字词 ≥4 且其中 ≥2 个是实词）也算同一件事，
+ *      这是中文「同一件事换种说法」最常见的形态（实测两条《雨爱》线相似度只有 0.65）。
+ *
+ * @returns {{same:boolean, score:number, shared:number, anchors:number, slotShared:number, slotConflict:boolean}}
+ */
+export function threadStoryMatch(a, b) {
+  const ta = String(a ?? '');
+  const tb = String(b ?? '');
+  const empty = { same: false, score: 0, shared: 0, anchors: 0, slotShared: 0, slotConflict: false };
+  if (!ta.trim() || !tb.trim()) return empty;
+  const sa = quotedSlots(ta);
+  const sb = quotedSlots(tb);
+  let slotShared = 0;
+  for (const x of sa) {
+    for (const y of sb) {
+      if (x === y || x.includes(y) || y.includes(x)) {
+        slotShared += 1;
+        break;
+      }
+    }
+  }
+  const slotConflict = sa.size > 0 && sb.size > 0 && slotShared === 0;
+  const A = new Set(tokenize(ta).filter((t) => !t.startsWith('#')));
+  const B = new Set(tokenize(tb).filter((t) => !t.startsWith('#')));
+  let shared = 0;
+  let anchors = 0;
+  for (const t of A) {
+    if (!B.has(t)) continue;
+    shared += 1;
+    // 实词锚点：组成二字词的两个字都不是高频虚词（爸爸/答应/雨爱 算，我唱/着没 不算）。
+    if ([...t].every((c) => !CJK_SINGLE_STOP.has(c))) anchors += 1;
+  }
+  const score = factSimilarity(ta, tb);
+  const same = slotConflict
+    ? false
+    : score >= 0.8
+      || (slotShared > 0 && shared >= 2)
+      || (shared >= 4 && anchors >= 2);
+  return { same, score, shared, anchors, slotShared, slotConflict };
+}
+
+// ---------------------------------------------------------------------------
+// 人物名归一化（同一个人的档案不要裂成好几份）
+// ---------------------------------------------------------------------------
+
+/** 去掉名字后面的备注括注：`爸爸（凉州词）` → `爸爸`。 */
+export function normalizePersonName(name) {
+  return String(name ?? '')
+    .trim()
+    .replace(/[（(【\[「『][^）)】\]」』]{1,20}[）)】\]」』]/g, '')
+    .trim();
+}
+
+/**
+ * 把新写进来的名字对到档案里已在的那个人身上。
+ *
+ * 真实数据里出过 `爸爸` 和 `爸爸（凉州词）` 两份档案——那是她写名字时顺手
+ * 把话题注在括号里。宁可不合也不能乱合，所以只在「归一化之后完全相同」时才归并：
+ * 归一化后档案里没有对应的，就老实新建一份。
+ */
+export function resolvePersonName(profile, name) {
+  const key = String(name ?? '').trim();
+  if (!key) return key;
+  const p = ensureProfile(profile);
+  const keys = Object.keys(p.people);
+  if (keys.includes(key)) return key;
+  const norm = normalizePersonName(key);
+  if (!norm) return key;
+  if (p.people[norm]) return norm;
+  const same = keys.find((k) => normalizePersonName(k) === norm);
+  return same || key;
+}
+
+/**
+ * 把 from 这个人物档案整个并入 into（同人合并用）。
+ * 事实按字面去重，数量/首末时间取并集——合并只会让档案更准，不会丢内容。
+ */
+export function mergePersonEntry(profile, into, from) {
+  const p = ensureProfile(profile);
+  const target = String(into ?? '').trim();
+  const src = String(from ?? '').trim();
+  if (!target || !src || target === src) return { profile: p, moved: 0 };
+  const dst = p.people[target];
+  const don = p.people[src];
+  if (!don) return { profile: p, moved: 0 };
+  if (!dst) {
+    p.people[target] = don;
+    delete p.people[src];
+    return { profile: p, moved: (don.facts || []).length };
+  }
+  let moved = 0;
+  for (const f of don.facts || []) {
+    const hit = (dst.facts || []).find((x) => x.text === f.text || factSimilarity(x.text, f.text) >= 0.9);
+    if (hit) {
+      hit.count = Math.max(Number(hit.count) || 1, Number(f.count) || 1);
+      hit.confirmedAt = Math.max(Number(hit.confirmedAt) || 0, Number(f.confirmedAt) || 0);
+      hit.createdAt = Math.min(Number(hit.createdAt) || 0, Number(f.createdAt) || 0) || hit.createdAt;
+      if (!hit.previous && f.previous) hit.previous = f.previous;
+    } else {
+      dst.facts.push(f);
+      moved += 1;
+    }
+  }
+  dst.count = (Number(dst.count) || 0) + (Number(don.count) || 0);
+  dst.firstSeen = Math.min(Number(dst.firstSeen) || 0, Number(don.firstSeen) || 0) || dst.firstSeen;
+  dst.lastSeen = Math.max(Number(dst.lastSeen) || 0, Number(don.lastSeen) || 0);
+  delete p.people[src];
+  return { profile: pruneProfile(p), moved };
+}
+
+/**
+ * 写档案时顺手把「带备注的旧名字」改成干净名：先写进来的 `爸爸（凉州词）`
+ * 遇到后来的干净名 `爸爸`，就把整份档案搬到 `爸爸` 名下，以后都干净。
+ * 反过来（新写进来的名字带备注）不动，交给 repairProfile 统一清。
+ */
+function adoptCanonicalPersonName(p, rawKey) {
+  const norm = normalizePersonName(rawKey);
+  if (!norm || norm !== rawKey) return resolvePersonName(p, rawKey);
+  if (p.people[norm]) return norm;
+  const old = Object.keys(p.people).find((k) => normalizePersonName(k) === norm);
+  if (!old) return norm;
+  p.people[norm] = p.people[old];
+  delete p.people[old];
+  return norm;
 }
 
 /**
@@ -623,9 +856,11 @@ export function factSimilarity(a, b) {
  * @returns {{profile:object, changed:boolean, action:'CREATE'|'CORROBORATE'|'SKIP'}}
  */
 export function mergePersonFact(profile, name, fact, { now = Date.now() } = {}) {
-  const key = String(name ?? '').trim();
-  if (!key || FORBIDDEN_KEYS.has(key)) return { profile: ensureProfile(profile), changed: false, action: 'SKIP' };
+  const rawKey = String(name ?? '').trim();
+  if (!rawKey || FORBIDDEN_KEYS.has(rawKey)) return { profile: ensureProfile(profile), changed: false, action: 'SKIP' };
   const p = ensureProfile(profile);
+  // 「爸爸（凉州词）」这种带备注的名字要落到已经在的「爸爸」上，别开第二份档案。
+  const key = adoptCanonicalPersonName(p, rawKey);
   const text = truncateChars(String(fact ?? '').trim(), 80);
   const entry = p.people[key] || { facts: [], count: 0, firstSeen: now, lastSeen: now };
   let action = 'SKIP';
@@ -662,9 +897,10 @@ export function mergePersonFact(profile, name, fact, { now = Date.now() } = {}) 
  * @returns {{profile:object, changed:boolean, action:'CORRECT'|'CREATE'|'SKIP', replaced?:string}}
  */
 export function correctPersonFact(profile, name, fact, { now = Date.now(), threshold = 0.35 } = {}) {
-  const key = String(name ?? '').trim();
-  if (!key || FORBIDDEN_KEYS.has(key)) return { profile: ensureProfile(profile), changed: false, action: 'SKIP' };
+  const rawKey = String(name ?? '').trim();
+  if (!rawKey || FORBIDDEN_KEYS.has(rawKey)) return { profile: ensureProfile(profile), changed: false, action: 'SKIP' };
   const p = ensureProfile(profile);
+  const key = adoptCanonicalPersonName(p, rawKey);
   const text = truncateChars(String(fact ?? '').trim(), 80);
   if (!text) return { profile: p, changed: false, action: 'SKIP' };
   const entry = p.people[key] || { facts: [], count: 0, firstSeen: now, lastSeen: now };
@@ -752,31 +988,72 @@ export function echoMatch(text, knownTokenSets) {
 }
 
 
-/** 新增/更新一条未完结故事线（精确匹配 + 近似匹配去重）。 */
+/**
+ * 新增/更新一条故事线。
+ *
+ * 判重不再只看字面相似度：`threadStoryMatch` 认得出「同一件事换种说法」，
+ * 并且专名冲突（《雨爱》/《小幸运》）一定不会合并。
+ *
+ * state='done' 时会顺带把**同一件事的其它 open 线一起收掉**——
+ * 真实数据里出过「《雨爱》唱了（done）」和两条「答应教我唱《雨爱》、还欠着（open）」
+ * 并存的矛盾：她会被自己的档案骗到，反复去还一件已经还完的债。
+ * 收掉的线会记下是那句了结文本（resolvedBy）收的，可追溯。
+ *
+ * @returns {{profile:object, changed:boolean, resolved:string[]}}
+ */
 export function mergeThread(profile, text, { withWho = [], now = Date.now(), state = 'open' } = {}) {
   const p = ensureProfile(profile);
   const body = truncateChars(String(text ?? '').trim(), 120);
-  if (!body) return { profile: p, changed: false };
-  // 只按文本精确匹配会漏掉「换个说法写同一件事」——实测「答应教我唱雨爱」
-  // 和「答应教我唱《雨爱》这首歌」会并存成两条线。用字面相似度兜一层。
-  const existing = p.threads.find((t) => t.text === body || factSimilarity(t.text, body) >= 0.8);
-  if (existing) {
-    existing.lastMentionAt = now;
-    existing.state = state === 'done' ? 'done' : 'open';
-    if (Array.isArray(withWho) && withWho.length) {
-      existing.with = [...new Set([...(existing.with || []), ...withWho.map(String)])].slice(0, 6);
+  if (!body) return { profile: p, changed: false, resolved: [] };
+  const done = state === 'done';
+  const withArr = Array.isArray(withWho) ? withWho.map(String).slice(0, 6) : [];
+  const resolved = [];
+  // 同一件事的判定有两档：
+  //   open 判重（防新增重复）→ 严一点，走 threadStoryMatch.same
+  //   done 收尾（清历史矛盾）→ 松一点，只要「同一个专名话题」就认，
+  //   因为了结时的说法和欠着时的说法往往差很远（「《雨爱》唱了」vs「答应教我唱《雨爱》还欠着」）
+  const sameStory = (x, y) => {
+    const m = threadStoryMatch(x, y);
+    return m.same || (done && m.slotShared > 0);
+  };
+  const isSame = (x, y) => (done ? sameStory(x, y) : threadStoryMatch(x, y).same);
+
+  let target = p.threads.find((t) => t.text === body || isSame(t.text, body));
+  if (target) {
+    target.lastMentionAt = now;
+    if (withArr.length) target.with = [...new Set([...(target.with || []), ...withArr])].slice(0, 6);
+  } else {
+    target = { text: body, with: withArr, state: 'open', createdAt: now, lastMentionAt: now };
+    p.threads.push(target);
+  }
+
+  if (done) {
+    if (target.state !== 'done') {
+      // 这条原本是「欠着」的：它也被这次了结收掉了，一并报出来。
+      if (target.state === 'open') resolved.push(target.text);
+      target.state = 'done';
+      target.resolvedBy = body;
+      target.resolvedAt = now;
+    } else if (Number(target.resolvedAt) < now) {
+      target.resolvedAt = now;
+    }
+    for (const t of p.threads) {
+      if (t === target || t.state !== 'open') continue;
+      // 用「了结文本」和「目标线文本」两个参照都判一次：谁跟这件事对得上都收。
+      if (!sameStory(t.text, body) && !sameStory(t.text, target.text)) continue;
+      t.state = 'done';
+      t.resolvedBy = body;
+      t.resolvedAt = now;
+      resolved.push(t.text);
     }
   } else {
-    p.threads.push({
-      text: body,
-      with: Array.isArray(withWho) ? withWho.map(String).slice(0, 6) : [],
-      state: state === 'done' ? 'done' : 'open',
-      createdAt: now,
-      lastMentionAt: now,
-    });
+    // 重新提起同一件事：把线拉回 open，旧的「已了结」痕迹要清掉，否则注入会自相矛盾。
+    target.state = 'open';
+    delete target.resolvedBy;
+    delete target.resolvedAt;
   }
   p.updatedAt = now;
-  return { profile: pruneProfile(p), changed: true };
+  return { profile: pruneProfile(p), changed: true, resolved };
 }
 
 /** 追加一条「自我状态」记录（她自己的心情/转变，最长期的那种记忆）。 */
@@ -828,12 +1105,25 @@ export function buildInjection(input = {}) {
   const sections = [];
 
   // 1) 未完结的线
-  // 排序不再只看时间：与当前 query 有词重叠的线优先浮上来。
-  // 这是「跨主题关联」最实用的形态——她说「咖啡」时，「欠我一杯手冲」那条线
-  // 应该比三天前随口提的一句更靠前，否则线永远被最新那条占满。
+  // 注入前先剔掉「同一专名话题已经了结」的历史矛盾线：真实数据里出过
+  // 「《雨爱》唱了（done）」和「答应教我唱《雨爱》、还欠着（open）」并存，
+  // 老档案没来得及 repair 时，宁可少注入一条，也不能让她去还已经还完的债。
+  // 只剔除比了结时间更早的线：done 之后又提起的属于「重新约定」，照常注入。
+  const doneThreads = profile.threads.filter((t) => t.state === 'done');
+  const supersededByDone = (t) => {
+    const at = Number(t.createdAt) || 0;
+    return doneThreads.some((d) => {
+      if (!(threadStoryMatch(t.text, d.text).slotShared > 0)) return false;
+      const closedAt = Number(d.resolvedAt) || Number(d.createdAt) || 0;
+      return !at || at <= closedAt;
+    });
+  };
   const qTokens = new Set(tokenize(input.query ?? ''));
   const openThreads = profile.threads
-    .filter((t) => t.state === 'open')
+    .filter((t) => t.state === 'open' && !supersededByDone(t))
+    // 排序不再只看时间：与当前 query 有词重叠的线优先浮上来。
+    // 这是「跨主题关联」最实用的形态——她说「咖啡」时，「欠我一杯手冲」那条线
+    // 应该比三天前随口提的一句更靠前，否则线永远被最新那条占满。
     .map((t) => {
       const overlap = qTokens.size
         ? tokenize(t.text).filter((x) => qTokens.has(x)).length
