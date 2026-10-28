@@ -59,7 +59,7 @@ import {
   markStickerUsed
 } from './sticker-lib.js';
 import { createMemoryStore } from './core/memory-store.mjs';
-import { auditProfile, buildInjection, buildMemoryGraph, groupSelfNotes, mergePersonFact, mergeSelfNote, mergeThread, profileDigestForRefine, threadClosureHints, verifyMemoryClaim } from './core/memory-lib.mjs';
+import { auditProfile, buildInjection, buildMemoryGraph, buildMemoryUniverse, groupSelfNotes, mergePersonFact, mergeSelfNote, mergeThread, profileDigestForRefine, threadClosureHints, verifyMemoryClaim } from './core/memory-lib.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -6366,6 +6366,22 @@ async function main() {
           return;
         }
 
+        // 记忆星云：她自己的记忆宇宙（中心是她，延伸成主题星云，星云里是光点）
+        if (req.method === 'GET' && url.pathname === '/api/memory/universe') {
+          const days = Math.max(1, Math.min(60, Number(url.searchParams.get('days')) || 7));
+          const maxStars = Math.max(60, Math.min(1200, Number(url.searchParams.get('maxStars')) || 420));
+          const profile = memoryStore.readProfile();
+          const events = memoryStore.readEvents({ days });
+          let selfName = '我';
+          try { selfName = readRoleState().role || '我'; } catch {}
+          sendJson({
+            ok: true,
+            days,
+            universe: buildMemoryUniverse(profile, events, { now: Date.now(), maxStars, selfName }),
+          });
+          return;
+        }
+
         // 记忆星图：档案 + 最近事件流 → 节点/连线/结构诊断。
         // 纯规则构图（不调模型、不做 embedding），前端负责力导向排版。
         if (req.method === 'GET' && url.pathname === '/api/memory/graph') {
@@ -6434,6 +6450,42 @@ async function main() {
             audit: auditProfile(profile),
             archiveMonths: memoryStore.listArchiveMonths().length,
             recalls: memoryStore.readRecallLog({ limit: 12 }),
+            // 「今天」：面板最上面那一条——她今天过得怎么样、还欠着什么。
+            // 情绪不用模型，直接从今天的高分事件里挑带情绪词的句子（规则，零成本）。
+            today: (() => {
+              const d = new Date(nowMs);
+              const pad = (v) => String(v).padStart(2, '0');
+              const day = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+              const dayEvents = memoryStore.readEvents({ days: 1 }).filter((e) => {
+                const t = new Date(Number(e?.t) || 0);
+                return t.getFullYear() === d.getFullYear() && t.getMonth() === d.getMonth() && t.getDate() === d.getDate();
+              });
+              const summary = memoryStore.readDaySummary(day);
+              const moodRe = /(开心|高兴|难过|委屈|生气|难受|喜欢|讨厌|舍不得|怕|慌|紧张|兴奋|累|困|笑|哭|想你|想你|心疼|暖|热|冷|孤单|寂寞|骄傲|害羞|尴尬|郁闷|烦)/;
+              const moods = dayEvents
+                .filter((e) => Number(e.s) >= 2 && moodRe.test(String(e.text || '')))
+                .sort((a, b) => (Number(b.s) || 0) - (Number(a.s) || 0) || (Number(b.t) || 0) - (Number(a.t) || 0))
+                .slice(0, 3)
+                .map((e) => ({ text: String(e.text || '').slice(0, 80), at: Number(e.t) || 0, s: Number(e.s) || 1, who: String(e.who || '') }));
+              const openThreads = profile.threads
+                .filter((t) => t.state === 'open')
+                .sort((a, b) => (Number(b.lastMentionAt) || 0) - (Number(a.lastMentionAt) || 0))
+                .slice(0, 3)
+                .map((t) => ({
+                  text: String(t.text || ''),
+                  at: Number(t.lastMentionAt) || Number(t.createdAt) || 0,
+                  with: Array.isArray(t.with) ? t.with.map(String) : [],
+                }));
+              return {
+                day,
+                events: dayEvents.length,
+                s3: dayEvents.filter((e) => Number(e.s) >= 3).length,
+                // 日摘要的 lines 是 { t, s } 对象，只取文本给面板
+                summary: summary?.lines ? summary.lines.slice(0, 4).map((l) => String(l?.t ?? l?.text ?? '')).filter(Boolean) : [],
+                moods,
+                dueThreads: openThreads,
+              };
+            })(),
           });
           return;
         }

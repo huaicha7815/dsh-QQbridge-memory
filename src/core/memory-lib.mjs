@@ -1773,3 +1773,237 @@ export function describeProfile(profile) {
   const open = p.threads.filter((t) => t.state === 'open').length;
   return `人物档案 ${Object.keys(p.people).length} 人；未完结的线 ${open} 条；自我记录 ${p.self.length} 条`;
 }
+
+// ---------------------------------------------------------------------------
+// 记忆星云（V4.0）：把记忆画成一片宇宙——她自己是中心，延伸成星云，星云里是光点
+// ---------------------------------------------------------------------------
+// 和 buildMemoryGraph 的区别：那张图是「关系图」（谁连谁，用于诊断结构）；
+// 这一张是「记忆地图」（记忆分布在哪些主题上，用于找一句原话）。两者并存，各看各的。
+
+const SELF_CLOUD_LABELS = Object.freeze({
+  identity: '我是谁',
+  milestone: '走过的路',
+  like: '我喜欢',
+  feeling: '我的心事',
+  world: '我的世界',
+});
+
+/** 星云主题票选：TF-IDF 选词（簇内高频、跨簇少见），比单纯高频可靠得多。 */
+function pickCloudLabel(entries, clustersTexts, fallback) {
+  const tf = new Map();
+  for (const e of entries) {
+    for (const t of tokenize(e.text)) {
+      if (t.startsWith('#') || t.length < 2) continue;
+      tf.set(t, (tf.get(t) || 0) + 1);
+    }
+  }
+  let best = '';
+  let bestScore = 0;
+  const totalClusters = Math.max(1, clustersTexts.length);
+  for (const [t, n] of tf) {
+    let df = 0;
+    for (const other of clustersTexts) if (other.has(t)) df += 1;
+    const score = n * Math.log(1 + totalClusters / Math.max(1, df));
+    if (score > bestScore) { best = t; bestScore = score; }
+  }
+  if (!best) return String(fallback || '零散的光').slice(0, 8);
+  return best.slice(0, 8);
+}
+
+// 工具/占位消息：它们不是"记忆"，只是流程噪音，单独收一团，不参与主题聚类
+const TOOL_LIKE = /(正在|开始做|去找这首|下载|分离人声|伴奏|合成|稍等|处理中|^\[图片\]|^\[表情\]|^\[语音\]|^\[文件\]|^\[视频\])/;
+
+/**
+ * 构建「记忆星云」：
+ *   core      —— 她自己（中心）
+ *   clusters  —— 星云：她的一生各层 / 每个人 / 约定 / 事件主题簇
+ *   clusters[].stars —— 星云里的光点（一条记忆 = 一颗星）
+ *
+ * 位置不在这里算：前端按 clusterId 的 hash 决定星云在球面的方位，成员在星云内散布，
+ * 这样同样数据每次打开的宇宙形状一致（可做改前改后对比）。
+ *
+ * @param {object} profile 长期档案
+ * @param {Array} events 事件流（近 N 天，由调用方裁剪）
+ */
+export function buildMemoryUniverse(profile, events, { maxStars = 420, minTopicSize = 3, now = Date.now(), selfName = '我' } = {}) {
+  const p = ensureProfile(profile);
+  const clusters = [];
+  const push = (cluster) => { clusters.push(cluster); return cluster; };
+
+  const star = (text, meta = {}) => ({
+    id: String(meta.id || `s:${hash32(text)}`),
+    text: truncateChars(String(text || ''), 160),
+    at: Number(meta.at) || 0,
+    s: Number(meta.s) || 1,
+    who: String(meta.who || ''),
+    kind: String(meta.kind || 'event'),
+    type: String(meta.type || 'event'),
+    weight: Number(meta.weight) || 1,
+  });
+
+  // 1) 她的一生：五层各一团（空层不出现）
+  const groups = groupSelfNotes(p);
+  for (const [kind, list] of Object.entries(groups)) {
+    if (!list.length) continue;
+    push({
+      id: `self:${kind}`,
+      label: SELF_CLOUD_LABELS[kind] || kind,
+      kind: 'self',
+      sub: '她的一生',
+      stars: list.map((s) => star(s.text, { id: `self:${hash32(s.text)}`, at: s.at, s: 3, kind: 'self', type: 'self', weight: 2.4 })),
+    });
+  }
+
+  // 2) 她认识的人：每人一团（事实为星）
+  for (const [name, v] of Object.entries(p.people)) {
+    const facts = Array.isArray(v.facts) ? v.facts : [];
+    if (!facts.length) continue;
+    push({
+      id: `person:${name}`,
+      label: name,
+      kind: 'person',
+      sub: '她认识的人',
+      stars: facts.map((f) => star(f.text, { id: `person:${hash32(f.text)}`, at: f.confirmedAt || f.createdAt, s: 2, kind: 'person', type: 'fact', who: name, weight: 2 })),
+    });
+  }
+
+  // 3) 约定 / 线：一团（未完结的更亮）
+  if (p.threads.length) {
+    push({
+      id: 'threads',
+      label: '约定',
+      kind: 'thread',
+      sub: '她还记着的事',
+      stars: p.threads.map((t) => star(t.text, {
+        id: `thread:${hash32(t.text)}`,
+        at: t.lastMentionAt || t.createdAt,
+        s: t.state === 'open' ? 3 : 1,
+        kind: 'thread',
+        type: 'thread',
+        weight: t.state === 'open' ? 2.8 : 1.2,
+        who: (t.with || []).join('、'),
+      })),
+    });
+  }
+
+  // 4) 事件：先剔掉流程噪音，再按字面主题聚类（共享 bigram 的并查集），每个簇一团
+  const pool = [];
+  const toolPool = [];
+  const seen = new Set();
+  for (const e of Array.isArray(events) ? events : []) {
+    const text = String(e?.text ?? '').trim();
+    if (text.length < 3) continue;
+    const s = Number(e?.s) || 1;
+    const key = `${Number(e?.t) || 0}|${hash32(text)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const item = { text, at: Number(e?.t) || 0, s, who: String(e?.who || ''), key };
+    if (TOOL_LIKE.test(text)) toolPool.push(item);
+    else pool.push(item);
+  }
+  // 高分优先，其次新近：把最有记忆价值的光点点亮，剩下的不进来（不然一片糊）
+  pool.sort((a, b) => b.s - a.s || b.at - a.at);
+  const nowMs = Number(now) || Date.now();
+  let capped = pool.slice(0, Math.max(20, Number(maxStars) || 420));
+  // 太久远的事件别混进最近的宇宙
+  capped = capped.filter((e) => !e.at || nowMs - e.at < 1000 * 60 * 60 * 24 * 14);
+  const toks = capped.map((e) => ({ e, set: new Set(tokenize(e.text).filter((t) => !t.startsWith('#'))) }));
+  const parent = capped.map((_, i) => i);
+  const find = (x) => {
+    let r = x;
+    while (parent[r] !== r) r = parent[r];
+    while (parent[x] !== r) { const n = parent[x]; parent[x] = r; x = n; }
+    return r;
+  };
+  const union = (a, b) => { const ra = find(a); const rb = find(b); if (ra !== rb) parent[rb] = ra; };
+  for (let i = 0; i < toks.length; i += 1) {
+    const A = toks[i].set;
+    if (!A.size) continue;
+    for (let j = i + 1; j < toks.length; j += 1) {
+      const B = toks[j].set;
+      if (!B.size) continue;
+      let inter = 0;
+      const small = A.size <= B.size ? A : B;
+      const big = A.size <= B.size ? B : A;
+      for (const t of small) if (big.has(t)) inter += 1;
+      // 用「覆盖度」而不是 Jaccard：短句只有两三个 bigram，Jaccard 天然很低，
+      // 会导致满屏都是聚不成团的散星。
+      // 共享两个以上实词也算同主题：短句的覆盖率天然低，只看比例会把明显的同一件事拆散
+      if (inter >= 2 || inter / Math.min(A.size, B.size) >= 0.34) union(i, j);
+    }
+  }
+  const buckets = new Map();
+  for (let i = 0; i < toks.length; i += 1) {
+    const r = find(i);
+    if (!buckets.has(r)) buckets.set(r, []);
+    buckets.get(r).push(toks[i].e);
+  }
+  const topicBuckets = [...buckets.values()].sort((a, b) => b.length - a.length);
+  // 先算出所有候选簇的词表，供 TF-IDF 判断「这个词在这个簇里特别、在别处不常见」
+  const bigBuckets = topicBuckets.filter((b) => b.length >= Math.max(2, Number(minTopicSize) || 3));
+  const clustersTexts = bigBuckets.map((bucket) => {
+    const set = new Set();
+    for (const e of bucket) for (const t of tokenize(e.text)) if (!t.startsWith('#') && t.length >= 2) set.add(t);
+    return set;
+  });
+  const tiny = [];
+  let topicIndex = 0;
+  bigBuckets.forEach((bucket) => {
+    topicIndex += 1;
+    // 巨无霸团（几百条闲聊碎片）用「和谁的日常」当标签，比 TF-IDF 选出来的词自然
+    const whoCount = new Map();
+    for (const e of bucket) if (e.who) whoCount.set(e.who, (whoCount.get(e.who) || 0) + 1);
+    const topWho = [...whoCount.entries()].sort((a, b) => b[1] - a[1])[0];
+    const whoShare = topWho ? topWho[1] / bucket.length : 0;
+    const label = (bucket.length >= 100 && topWho && whoShare >= 0.3 && topWho[0].length <= 8 && !/[私聊群聊]/.test(topWho[0]))
+      ? `和${topWho[0]}的日常`
+      : pickCloudLabel(bucket, clustersTexts, bucket[0]?.text?.slice(0, 6));
+    push({
+      id: `topic:${topicIndex}`,
+      label,
+      kind: 'topic',
+      sub: '她经历的日子',
+      stars: bucket.map((e) => star(e.text, { id: `e:${e.key}`, at: e.at, s: e.s, who: e.who, kind: 'event', type: 'event', weight: 0.7 + e.s * 0.5 })),
+    });
+  });
+  for (const bucket of topicBuckets) {
+    if (bucket.length >= Math.max(2, Number(minTopicSize) || 3)) continue;
+    tiny.push(...bucket);
+  }
+  // 聚不成团的零散记录：当散星撒在整个宇宙里（参考图外围那些点），
+  // 它们真实存在、只是还没连成故事，不该被藏起来。
+  const scatter = tiny
+    .slice(0, 200)
+    .map((e) => star(e.text, { id: `e:${e.key}`, at: e.at, s: e.s, who: e.who, kind: 'event', type: 'event', weight: 0.45 }));
+  // 5) 流程噪音（找歌、下载、处理中）：收一处，不干扰主题
+  if (toolPool.length) {
+    push({
+      id: 'topic:tools',
+      label: '工具与日常',
+      kind: 'topic',
+      sub: '流程里的小事',
+      stars: toolPool.slice(0, 80).map((e) => star(e.text, { id: `e:${e.key}`, at: e.at, s: e.s, who: e.who, kind: 'event', type: 'event', weight: 0.35 })),
+    });
+  }
+
+  const totalStars = clusters.reduce((n, c) => n + c.stars.length, 0) + scatter.length;
+  return {
+    core: {
+      id: 'me',
+      label: truncateChars(String(selfName || '我'), 20),
+      selfTotal: p.self.length,
+      layers: Object.fromEntries(Object.entries(groups).map(([k, v]) => [k, v.length])),
+    },
+    clusters,
+    // 散星：还没连成团的原话，撒在宇宙外围
+    scatter,
+    stats: {
+      clusters: clusters.length,
+      stars: totalStars,
+      cloudStars: clusters.reduce((n, c) => n + c.stars.length, 0),
+      scatter: scatter.length,
+      coreMemory: p.self.length,
+      byKind: clusters.reduce((acc, c) => { acc[c.kind] = (acc[c.kind] || 0) + 1; return acc; }, {}),
+    },
+  };
+}

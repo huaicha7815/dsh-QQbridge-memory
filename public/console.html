@@ -1756,6 +1756,19 @@ button:active:not(:disabled) {
 .memory-recall { display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap }
 .memory-query { color:var(--text-strong, inherit) }
 
+/* 今天（记忆面板顶部） */
+.mem-today { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:10px; margin-top:14px }
+.today-card { padding:11px 13px; border:1px solid var(--border, rgba(128,128,128,.22)); border-radius:11px; background:var(--surface-soft, rgba(128,128,128,.05)) }
+.today-card h5 { margin:0 0 6px; font-size:11px; letter-spacing:.08em; color:var(--muted); font-weight:600; text-transform:none }
+.today-card .tc-main { font-size:13px; line-height:1.65; color:var(--text-strong, inherit) }
+.today-card .tc-sub { margin-top:5px; font-size:11px; color:var(--muted) }
+.today-card .tc-mood { padding:4px 0; font-size:12.5px; line-height:1.6; border-bottom:1px dashed var(--border, rgba(128,128,128,.16)) }
+.today-card .tc-mood:last-child { border-bottom:none }
+.today-card .tc-mood .meta { font-size:10.5px }
+.today-card .tc-thread { padding:4px 0; font-size:12.5px; line-height:1.6 }
+.today-card .tc-thread .memory-who { font-size:10.5px }
+.today-empty { font-size:11.5px; color:var(--muted) }
+
 /* 分层记忆面板（大层可收起，小层再分） */
 .mem-layer { margin-top:14px; border:1px solid var(--border, rgba(128,128,128,.22)); border-radius:12px; background:var(--surface-soft, rgba(128,128,128,.04)); overflow:hidden }
 .mem-layer > summary { cursor:pointer; padding:12px 16px; font-size:14px; list-style:none; display:flex; align-items:center; gap:8px; user-select:none }
@@ -1791,30 +1804,50 @@ button:active:not(:disabled) {
 .archive-event .ae-text { flex:1; word-break:break-word }
 .archive-hit { background:rgba(255,214,0,.35); border-radius:2px }
 
-/* 记忆星图 */
-#section-memory-graph .graph-wrap { position:relative; margin-top:12px; border:1px solid var(--border, rgba(128,128,128,.22)); border-radius:12px; overflow:hidden; background:#05070f }
+/* 记忆星图 · Atlas（深色宇宙 + 三栏） */
+#section-memory-graph { padding:0; overflow:hidden; background:#070b14 }
+#section-memory-graph .atlas { color:#c9d3e6 }
+.atlas-head { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; padding:16px 20px 12px; border-bottom:1px solid rgba(140,160,200,.14) }
+.atlas-kicker { font-size:10px; letter-spacing:.18em; color:#5f7397; text-transform:uppercase }
+.atlas-brand h2 { margin:4px 0 2px; font-size:20px; color:#e8eefb; letter-spacing:.02em }
+.atlas-brand .meta { font-size:12px; color:#8194b5 }
+.atlas-stats { display:flex; gap:26px; align-items:center; margin-top:6px }
+.atlas-stat { text-align:center; min-width:64px }
+.atlas-stat b { display:block; font-size:22px; line-height:1.15; color:#e8eefb; font-variant-numeric:tabular-nums }
+.atlas-stat span { font-size:10px; color:#6d82a4; letter-spacing:.06em }
+.atlas-actions { display:flex; gap:8px; margin-top:6px; flex-wrap:wrap }
+.atlas-actions button { background:rgba(90,140,255,.14); border:1px solid rgba(120,170,255,.28); color:#bcd0f5; padding:6px 12px; border-radius:8px; font-size:12px; cursor:pointer }
+.atlas-actions button:hover { background:rgba(90,140,255,.24) }
+.atlas-body { display:grid; grid-template-columns:212px minmax(0,1fr) 292px; gap:0; align-items:stretch }
+@media (max-width: 1180px) { .atlas-body { grid-template-columns:1fr } .atlas-left, .atlas-right { display:none } }
+.atlas-left { padding:16px 14px; border-right:1px solid rgba(140,160,200,.12); overflow:auto; max-height:760px }
+.atlas-caption { font-size:11px; line-height:1.7; color:#7f93b4 }
+.atlas-legend { display:flex; flex-direction:column; gap:7px; margin:14px 0 16px; font-size:11px; color:#8ea3c4 }
+.atlas-legend span { display:flex; align-items:center; gap:8px }
+.atlas-legend i { width:9px; height:9px; border-radius:50%; display:inline-block; flex:0 0 9px }
+.atlas-clouds { display:flex; flex-direction:column; gap:4px }
+.atlas-cloud-btn { display:flex; justify-content:space-between; gap:8px; width:100%; padding:5px 8px; border:1px solid transparent; border-radius:7px; background:transparent; color:#9db1d1; font-size:11.5px; cursor:pointer; text-align:left }
+.atlas-cloud-btn:hover { background:rgba(120,170,255,.10); border-color:rgba(120,170,255,.18) }
+.atlas-cloud-btn.active { background:rgba(120,170,255,.20); border-color:rgba(140,190,255,.4); color:#dce8ff }
+.atlas-cloud-btn em { font-style:normal; color:#61758f }
+.atlas-canvas-wrap { position:relative; min-height:700px; background:radial-gradient(ellipse at 50% 45%, #0c1322 0%, #05080f 70%) }
 #memoryGraphCanvas { display:block; width:100%; height:auto; cursor:grab; touch-action:none }
 #memoryGraphCanvas.dragging { cursor:grabbing }
-.graph-tooltip { position:absolute; max-width:320px; padding:8px 10px; border-radius:8px; background:var(--surface, #fff); color:var(--text, #222); border:1px solid var(--border, rgba(128,128,128,.3)); box-shadow:0 6px 22px rgba(0,0,0,.16); font-size:12px; line-height:1.55; pointer-events:none; z-index:5 }
-.graph-legend { display:flex; flex-wrap:wrap; gap:14px; margin-top:10px; font-size:11px; color:var(--muted) }
-.graph-legend span { display:inline-flex; align-items:center; gap:6px }
-.graph-legend .gl-dot { width:10px; height:10px; border-radius:50%; display:inline-block }
-.graph-legend .gl-dot[data-kind="me"] { background:#ffd166; box-shadow:0 0 6px #ffd166 }
-.graph-legend .gl-dot[data-kind="person"] { background:#4a7dff }
-.graph-legend .gl-dot[data-kind="thread"] { background:#f0a13c }
-.graph-legend .gl-dot[data-kind="self"] { background:#c86bff }
-.graph-legend .gl-dot[data-kind="event"] { background:#3fbf9a }
-.graph-legend .gl-line { width:18px; height:2px; border-radius:2px; display:inline-block }
-.graph-legend .gl-line[data-kind="entity"] { background:#f0a13c }
-.graph-legend .gl-line[data-kind="semantic"] { background:#4a7dff }
-.graph-legend .gl-line[data-kind="temporal"] { background:#3fbf9a }
-.graph-foot { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px }
-@media (max-width: 860px) { .graph-foot { grid-template-columns:1fr } }
-.graph-stats, .graph-detail { padding:10px 12px; border:1px solid var(--border, rgba(128,128,128,.22)); border-radius:10px; background:var(--surface-soft, rgba(128,128,128,.05)); font-size:12px; line-height:1.65; min-height:76px }
-.graph-detail b { color:var(--text-strong, inherit) }
-.graph-kv { display:flex; gap:6px; flex-wrap:wrap; margin-top:6px }
-.graph-kv span { padding:1px 7px; border-radius:6px; background:var(--accent-soft, rgba(80,120,255,.12)); font-size:11px }
-.graph-warn { color:var(--warn-fg-strong, #b45309) }
+.graph-tooltip { position:absolute; max-width:330px; padding:8px 11px; border-radius:8px; background:rgba(13,20,34,.96); color:#dbe6fa; border:1px solid rgba(120,170,255,.3); box-shadow:0 8px 26px rgba(0,0,0,.5); font-size:12px; line-height:1.6; pointer-events:none; z-index:5 }
+.atlas-right { padding:14px; border-left:1px solid rgba(140,160,200,.12); display:flex; flex-direction:column; gap:12px; max-height:760px; overflow:auto }
+.atlas-search input { width:100%; padding:8px 11px; border-radius:8px; border:1px solid rgba(120,170,255,.22); background:rgba(20,30,50,.7); color:#dbe6fa; font-size:12.5px }
+.atlas-search input::placeholder { color:#5f7397 }
+.atlas-search .meta { margin-top:5px; font-size:10.5px; color:#61758f }
+.atlas-detail { padding:12px; border-radius:10px; border:1px solid rgba(140,160,200,.16); background:rgba(20,30,50,.55); font-size:12px; line-height:1.7; color:#a9bbd8; min-height:96px }
+.atlas-detail .ad-quote { font-size:14px; line-height:1.75; color:#e8eefb; margin:6px 0 10px; padding-left:10px; border-left:2px solid rgba(120,170,255,.55) }
+.atlas-detail .ad-quote.empty { color:#61758f; font-size:12.5px; border-left-color:rgba(140,160,200,.25) }
+.atlas-detail .ad-rows { display:flex; flex-direction:column; gap:3px; font-size:11px; color:#8ea3c4 }
+.atlas-detail .ad-rows b { color:#c9d8f0; font-weight:600 }
+.atlas-detail .ad-cloud { display:inline-block; margin-top:8px; padding:1px 7px; border-radius:6px; background:rgba(120,170,255,.16); color:#9fc0ff; font-size:10.5px }
+.atlas-core { margin-top:auto }
+.atlas-core h4 { margin:0 0 6px; font-size:10.5px; letter-spacing:.12em; color:#5f7397; text-transform:uppercase }
+.atlas-core .ac-chips { display:flex; flex-wrap:wrap; gap:5px }
+.atlas-core .ac-chip { padding:3px 8px; border-radius:6px; background:rgba(255,209,102,.10); border:1px solid rgba(255,209,102,.22); color:#e6c877; font-size:10.5px }
 
 </style>
 </head>
@@ -2351,6 +2384,8 @@ button:active:not(:disabled) {
         <span class="meta" id="memoryMsg"></span>
       </div>
 
+      <div id="memoryToday" class="mem-today">（加载中…）</div>
+
       <details class="mem-layer" open>
         <summary><b>她的一生</b> <span class="meta" id="memSelfCount"></span></summary>
         <div id="memorySelfLayers" class="mem-sublayers">（加载中…）</div>
@@ -2394,40 +2429,40 @@ button:active:not(:disabled) {
         </div>
       </div>
     </section>
-<section id="section-memory-graph" data-page="memory-graph" class="card span-all">      <h2>记忆星图 <span class="meta" id="graphHint"></span></h2>
-      <div class="meta">她自己的记忆宇宙：<b>中间那颗金色的恒星是她</b>，周围是<b>她认识的人</b>、<b>她挂着的线</b>、<b>她的心事</b>和<b>值得记的事件</b>。连线有三种——实体（谁跟谁有关）、语义（说的是一类事）、时间（同一天连着发生）。<b>拖动旋转、滚轮缩放</b>，点一颗星看它是什么。它不参与检索，只帮你看清她的记忆长成了什么结构。</div>
-      <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:8px">
-        <button id="graphReload" class="small">刷新</button>
-        <button id="graphReset" class="small">复位视图</button>
-        <select id="graphDays" class="small" style="max-width:150px">
-          <option value="2">最近 2 天的事件</option>
-          <option value="5" selected>最近 5 天的事件</option>
-          <option value="10">最近 10 天的事件</option>
-          <option value="30">最近 30 天的事件</option>
-        </select>
-        <label class="meta" style="display:inline-flex;align-items:center;gap:4px"><input type="checkbox" data-graph-type="person" checked> 人物</label>
-        <label class="meta" style="display:inline-flex;align-items:center;gap:4px"><input type="checkbox" data-graph-type="thread" checked> 线</label>
-        <label class="meta" style="display:inline-flex;align-items:center;gap:4px"><input type="checkbox" data-graph-type="self" checked> 心事</label>
-        <label class="meta" style="display:inline-flex;align-items:center;gap:4px"><input type="checkbox" data-graph-type="event" checked> 事件</label>
-        <span class="meta" id="graphMsg"></span>
-      </div>
-      <div class="graph-legend">
-        <span><i class="gl-dot" data-kind="me"></i>她自己</span>
-        <span><i class="gl-dot" data-kind="person"></i>人物</span>
-        <span><i class="gl-dot" data-kind="thread"></i>线</span>
-        <span><i class="gl-dot" data-kind="self"></i>心事</span>
-        <span><i class="gl-dot" data-kind="event"></i>事件</span>
-        <span><i class="gl-line" data-kind="entity"></i>实体</span>
-        <span><i class="gl-line" data-kind="semantic"></i>语义</span>
-        <span><i class="gl-line" data-kind="temporal"></i>时间</span>
-      </div>
-      <div class="graph-wrap">
-        <canvas id="memoryGraphCanvas" width="1200" height="640" aria-label="记忆星图"></canvas>
-        <div id="graphTooltip" class="graph-tooltip" hidden></div>
-      </div>
-      <div class="graph-foot">
-        <div id="graphStats" class="graph-stats">（加载中…）</div>
-        <div id="graphDetail" class="graph-detail">点一个点，看它是什么。</div>
+<section id="section-memory-graph" data-page="memory-graph" class="card span-all">
+      <div class="atlas">
+        <div class="atlas-head">
+          <div class="atlas-brand">
+            <div class="atlas-kicker">MY MEMORY ATLAS / LIVE</div>
+            <h2>记忆星图</h2>
+            <div class="meta">那些留下来的光——把她记得的事，照亮一点。</div>
+          </div>
+          <div class="atlas-stats" id="atlasStats"></div>
+          <div class="atlas-actions">
+            <button id="graphPause" class="small">暂停旋转</button>
+            <button id="graphReset" class="small">重置视角</button>
+            <button id="graphReload" class="small">刷新数据</button>
+          </div>
+        </div>
+        <div class="atlas-body">
+          <aside class="atlas-left">
+            <div class="atlas-caption">中间金色那颗是<b>她自己</b>；周围一团团是她的<b>星云</b>（她的一生、她认识的人、约定、她经历的日子）；点开星云能看见里面的光点。蓝色是选中的记忆，白色是普通记录。</div>
+            <div class="atlas-legend" id="atlasLegend"></div>
+            <div class="atlas-clouds" id="atlasClouds"></div>
+          </aside>
+          <div class="atlas-canvas-wrap">
+            <canvas id="memoryGraphCanvas" width="1200" height="700" aria-label="记忆星图"></canvas>
+            <div id="graphTooltip" class="graph-tooltip" hidden></div>
+          </div>
+          <aside class="atlas-right">
+            <div class="atlas-search">
+              <input id="graphSearch" type="search" placeholder="找一句记得的话…" autocomplete="off">
+              <div class="meta">搜原话、人名，或一个词</div>
+            </div>
+            <div id="graphDetail" class="atlas-detail">点一颗星，看看她记得什么。</div>
+            <div class="atlas-core" id="atlasCore"></div>
+          </aside>
+        </div>
       </div>
     </section>
 <section id="section-slang" data-page="slang" class="card span-all">
@@ -5078,12 +5113,44 @@ function fmtAgo(ms) {
 function memoryMetric(label, value, hint) {
   return `<div class="metric"><span>${esc(label)}</span><strong>${esc(value)}</strong><small>${esc(hint)}</small></div>`;
 }
+function renderToday(today) {
+  const box = document.getElementById('memoryToday');
+  if (!box) return;
+  if (!today) { box.innerHTML = ''; return; }
+  const moods = Array.isArray(today.moods) ? today.moods : [];
+  const threads = Array.isArray(today.dueThreads) ? today.dueThreads : [];
+  const summary = Array.isArray(today.summary) ? today.summary : [];
+  const cards = [];
+  cards.push(`<div class="today-card"><h5>今天 · ${esc(today.day || '')}</h5>`
+    + `<div class="tc-main">她收到 <b>${today.events || 0}</b> 条话，其中 <b>${today.s3 || 0}</b> 条值得记。</div>`
+    + `<div class="tc-sub">日子会进事件流；值得记的会进长期档案。</div></div>`);
+  cards.push(`<div class="today-card"><h5>今天的情绪</h5>`
+    + (moods.length
+      ? moods.map((m) => `<div class="tc-mood">${esc(String(m.text || '').slice(0, 60))}<span class="meta"> · S${m.s || 1}</span></div>`).join('')
+      : '<div class="today-empty">今天没有特别的心绪，平静的一天。</div>')
+    + `</div>`);
+  cards.push(`<div class="today-card"><h5>她还欠着的</h5>`
+    + (threads.length
+      ? threads.map((t) => `<div class="tc-thread">${t.with?.length ? `<span class="memory-who">${esc(t.with.join('、'))}</span>` : ''}${esc(String(t.text || '').slice(0, 44))}<span class="meta"> · ${esc(fmtAgo(t.at))}</span></div>`).join('')
+      : '<div class="today-empty">没有约定，她今天不欠谁什么。</div>')
+    + `</div>`);
+  cards.push(`<div class="today-card"><h5>今天的日摘要</h5>`
+    + (summary.length
+      ? summary.map((s) => `<div class="tc-mood">${esc(String(s).slice(0, 68))}</div>`).join('')
+      : '<div class="today-empty">今天的摘要还没生成（日终归纳会写）。</div>')
+    + `</div>`);
+  box.innerHTML = cards.join('');
+}
+
 function renderMemoryPanel(data) {
   const st = data.stats || {};
   const cfg = st.config || {};
   const tiers = Array.isArray(st.tiers) ? st.tiers : [0, 0, 0, 0];
   const total = Number(st.events) || 0;
   const pct = (n) => (total ? `${Math.round((n / total) * 100)}%` : '0%');
+
+  // ── 今天：她今天过得怎么样、还欠着什么 ──
+  renderToday(data.today || null);
 
   document.getElementById('memorySummary').innerHTML = [
     memoryMetric('事件流（永久）', `${total} 条`, `覆盖 ${st.eventDays || 0} 天 · ${st.firstDay || '—'} ~ ${st.lastDay || '—'}`),
@@ -5328,515 +5395,516 @@ document.getElementById('archiveSearch')?.addEventListener('input', (ev) => {
   renderArchiveEvents();
 });
 
-// ── 记忆星图（3D 宇宙）：确定性力导向 + Canvas 透视投影 ──
-// 布局必须稳定：同样的数据每次打开形状一样，才能拿它做「改之前 / 改之后」的对比。
-// 所以初始位置由节点 seed（FNV-1a 哈希）决定，力导向迭代固定次数，不用随机数。
-// 三维只是给人「宇宙感」：她的一生在中间，人和事像星星一样围着她转。
-const GRAPH_NODE_COLORS = { me: '#ffd166', person: '#4a7dff', thread: '#f0a13c', self: '#c86bff', event: '#3fbf9a' };
-const GRAPH_EDGE_COLORS = { entity: '#f0a13c', semantic: '#4a7dff', temporal: '#3fbf9a' };
-const GRAPH_TYPE_LABEL = { me: '她自己', person: '人物', thread: '线', self: '心事', event: '事件' };
-const GRAPH_KIND_LABEL = { entity: '实体', semantic: '语义', temporal: '时间' };
-const graphState = {
-  graph: null,
-  nodes: [],
-  edges: [],
+// ── 记忆星图 · Atlas：星云宇宙（她自己是中心） ──
+// 拓扑：她（核心恒星）→ 星云（她的一生 / 她认识的人 / 约定 / 她经历的日子）→ 星云里的光点（一句原话）
+// 交互：拖动旋转、滚轮缩放、点星云聚焦、点光点看原文、搜索高亮、悬停气泡。
+// 位置由 id 的 FNV-1a 哈希确定性生成：同样数据每次打开宇宙形状一致，能直接对比改前改后。
+const ATLAS_COLORS = { self: '#ffd166', person: '#5b9dff', thread: '#f0a13c', topic: '#57d6b0' };
+const ATLAS_GROUPS = { self: '她的一生', person: '她认识的人', thread: '约定', topic: '她经历的日子' };
+const ATLAS_LAYERS = { identity: '我是谁', milestone: '走过的路', like: '我喜欢', feeling: '我的心事', world: '我的世界' };
+const atlas = {
+  universe: null,
+  clusters: [],
+  scatter: [],
+  stars: [],
   byId: new Map(),
-  // 3D 相机：yaw/pitch 旋转，zoom 缩放，camZ 透视距离
-  yaw: -0.35,
-  pitch: 0.28,
-  zoom: 1,
-  camZ: 760,
-  hoverId: null,
-  activeId: null,
+  cam: { yaw: -0.42, pitch: 0.22, zoom: 0.92, camZ: 980 },
+  hover: null,
+  active: null,
+  focus: null,
+  keyword: '',
+  spinning: true,
   dragging: false,
   moved: false,
   lastX: 0,
   lastY: 0,
   W: 1200,
-  H: 640,
-  autoSpin: true,
+  H: 700,
+  starsBg: null,
   raf: 0,
 };
 
-/** 世界坐标 → 屏幕坐标（透视投影）。返回 depth 用于排序与雾化。 */
-function graphProject(n) {
-  // 她永远在画面正中：无论力导向算出什么，宇宙的中心不该漂走
-  if (n.type === 'me') {
-    return { x: graphState.W / 2, y: graphState.H / 2, depth: 0, persp: 1 };
+function atlasHash(text) {
+  let h = 0x811c9dc5;
+  const s = String(text ?? '');
+  for (let i = 0; i < s.length; i += 1) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
   }
-  const cy = Math.cos(graphState.yaw);
-  const sy = Math.sin(graphState.yaw);
-  const cp = Math.cos(graphState.pitch);
-  const sp = Math.sin(graphState.pitch);
-  const x1 = n.x * cy - n.z * sy;
-  const z1 = n.x * sy + n.z * cy;
-  const y1 = n.y * cp - z1 * sp;
-  const z2 = n.y * sp + z1 * cp;
-  const persp = graphState.camZ / Math.max(120, graphState.camZ - z2);
+  return h >>> 0;
+}
+
+/** 确定性伪随机（同样种子永远同样的序列）。 */
+function atlasRand(seed) {
+  let s = seed >>> 0;
+  return () => {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
+
+/** 把星云摆到球面上：大的星云靠内，小的在外围。 */
+function atlasBuildPositions(u) {
+  const clusters = (u.clusters || []).map((c, i) => {
+    const h = atlasHash(c.id);
+    const t = (i + 0.5) / Math.max(1, (u.clusters || []).length);
+    const phi = Math.acos(1 - 2 * t);
+    const theta = i * 2.399963229728653 + 0.6; // 黄金角：14 个星云均匀铺满整个球面
+    const R = 560 - Math.min(230, Math.sqrt(c.stars.length) * 11) + (h % 70);
+    const cx = Math.sin(phi) * Math.cos(theta) * R;
+    const cy = Math.cos(phi) * R * 0.88;
+    const cz = Math.sin(phi) * Math.sin(theta) * R;
+    const rad = 18 + Math.sqrt(c.stars.length) * 5.2;
+    const stars = c.stars.map((s) => {
+      const rnd = atlasRand(atlasHash(s.id) ^ h);
+      const a = rnd() * Math.PI * 2;
+      const b = Math.acos(2 * rnd() - 1);
+      const r = rad * Math.cbrt(rnd());
+      return {
+        ...s,
+        x: cx + Math.sin(b) * Math.cos(a) * r,
+        y: cy + Math.cos(b) * r,
+        z: cz + Math.sin(b) * Math.sin(a) * r,
+        cloud: c.id,
+        cloudLabel: c.label,
+        color: ATLAS_COLORS[c.kind] || '#9fb4d8',
+      };
+    });
+    return { ...c, cx, cy, cz, radius: rad, stars };
+  });
+  // 散星：撒在外层球壳，像参考图外围那些孤独的小白点
+  const scatter = (u.scatter || []).map((s) => {
+    const rnd = atlasRand(atlasHash(s.id));
+    const R = 500 + rnd() * 280;
+    const a = rnd() * Math.PI * 2;
+    const b = Math.acos(2 * rnd() - 1);
+    return {
+      ...s,
+      x: Math.sin(b) * Math.cos(a) * R,
+      y: Math.cos(b) * R * 0.88,
+      z: Math.sin(b) * Math.sin(a) * R,
+      cloud: null,
+      cloudLabel: '',
+      color: '#8ea8cc',
+    };
+  });
+  return { clusters, scatter };
+}
+
+function atlasProject(p) {
+  const cy = Math.cos(atlas.cam.yaw);
+  const sy = Math.sin(atlas.cam.yaw);
+  const cp = Math.cos(atlas.cam.pitch);
+  const sp = Math.sin(atlas.cam.pitch);
+  const x1 = p.x * cy - p.z * sy;
+  const z1 = p.x * sy + p.z * cy;
+  const y1 = p.y * cp - z1 * sp;
+  const z2 = p.y * sp + z1 * cp;
+  const persp = atlas.cam.camZ / Math.max(160, atlas.cam.camZ - z2);
   return {
-    x: graphState.W / 2 + x1 * persp * graphState.zoom,
-    y: graphState.H / 2 + y1 * persp * graphState.zoom,
+    x: atlas.W / 2 + x1 * persp * atlas.cam.zoom,
+    y: atlas.H / 2 + y1 * persp * atlas.cam.zoom,
     depth: z2,
     persp,
   };
 }
 
-function graphFit() {
-  const nodes = graphState.nodes.filter((n) => !n.hidden);
-  if (!nodes.length) { graphState.zoom = 1; return; }
-  let maxR = 1;
-  for (const n of nodes) {
-    const r = Math.sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
-    if (r > maxR) maxR = r;
-  }
-  // 让整张图刚好落在画布内（留一圈边）
-  const fit = Math.min(graphState.W, graphState.H) * 0.46;
-  graphState.zoom = Math.max(0.75, Math.min(2.2, fit / maxR));
+/** 核心恒星（她自己）永远在正中。 */
+function atlasCorePoint() {
+  return { x: atlas.W / 2, y: atlas.H / 2, depth: 0, persp: 1 };
 }
 
-function graphLayout() {
-  const nodes = graphState.nodes.filter((n) => !n.hidden);
-  const visible = new Set(nodes.map((n) => n.id));
-  const edges = graphState.edges.filter((e) => visible.has(e.source) && visible.has(e.target));
-  // 初始位置：球面均匀分布（phi 用黄金角，避免聚集在两极）+ seed 抖动
-  for (const n of graphState.nodes) {
-    if (n._seeded) continue;
-    const seed = n.seed >>> 0;
-    const i = (seed % 100003);
-    const phi = Math.acos(1 - 2 * ((i % 4096) + 0.5) / 4096);
-    const theta = i * 2.399963229728653;
-    const r = 140 + (((seed >>> 12) % 997) / 997) * 180;
-    n.x = Math.sin(phi) * Math.cos(theta) * r;
-    n.y = Math.cos(phi) * r * 0.8;
-    n.z = Math.sin(phi) * Math.sin(theta) * r;
-    n.vx = 0;
-    n.vy = 0;
-    n.vz = 0;
-    n._seeded = true;
-  }
-  const REPULSE = 92000;
-  const SPRING = 0.014;
-  const LEN = 92;
-  const CENTER = 0.003;
-  const meNode = nodes.find((n) => n.type === 'me');
-  for (let it = 0; it < 320; it += 1) {
-    for (let i = 0; i < nodes.length; i += 1) {
-      const a = nodes[i];
-      for (let j = i + 1; j < nodes.length; j += 1) {
-        const b = nodes[j];
-        let dx = a.x - b.x;
-        let dy = a.y - b.y;
-        let dz = a.z - b.z;
-        let d2 = dx * dx + dy * dy + dz * dz;
-        if (d2 < 100) { d2 = 100; dx += (i - j) * 0.6 || 0.6; dy += 0.4; dz += 0.3; }
-        const d = Math.sqrt(d2);
-        const f = REPULSE / d2;
-        a.vx += (dx / d) * f;
-        a.vy += (dy / d) * f;
-        a.vz += (dz / d) * f;
-        b.vx -= (dx / d) * f;
-        b.vy -= (dy / d) * f;
-        b.vz -= (dz / d) * f;
-      }
-    }
-    for (const e of edges) {
-      const a = graphState.byId.get(e.source);
-      const b = graphState.byId.get(e.target);
-      if (!a || !b) continue;
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const dz = b.z - a.z;
-      const d = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
-      // 和她相连的边更长一些：她应该是宇宙中心，其它星围着转而不是压在她身上
-      const starLen = (a.type === 'me' || b.type === 'me') ? 2.1 : 1;
-      const target = LEN * (1.5 - Math.min(1, e.weight)) * starLen;
-      const f = (d - target) * SPRING;
-      a.vx += (dx / d) * f;
-      a.vy += (dy / d) * f;
-      a.vz += (dz / d) * f;
-      b.vx -= (dx / d) * f;
-      b.vy -= (dy / d) * f;
-      b.vz -= (dz / d) * f;
-    }
-    for (const n of nodes) {
-      if (n.type === 'me') {
-        // 她永远精确在原点：不参与漂移，只作为引力源
-        n.x = 0;
-        n.y = 0;
-        n.z = 0;
-        n.vx = 0;
-        n.vy = 0;
-        n.vz = 0;
-        continue;
-      }
-      n.vx -= n.x * CENTER;
-      n.vy -= n.y * CENTER;
-      n.vz -= n.z * CENTER;
-      n.x += n.vx;
-      n.y += n.vy;
-      n.z += n.vz;
-      n.vx *= 0.84;
-      n.vy *= 0.84;
-      n.vz *= 0.84;
-    }
-  }
-  if (meNode) {
-    // 双保险：迭代结束后把她摆回正中央
-    for (const n of nodes) {
-      if (n.type === 'me') continue;
-      n.x -= meNode.x;
-      n.y -= meNode.y;
-      n.z -= meNode.z;
-    }
-    meNode.x = 0;
-    meNode.y = 0;
-    meNode.z = 0;
-  }
-}
-
-/** 背景星尘：确定性生成（不用随机数），旋转时有轻微视差，像真的宇宙。 */
-function graphStars() {
-  if (graphState._stars) return graphState._stars;
+function atlasBackgroundStars() {
+  if (atlas.starsBg) return atlas.starsBg;
   const out = [];
-  let seed = 20261028;
-  const rnd = () => {
-    seed = (seed * 1664525 + 1013904223) >>> 0;
-    return seed / 4294967296;
-  };
-  for (let i = 0; i < 150; i += 1) {
-    out.push({ x: rnd(), y: rnd(), r: 0.3 + rnd() * 0.9, a: 0.10 + rnd() * 0.35, d: 0.3 + rnd() * 0.7 });
+  const rnd = atlasRand(0x9e3779b9);
+  for (let i = 0; i < 260; i += 1) {
+    out.push({ x: rnd(), y: rnd(), r: 0.3 + rnd() * 0.9, a: 0.08 + rnd() * 0.4, d: 0.4 + rnd() * 0.8 });
   }
-  graphState._stars = out;
+  atlas.starsBg = out;
   return out;
 }
 
-function graphDraw() {
+function atlasDraw() {
   const canvas = document.getElementById('memoryGraphCanvas');
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
   const dpr = Math.min(2, window.devicePixelRatio || 1);
-  if (canvas.width !== Math.round(graphState.W * dpr)) {
-    canvas.width = Math.round(graphState.W * dpr);
-    canvas.height = Math.round(graphState.H * dpr);
+  if (canvas.width !== Math.round(atlas.W * dpr)) {
+    canvas.width = Math.round(atlas.W * dpr);
+    canvas.height = Math.round(atlas.H * dpr);
   }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, graphState.W, graphState.H);
+  ctx.clearRect(0, 0, atlas.W, atlas.H);
 
-  // 深色宇宙底 + 星尘
-  const bg = ctx.createRadialGradient(graphState.W / 2, graphState.H / 2, 40, graphState.W / 2, graphState.H / 2, Math.max(graphState.W, graphState.H) * 0.72);
-  bg.addColorStop(0, '#0b1020');
-  bg.addColorStop(1, '#05070f');
+  // 宇宙底
+  const bg = ctx.createRadialGradient(atlas.W / 2, atlas.H * 0.46, 30, atlas.W / 2, atlas.H * 0.5, Math.max(atlas.W, atlas.H) * 0.72);
+  bg.addColorStop(0, '#0b1220');
+  bg.addColorStop(0.55, '#070c16');
+  bg.addColorStop(1, '#04060c');
   ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, graphState.W, graphState.H);
-  const spin = graphState.yaw * 0.35;
-  for (const s of graphStars()) {
-    const x = ((s.x + spin * s.d) % 1 + 1) % 1 * graphState.W;
-    const y = s.y * graphState.H;
+  ctx.fillRect(0, 0, atlas.W, atlas.H);
+  // 背景星尘（随旋转轻微漂移，制造视差）
+  const spin = atlas.cam.yaw * 0.4;
+  for (const s of atlasBackgroundStars()) {
+    const x = ((s.x + spin * s.d) % 1 + 1) % 1 * atlas.W;
     ctx.globalAlpha = s.a;
-    ctx.fillStyle = '#ffffff';
+    ctx.fillStyle = '#dfe9ff';
     ctx.beginPath();
-    ctx.arc(x, y, s.r, 0, Math.PI * 2);
+    ctx.arc(x, s.y * atlas.H, s.r, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.globalAlpha = 1;
 
-  const visible = new Set(graphState.nodes.filter((n) => !n.hidden).map((n) => n.id));
-  const edges = graphState.edges.filter((e) => visible.has(e.source) && visible.has(e.target));
-  const focusId = graphState.hoverId || graphState.activeId;
-  const neighbor = new Set();
-  if (focusId) {
-    neighbor.add(focusId);
-    for (const e of edges) {
-      if (e.source === focusId) neighbor.add(e.target);
-      if (e.target === focusId) neighbor.add(e.source);
-    }
-  }
-  const proj = new Map();
-  for (const n of graphState.nodes) {
-    if (n.hidden) continue;
-    proj.set(n.id, graphProject(n));
-  }
+  const focusId = atlas.focus;
+  const kw = atlas.keyword.toLowerCase();
+  const isMatch = (star) => !kw || String(star.text || '').toLowerCase().includes(kw) || String(star.cloudLabel || '').toLowerCase().includes(kw);
+  const dimAll = kw || focusId;
+  atlas._labelPos = [];
 
-  // 连线：先画远端的，近端的后画（伪深度）
-  const edgeList = edges
-    .map((e) => {
-      const pa = proj.get(e.source);
-      const pb = proj.get(e.target);
-      return pa && pb ? { e, pa, pb, depth: (pa.depth + pb.depth) / 2 } : null;
-    })
-    .filter(Boolean)
-    .sort((a, b) => a.depth - b.depth);
-  for (const { e, pa, pb, depth } of edgeList) {
-    const dim = focusId && !(neighbor.has(e.source) && neighbor.has(e.target));
-    // 越远越暗：远处的星连着的光也该更弱
-    const fog = Math.max(0.18, Math.min(1, (graphState.camZ * 0.55 + depth) / (graphState.camZ * 0.9)));
-    ctx.globalAlpha = dim ? 0.05 : (0.18 + Math.min(0.5, e.weight * 0.6)) * fog;
-    ctx.strokeStyle = GRAPH_EDGE_COLORS[e.kind] || '#999';
-    ctx.lineWidth = 0.6 + Math.min(1.4, e.weight * 1.6);
+  // 星云中心的光团（先画远的）
+  const clouds = atlas.clusters
+    .map((c) => ({ c, p: atlasProject({ x: c.cx, y: c.cy, z: c.cz }) }))
+    .sort((a, b) => a.p.depth - b.p.depth);
+  for (const { c, p } of clouds) {
+    const color = ATLAS_COLORS[c.kind] || '#9fb4d8';
+    const fog = Math.max(0.25, Math.min(1, (atlas.cam.camZ * 0.55 + p.depth) / (atlas.cam.camZ * 0.95)));
+    const active = !dimAll || focusId === c.id;
+    const r = Math.max(17, c.radius * p.persp * atlas.cam.zoom * 0.48);
+    ctx.globalAlpha = active ? 0.6 * fog : 0.08;
+    const glow = ctx.createRadialGradient(p.x, p.y, 2, p.x, p.y, r * 1.9);
+    glow.addColorStop(0, `${color}55`);
+    glow.addColorStop(1, `${color}00`);
+    ctx.fillStyle = glow;
     ctx.beginPath();
-    ctx.moveTo(pa.x, pa.y);
-    ctx.lineTo(pb.x, pb.y);
-    ctx.stroke();
+    ctx.arc(p.x, p.y, r * 1.9, 0, Math.PI * 2);
+    ctx.fill();
+    // 星云标签（带半透明胶囊底，星点再多也读得清）
+    const tooClose = atlas._labelPos.some((q) => Math.hypot(q.x - p.x, q.y - p.y) < 52);
+    if (active && !tooClose) {
+      ctx.globalAlpha = Math.min(1, fog + 0.2);
+      ctx.font = `${focusId === c.id ? 12.5 : 11}px system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      const tw = ctx.measureText(c.label).width;
+      const ty = p.y - r * 0.95 - 20;
+      ctx.fillStyle = 'rgba(5,9,16,.78)';
+      if (ctx.roundRect) {
+        ctx.beginPath();
+        ctx.roundRect(p.x - tw / 2 - 7, ty - 11, tw + 14, 17, 8);
+        ctx.fill();
+      }
+      ctx.fillStyle = color;
+      ctx.fillText(c.label, p.x, ty + 1);
+      atlas._labelPos.push({ x: p.x, y: ty });
+    }
   }
   ctx.globalAlpha = 1;
 
-  // 节点：按深度排序（远的先画），她自己永远最后画（压在所有星上面）
-  const nodeList = graphState.nodes
-    .filter((n) => !n.hidden && proj.has(n.id))
-    .map((n) => ({ n, p: proj.get(n.id) }))
-    .sort((a, b) => a.p.depth - b.p.depth);
-  nodeList.sort((a, b) => (a.n.type === 'me' ? 1 : 0) - (b.n.type === 'me' ? 1 : 0));
-  for (const { n, p } of nodeList) {
-    const dim = focusId && !neighbor.has(n.id);
-    const isMe = n.type === 'me';
-    const fog = isMe ? 1 : Math.max(0.22, Math.min(1, (graphState.camZ * 0.5 + p.depth) / (graphState.camZ * 0.85)));
-    const base = isMe ? 26 : 7 + Math.min(10, n.degree * 1.15);
-    const r = Math.max(2, base * p.persp * Math.min(1.6, graphState.zoom));
-    const color = GRAPH_NODE_COLORS[n.type] || '#999';
-    ctx.globalAlpha = dim ? 0.12 : fog;
+  // 散星（外围的小白点）
+  for (const s of atlas.scatter) {
+    const p = atlasProject(s);
+    const fog = Math.max(0.12, Math.min(1, (atlas.cam.camZ * 0.5 + p.depth) / (atlas.cam.camZ * 0.9)));
+    const hit = !dimAll || isMatch(s);
+    ctx.globalAlpha = hit ? 0.32 + fog * 0.46 + s.s * 0.06 : 0.04;
+    ctx.fillStyle = hit && s.s >= 3 ? '#cfe0ff' : '#9db3d4';
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, Math.max(0.7, (0.9 + s.s * 0.35) * p.persp * Math.min(1.4, atlas.cam.zoom)), 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
 
-    // 发光：她本人最亮，其次是枢纽
-    if (!dim && (isMe || n.degree >= 3)) {
-      const glow = ctx.createRadialGradient(p.x, p.y, r * 0.4, p.x, p.y, r * (isMe ? 3.4 : 2.4));
-      glow.addColorStop(0, `${color}${isMe ? 'aa' : '66'}`);
-      glow.addColorStop(1, `${color}00`);
+  // 光点：按深度排序，同星云同色
+  const stars = atlas.stars
+    .map((s) => ({ s, p: atlasProject(s) }))
+    .sort((a, b) => a.p.depth - b.p.depth);
+  for (const { s, p } of stars) {
+    const fog = Math.max(0.16, Math.min(1, (atlas.cam.camZ * 0.5 + p.depth) / (atlas.cam.camZ * 0.92)));
+    const hit = isMatch(s);
+    const inFocus = !focusId || s.cloud === focusId;
+    const isActive = atlas.active && atlas.active.id === s.id;
+    const isHover = atlas.hover && atlas.hover.id === s.id;
+    let alpha = inFocus ? 0.5 + fog * 0.45 : 0.07;
+    if (dimAll) alpha = hit && inFocus ? 1 : 0.06;
+    ctx.globalAlpha = isActive || isHover ? 1 : alpha;
+    ctx.fillStyle = isActive ? '#8fc0ff' : (hit || !dimAll ? s.color : '#6f86a8');
+    const r = Math.max(0.9, (1.0 + s.weight * 0.95) * p.persp * Math.min(1.4, atlas.cam.zoom));
+    // 高权重/选中/悬停的点加一圈光晕
+    if ((isActive || isHover || s.weight >= 2.2) && (inFocus || !focusId)) {
+      const glow = ctx.createRadialGradient(p.x, p.y, r * 0.3, p.x, p.y, r * 3);
+      glow.addColorStop(0, `${isActive ? '#8fc0ff' : s.color}88`);
+      glow.addColorStop(1, `${isActive ? '#8fc0ff' : s.color}00`);
       ctx.fillStyle = glow;
       ctx.beginPath();
-      ctx.arc(p.x, p.y, r * (isMe ? 3.4 : 2.4), 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, r * 3, 0, Math.PI * 2);
       ctx.fill();
+      ctx.fillStyle = isActive ? '#8fc0ff' : s.color;
     }
-    ctx.fillStyle = color;
     ctx.beginPath();
     ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
     ctx.fill();
-    if (isMe) {
-      // 她是一颗恒星：加一圈光晕与十字星芒
-      ctx.strokeStyle = 'rgba(255,209,102,.75)';
-      ctx.lineWidth = 1.2;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, r * 1.75, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.strokeStyle = 'rgba(255,209,102,.28)';
-      ctx.beginPath();
-      ctx.moveTo(p.x - r * 2.8, p.y);
-      ctx.lineTo(p.x + r * 2.8, p.y);
-      ctx.moveTo(p.x, p.y - r * 2.8);
-      ctx.lineTo(p.x, p.y + r * 2.8);
-      ctx.stroke();
-    }
-    if (focusId === n.id) {
-      ctx.strokeStyle = '#fff';
-      ctx.lineWidth = 1.6;
-      ctx.stroke();
-    }
-    // 标签：她自己、人物、以及足够近的枢纽
-    const showLabel = isMe || n.type === 'person' || (n.degree >= 2 && graphState.zoom > 0.9 && p.persp > 0.85);
-    if (showLabel) {
-      ctx.globalAlpha = dim ? 0.15 : Math.min(1, fog + 0.25);
-      ctx.fillStyle = isMe ? 'rgba(255,222,150,.95)' : 'rgba(198,208,228,.9)';
-      ctx.font = `${isMe ? 13 : 11}px system-ui, sans-serif`;
-      ctx.textAlign = 'center';
-      const label = n.label.length > 12 ? `${n.label.slice(0, 12)}…` : n.label;
-      ctx.fillText(label, p.x, p.y + r + 13);
-    }
   }
   ctx.globalAlpha = 1;
+
+  // 她自己：中心恒星（always on top）
+  const me = atlasCorePoint();
+  const pulse = 1 + Math.sin(Date.now() / 1400) * 0.06;
+  const coreR = 18 * pulse;
+  const halo = ctx.createRadialGradient(me.x, me.y, coreR * 0.2, me.x, me.y, coreR * 5.2);
+  halo.addColorStop(0, 'rgba(255,214,120,.55)');
+  halo.addColorStop(0.35, 'rgba(255,190,90,.18)');
+  halo.addColorStop(1, 'rgba(255,190,90,0)');
+  ctx.fillStyle = halo;
+  ctx.beginPath();
+  ctx.arc(me.x, me.y, coreR * 5.2, 0, Math.PI * 2);
+  ctx.fill();
+  // 五层光晕环（她的一生五层化作不同颜色的细环）
+  const layerColors = ['#ffd166', '#7fd4ff', '#ff9ecb', '#c8a4ff', '#9ff5c8'];
+  for (let i = 0; i < layerColors.length; i += 1) {
+    ctx.strokeStyle = `${layerColors[i]}${i === 0 ? 'aa' : '55'}`;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(me.x, me.y, coreR * (1.35 + i * 0.52), 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  // 星芒
+  ctx.strokeStyle = 'rgba(255,214,120,.5)';
+  ctx.lineWidth = 1.3;
+  ctx.beginPath();
+  ctx.moveTo(me.x - coreR * 3.6, me.y);
+  ctx.lineTo(me.x + coreR * 3.6, me.y);
+  ctx.moveTo(me.x, me.y - coreR * 3.6);
+  ctx.lineTo(me.x, me.y + coreR * 3.6);
+  ctx.stroke();
+  ctx.fillStyle = '#ffe6a8';
+  ctx.beginPath();
+  ctx.arc(me.x, me.y, coreR, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#fff6dc';
+  ctx.font = '13px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(atlas.universe?.core?.label || '我', me.x, me.y + coreR + 22);
 }
 
-function graphPick(clientX, clientY) {
+function atlasRenderStats(u) {
+  const s = u.stats || {};
+  const box = document.getElementById('atlasStats');
+  if (!box) return;
+  box.innerHTML = [
+    `<div class="atlas-stat"><b>${s.stars || 0}</b><span>真实记录光点</span></div>`,
+    `<div class="atlas-stat"><b>${s.clusters || 0}</b><span>记忆星云</span></div>`,
+    `<div class="atlas-stat"><b>${s.coreMemory || 0}</b><span>她自己的一生</span></div>`,
+  ].join('');
+}
+
+function atlasRenderLeft(u) {
+  const legend = document.getElementById('atlasLegend');
+  if (legend) {
+    legend.innerHTML = [
+      `<span><i style="background:#ffd166;box-shadow:0 0 6px #ffd166"></i>她自己（核心）</span>`,
+      `<span><i style="background:${ATLAS_COLORS.self}"></i>她的一生</span>`,
+      `<span><i style="background:${ATLAS_COLORS.person}"></i>她认识的人</span>`,
+      `<span><i style="background:${ATLAS_COLORS.thread}"></i>约定</span>`,
+      `<span><i style="background:${ATLAS_COLORS.topic}"></i>她经历的日子</span>`,
+      `<span><i style="background:#9db3d4"></i>散星（还没连成故事）</span>`,
+    ].join('');
+  }
+  const clouds = document.getElementById('atlasClouds');
+  if (!clouds) return;
+  clouds.innerHTML = atlas.clusters.map((c) => {
+    const color = ATLAS_COLORS[c.kind] || '#9fb4d8';
+    return `<button class="atlas-cloud-btn ${atlas.focus === c.id ? 'active' : ''}" data-cloud="${esc(c.id)}"><span><i style="display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;background:${color}"></i>${esc(c.label)}</span><em>${c.stars.length}</em></button>`;
+  }).join('');
+  clouds.querySelectorAll('[data-cloud]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      atlas.focus = atlas.focus === btn.dataset.cloud ? null : btn.dataset.cloud;
+      atlasRenderLeft(atlas.universe);
+      atlasDraw();
+    });
+  });
+}
+
+function atlasRenderCore(u) {
+  const box = document.getElementById('atlasCore');
+  if (!box) return;
+  const layers = u?.core?.layers || {};
+  const chips = Object.entries(ATLAS_LAYERS).map(([k, label]) => `<span class="ac-chip">${esc(label)} ${Number(layers[k]) || 0}</span>`).join('');
+  box.innerHTML = `<h4>她自己（记忆的核心）</h4><div class="ac-chips">${chips}</div>`;
+}
+
+function atlasKindText(s) {
+  if (s.type === 'self') return '她自己的一生';
+  if (s.type === 'fact') return '她记住的一个人';
+  if (s.type === 'thread') return '她在意的事';
+  return '她经历过的日子';
+}
+
+function atlasRenderDetail(star) {
+  const box = document.getElementById('graphDetail');
+  if (!box) return;
+  if (!star) {
+    box.innerHTML = '点一颗星，看看她记得什么。';
+    return;
+  }
+  const when = star.at ? new Date(star.at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '没记时间';
+  const strength = Math.min(100, Math.round((Number(star.s) || 1) / 3 * 100));
+  const rows = [
+    `<div><b>重要度</b> ${strength}%</div>`,
+    `<div><b>时间</b> ${esc(when)}</div>`,
+    `<div><b>类型</b> ${esc(atlasKindText(star))}</div>`,
+    star.who ? `<div><b>来源</b> ${esc(star.who)}</div>` : '',
+  ].filter(Boolean).join('');
+  box.innerHTML = `<div class="ad-quote">「${esc(String(star.text || ''))}」</div><div class="ad-rows">${rows}</div>`
+    + (star.cloudLabel ? `<span class="ad-cloud">${esc(star.cloudLabel)}</span>` : '<span class="ad-cloud">散星 · 还没连成故事</span>');
+}
+
+function atlasPick(clientX, clientY) {
   const canvas = document.getElementById('memoryGraphCanvas');
+  if (!canvas) return null;
   const rect = canvas.getBoundingClientRect();
-  const sx = ((clientX - rect.left) / rect.width) * graphState.W;
-  const sy = ((clientY - rect.top) / rect.height) * graphState.H;
+  const sx = ((clientX - rect.left) / rect.width) * atlas.W;
+  const sy = ((clientY - rect.top) / rect.height) * atlas.H;
   let best = null;
-  let bestD = Infinity;
-  for (const n of graphState.nodes) {
-    if (n.hidden) continue;
-    const proj = graphProject(n);
-    const r = (n.type === 'me' ? 14 : 6 + Math.min(10, n.degree)) * proj.persp * Math.min(1.5, graphState.zoom);
-    const d = Math.hypot(proj.x - sx, proj.y - sy);
-    // 近处的点优先（透视下的「前面那个」才该被点到）
-    const score = d - proj.persp * 2;
-    if (d <= r + 6 && score < bestD) { best = n; bestD = score; }
+  let bestScore = Infinity;
+  for (const s of atlas.stars) {
+    const p = atlasProject(s);
+    const r = (2.5 + s.weight * 1.4) * p.persp * Math.min(1.5, atlas.cam.zoom) + 4;
+    const d = Math.hypot(p.x - sx, p.y - sy);
+    if (d <= r && d - p.persp * 3 < bestScore) { best = s; bestScore = d - p.persp * 3; }
   }
   return best;
 }
 
-function graphTooltipHtml(n) {
-  const m = n.meta || {};
-  const lines = [`<b>${esc(n.label)}</b>`, `<span class="meta">${GRAPH_TYPE_LABEL[n.type] || n.type} · 连接 ${n.degree}</span>`];
-  if (n.type === 'person') lines.push(`<span class="meta">${m.facts || 0} 条事实 · 聊过 ${m.count || 0} 次</span>`);
-  if (n.type === 'thread') lines.push(`<span class="meta">${m.state === 'done' ? '已了结' : '未完结'}${m.with?.length ? ' · ' + esc(m.with.join('、')) : ''}</span>`);
-  if (n.type === 'event') lines.push(`<span class="meta">${esc(m.who || '（没记发送者）')} · 重要度 S${m.s || 1}</span>`);
-  return lines.join('<br>');
-}
-
-function graphShowTip(html, clientX, clientY) {
+function atlasShowTip(html, clientX, clientY) {
   const tip = document.getElementById('graphTooltip');
-  const wrap = tip.parentElement.getBoundingClientRect();
+  if (!tip) return;
   tip.innerHTML = html;
   tip.hidden = false;
+  const wrap = tip.parentElement.getBoundingClientRect();
   const x = Math.min(clientX - wrap.left + 14, wrap.width - tip.offsetWidth - 8);
   const y = Math.max(6, clientY - wrap.top - tip.offsetHeight - 10);
   tip.style.left = `${Math.max(6, x)}px`;
   tip.style.top = `${y}px`;
 }
 
-function graphDetailHtml(n) {
-  if (!n) return '点一个点，看它是什么。';
-  const m = n.meta || {};
-  const head = `<b>${esc(n.label)}</b> <span class="meta">（${GRAPH_TYPE_LABEL[n.type] || n.type} · 连接 ${n.degree}）</span>`;
-  const tags = [];
-  if (n.type === 'person') tags.push(`${m.facts || 0} 条事实`, `聊过 ${m.count || 0} 次`, m.lastSeen ? `最近 ${fmtDay(m.lastSeen)}` : '');
-  if (n.type === 'thread') tags.push(m.state === 'done' ? '已了结' : '未完结', m.with?.length ? `和 ${esc(m.with.join('、'))}` : '', m.at ? fmtDay(m.at) : '');
-  if (n.type === 'event') tags.push(esc(m.who || '没记发送者'), `S${m.s || 1}`, m.at ? new Date(m.at).toLocaleString('zh-CN') : '');
-  if (n.type === 'self') tags.push(m.at ? `记于 ${fmtDay(m.at)}` : '');
-  const links = graphState.edges
-    .filter((e) => e.source === n.id || e.target === n.id)
-    .sort((a, b) => b.weight - a.weight)
-    .slice(0, 6)
-    .map((e) => {
-      const other = graphState.byId.get(e.source === n.id ? e.target : e.source);
-      return other && !other.hidden ? `「${esc(other.label.slice(0, 18))}」<span class="meta">${GRAPH_KIND_LABEL[e.kind]}</span>` : '';
-    })
-    .filter(Boolean);
-  return `${head}<div class="graph-kv">${tags.filter(Boolean).map((t) => `<span>${t}</span>`).join('')}</div>`
-    + (links.length ? `<div class="meta" style="margin-top:6px">连着：${links.join('、')}</div>` : '<div class="meta" style="margin-top:6px">没有连线——它悬在记忆外面。</div>');
-}
-
-function renderGraphStats(stats) {
-  const box = document.getElementById('graphStats');
-  if (!box || !stats) return;
-  const parts = [
-    `点 <b>${stats.nodes}</b> · 连 <b>${stats.edges}</b>（实体 ${stats.byKind.entity} / 语义 ${stats.byKind.semantic} / 时间 ${stats.byKind.temporal}）`,
-    `簇 <b>${stats.clusters}</b> · 悬空点 <b>${stats.isolated.length}</b>`,
-  ];
-  if (stats.hubs.length) parts.push(`最中心的点：${stats.hubs.map((h) => `${esc(h.label.slice(0, 12))}(${h.degree})`).join('、')}`);
-  const warns = [];
-  if (stats.isolated.length > stats.nodes * 0.4) warns.push('过半的点没有连线：说明这些记忆还没跟任何东西挂上钩（或事件流的发送者字段缺失）。');
-  if (stats.hubs.length && stats.hubs[0].degree > stats.nodes * 0.45) warns.push(`「${esc(stats.hubs[0].label.slice(0, 12))}」连了一半以上的点，可能是个噪声枢纽。`);
-  if (stats.clusters > stats.nodes * 0.6) warns.push('簇太多、几乎每个点各成一簇：记忆之间缺少语义关联。');
-  box.innerHTML = parts.join('<br>') + (warns.length ? `<div class="graph-warn" style="margin-top:6px">${warns.map((w) => `· ${w}`).join('<br>')}</div>` : '');
-}
-
-function graphRebuildVisible() {
-  const types = new Set();
-  document.querySelectorAll('[data-graph-type]').forEach((el) => { if (el.checked) types.add(el.dataset.graphType); });
-  // 「她自己」是宇宙的中心，不受类型筛选影响：任何视角下她都应该在
-  for (const n of graphState.nodes) n.hidden = n.type === 'me' ? false : !types.has(n.type);
-  graphFit();
-  graphDraw();
-}
-
 async function loadMemoryGraph() {
-  const msg = document.getElementById('graphMsg');
-  if (!msg) return;
-  msg.textContent = '加载中…';
-  msg.className = 'meta';
+  const canvas = document.getElementById('memoryGraphCanvas');
+  if (!canvas) return;
   try {
-    const days = Number(document.getElementById('graphDays')?.value) || 5;
-    const r = await api(`/api/memory/graph?days=${days}`);
+    const r = await api('/api/memory/universe?days=7&maxStars=420');
     if (!r || !r.ok) throw new Error((r && r.error) || '加载失败');
-    const g = r.graph || { nodes: [], edges: [], stats: null };
-    graphState.graph = g;
-    graphState.nodes = (g.nodes || []).map((n) => ({ ...n }));
-    graphState.edges = (g.edges || []).map((e) => ({ ...e }));
-    graphState.byId = new Map(graphState.nodes.map((n) => [n.id, n]));
-    graphState.hoverId = null;
-    graphState.activeId = null;
-    document.getElementById('graphHint').textContent = `最近 ${r.days || days} 天的事件`;
-    graphLayout();
-    graphRebuildVisible();
-    renderGraphStats(g.stats);
-    document.getElementById('graphDetail').innerHTML = '点一个点，看它是什么。';
-    msg.textContent = `已更新 · ${g.stats?.nodes || 0} 个点 / ${g.stats?.edges || 0} 条连线`;
-    msg.className = 'meta ok';
+    const u = r.universe || { clusters: [], scatter: [], stats: {} };
+    atlas.universe = u;
+    const built = atlasBuildPositions(u);
+    atlas.clusters = built.clusters;
+    atlas.scatter = built.scatter;
+    atlas.stars = [...built.clusters.flatMap((c) => c.stars), ...built.scatter];
+    atlas.byId = new Map(atlas.stars.map((s) => [s.id, s]));
+    atlas.hover = null;
+    atlas.active = null;
+    atlas.focus = null;
+    atlas.keyword = '';
+    const search = document.getElementById('graphSearch');
+    if (search) search.value = '';
+    atlasRenderStats(u);
+    atlasRenderLeft(u);
+    atlasRenderCore(u);
+    atlasRenderDetail(null);
+    atlasDraw();
   } catch (e) {
-    msg.textContent = '加载失败：' + ((e && e.message) || e);
-    msg.className = 'meta err';
+    const box = document.getElementById('graphDetail');
+    if (box) box.innerHTML = `加载失败：${esc((e && e.message) || e)}`;
   }
 }
 
-function graphBindEvents() {
+function atlasBindEvents() {
   const canvas = document.getElementById('memoryGraphCanvas');
   if (!canvas) return;
   canvas.addEventListener('wheel', (ev) => {
     ev.preventDefault();
-    const factor = ev.deltaY < 0 ? 1.1 : 1 / 1.1;
-    graphState.zoom = Math.min(4, Math.max(0.15, graphState.zoom * factor));
-    graphDraw();
+    atlas.cam.zoom = Math.min(4.2, Math.max(0.2, atlas.cam.zoom * (ev.deltaY < 0 ? 1.1 : 1 / 1.1)));
+    atlasDraw();
   }, { passive: false });
-
   canvas.addEventListener('pointerdown', (ev) => {
-    graphState.dragging = true;
-    graphState.moved = false;
-    graphState.lastX = ev.clientX;
-    graphState.lastY = ev.clientY;
+    atlas.dragging = true;
+    atlas.moved = false;
+    atlas.lastX = ev.clientX;
+    atlas.lastY = ev.clientY;
     canvas.classList.add('dragging');
     canvas.setPointerCapture?.(ev.pointerId);
   });
   canvas.addEventListener('pointermove', (ev) => {
-    if (graphState.dragging) {
-      const dx = ev.clientX - graphState.lastX;
-      const dy = ev.clientY - graphState.lastY;
-      if (Math.abs(dx) + Math.abs(dy) > 2) graphState.moved = true;
-      graphState.lastX = ev.clientX;
-      graphState.lastY = ev.clientY;
-      // 拖拽 = 转宇宙，不是平移画面
-      graphState.yaw += dx * 0.006;
-      graphState.pitch = Math.max(-1.25, Math.min(1.25, graphState.pitch + dy * 0.005));
-      graphDraw();
+    if (atlas.dragging) {
+      const dx = ev.clientX - atlas.lastX;
+      const dy = ev.clientY - atlas.lastY;
+      if (Math.abs(dx) + Math.abs(dy) > 2) atlas.moved = true;
+      atlas.lastX = ev.clientX;
+      atlas.lastY = ev.clientY;
+      atlas.cam.yaw += dx * 0.0055;
+      atlas.cam.pitch = Math.max(-1.3, Math.min(1.3, atlas.cam.pitch + dy * 0.0045));
+      atlasDraw();
       return;
     }
-    const hit = graphPick(ev.clientX, ev.clientY);
-    const next = hit ? hit.id : null;
-    if (next !== graphState.hoverId) {
-      graphState.hoverId = next;
-      graphDraw();
+    const hit = atlasPick(ev.clientX, ev.clientY);
+    if ((hit ? hit.id : null) !== (atlas.hover ? atlas.hover.id : null)) {
+      atlas.hover = hit;
+      atlasDraw();
     }
     if (hit) {
-      graphShowTip(graphTooltipHtml(hit), ev.clientX, ev.clientY);
+      atlasShowTip(`<b>${esc(String(hit.text || '').slice(0, 90))}</b>`, ev.clientX, ev.clientY);
       canvas.style.cursor = 'pointer';
     } else {
-      document.getElementById('graphTooltip').hidden = true;
+      const tip = document.getElementById('graphTooltip');
+      if (tip) tip.hidden = true;
       canvas.style.cursor = '';
     }
   });
   canvas.addEventListener('pointerup', (ev) => {
-    graphState.dragging = false;
+    atlas.dragging = false;
     canvas.classList.remove('dragging');
-    if (graphState.moved) return;
-    const hit = graphPick(ev.clientX, ev.clientY);
-    graphState.activeId = hit ? hit.id : null;
-    document.getElementById('graphDetail').innerHTML = graphDetailHtml(hit);
-    graphDraw();
+    if (atlas.moved) return;
+    const hit = atlasPick(ev.clientX, ev.clientY);
+    atlas.active = hit;
+    atlasRenderDetail(hit);
+    atlasDraw();
   });
   canvas.addEventListener('pointerleave', () => {
-    graphState.hoverId = null;
-    document.getElementById('graphTooltip').hidden = true;
-    graphDraw();
+    atlas.hover = null;
+    const tip = document.getElementById('graphTooltip');
+    if (tip) tip.hidden = true;
+    atlasDraw();
   });
-  document.querySelectorAll('[data-graph-type]').forEach((el) => el.addEventListener('change', graphRebuildVisible));
-  document.getElementById('graphDays')?.addEventListener('change', loadMemoryGraph);
+  document.getElementById('graphSearch')?.addEventListener('input', (ev) => {
+    atlas.keyword = String(ev.target.value || '').trim();
+    atlasDraw();
+  });
   document.getElementById('graphReset')?.addEventListener('click', () => {
-    graphState.yaw = -0.35;
-    graphState.pitch = 0.28;
-    graphState.zoom = 1;
-    graphFit();
-    graphDraw();
+    atlas.cam.yaw = -0.42;
+    atlas.cam.pitch = 0.22;
+    atlas.cam.zoom = 0.92;
+    atlas.focus = null;
+    atlas.keyword = '';
+    const search = document.getElementById('graphSearch');
+    if (search) search.value = '';
+    atlasRenderLeft(atlas.universe);
+    atlasDraw();
+  });
+  document.getElementById('graphPause')?.addEventListener('click', (ev) => {
+    atlas.spinning = !atlas.spinning;
+    ev.currentTarget.textContent = atlas.spinning ? '暂停旋转' : '继续旋转';
   });
   document.getElementById('graphReload')?.addEventListener('click', loadMemoryGraph);
-  // 自动缓慢巡航：宇宙不该是静止的。鼠标悬停时暂停，方便看细节。
+  // 自动巡航：宇宙不该静止。悬停/拖拽/搜索时停住，方便看细节。
   const tick = () => {
-    if (!document.hidden && !graphState.dragging && !graphState.hoverId && graphState.nodes.length) {
-      graphState.yaw += 0.0016;
-      graphDraw();
+    if (!document.hidden && atlas.spinning && !atlas.dragging && !atlas.hover && atlas.stars.length) {
+      atlas.cam.yaw += 0.0012;
+      atlasDraw();
     }
-    graphState.raf = requestAnimationFrame(tick);
+    atlas.raf = requestAnimationFrame(tick);
   };
-  if (!graphState.raf) graphState.raf = requestAnimationFrame(tick);
+  if (!atlas.raf) atlas.raf = requestAnimationFrame(tick);
 }
-graphBindEvents();
+atlasBindEvents();
+
 </script>
 </body>
 </html>

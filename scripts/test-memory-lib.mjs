@@ -27,6 +27,7 @@ import {
   mergeSelfNote,
   mergeThread,
   buildMemoryGraph,
+  buildMemoryUniverse,
   groupSelfNotes,
   normalizeMemoryConfig,
   normalizePersonName,
@@ -1129,4 +1130,47 @@ test('她自己的一生：self 带分类，旧字符串自动迁移', () => {
   assert.ok(big.self.length <= PROFILE_LIMITS.maxSelfNotes, '总量仍受上限约束');
   assert.ok(big.self.some((s) => s.text === '我叫林梧'), '身份不能被挤掉');
   assert.ok(big.self.some((s) => s.text === '第一次学会唱《雨爱》'), '里程碑不能被挤掉');
+});
+
+
+test('记忆星云：她自己是核心，星云分层、光点唯一、散星兜底', () => {
+  const p = ensureProfile({
+    people: { 爸爸: { facts: [{ text: '姓林', createdAt: NOW, confirmedAt: NOW, count: 1 }], count: 1, lastSeen: NOW } },
+    threads: [{ text: '答应教我唱《雨爱》', with: ['爸爸'], state: 'open', createdAt: NOW, lastMentionAt: NOW }],
+    self: [
+      { text: '我叫林梧', kind: 'identity', at: NOW },
+      { text: '第一次自己唱完一首歌', kind: 'milestone', at: NOW },
+    ],
+  });
+  const events = [
+    { t: NOW - 500, k: 'g:1', kind: 'msg', who: '阿明', text: '周末去吃那家新开的火锅店吧', s: 2 },
+    { t: NOW - 400, k: 'g:1', kind: 'msg', who: '阿明', text: '周末去吃那家火锅店，我请客', s: 2 },
+    { t: NOW - 350, k: 'g:1', kind: 'msg', who: '阿明', text: '去吃火锅之前先定个位子', s: 2 },
+    { t: NOW - 300, k: 'g:1', kind: 'msg', who: '阿明', text: '我换了新键盘', s: 1 },
+    { t: NOW - 200, k: 'g:1', kind: 'msg', who: '', text: '正在分离人声和伴奏...', s: 1 },
+  ];
+  const u = buildMemoryUniverse(p, events, { now: NOW, selfName: '鱼鱼' });
+  assert.equal(u.core.label, '鱼鱼');
+  assert.equal(u.stats.byKind.self, 2, '她的一生两层各一团');
+  assert.equal(u.stats.byKind.person, 1);
+  assert.equal(u.stats.byKind.thread, 1);
+  const tools = u.clusters.find((c) => c.label === '工具与日常');
+  assert.ok(tools, '流程噪音单独一团');
+  assert.equal(tools.stars.length, 1);
+  const hg = u.clusters.find((c) => c.stars.some((s) => s.text.includes('火锅')));
+  assert.ok(hg, '火锅那两条聚成一团');
+  assert.equal(hg.stars.filter((s) => s.text.includes('火锅')).length, 3, '同一件事的三句都归进同一团');
+  const ids = u.clusters.flatMap((c) => c.stars.map((s) => s.id));
+  assert.equal(new Set(ids).size, ids.length, '光点 id 不能重复');
+  const u2 = buildMemoryUniverse(p, events, { now: NOW, selfName: '鱼鱼' });
+  assert.deepEqual(u2.clusters.map((c) => [c.id, c.stars.length]), u.clusters.map((c) => [c.id, c.stars.length]));
+  assert.deepEqual(u2.scatter.map((s) => s.id), u.scatter.map((s) => s.id));
+});
+
+test('记忆星云：没有事件时也不崩（空宇宙只有她自己）', () => {
+  const u = buildMemoryUniverse(ensureProfile(null), [], { now: NOW });
+  assert.equal(u.stats.stars, 0);
+  assert.equal(u.stats.clusters, 0);
+  assert.deepEqual(u.scatter, []);
+  assert.ok(u.core && u.core.id === 'me');
 });
