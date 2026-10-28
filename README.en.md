@@ -39,6 +39,12 @@ Retrieval uses **BM25 + per-tier time decay + memory heat + same-day/same-person
 - Closing a thread (`threadDone`) also closes every open thread about the same topic and records which sentence closed it — so she can no longer believe she still owes something she already delivered;
 - A person written with a parenthetical note (`爸爸（凉州词）`) is merged back into one profile instead of splitting into two.
 
+**Daily consolidation (V3.7)** — fact-checking used to depend on her remembering to run it, and after writing an emotional diary entry she rarely had the energy to audit the profile. It is now an independent task at 23:10 that does exactly three things: correct a wrong fact, record something new that is worth keeping, and close a thread that actually finished.
+
+Every write from this task must carry an **evidence** snippet copied verbatim from that day's records. Before saving, a gate verifies the evidence really occurred — at least 50% of its two-character words must appear in the day's source text — otherwise the write is rejected (HTTP 400, `evidence-not-in-sources`). This is the part that matters: a model-invented correction is worse than no correction, because she will later speak from that wrong fact. Writes that carry no evidence (the diary hint, or a `remember` call from chat) go through the old path unchanged — the gate only guards the automated flow.
+
+The task costs one extra model call per day. It can be turned off with `socialV2.memoryRefine.enabled: false`; V3.6's self-repair and the injection-side consistency filter keep working without it.
+
 She also has four memory tools: `qq_memory_search` (recall), `qq_memory_remember` (write; supports `correct` for fixing a wrong fact),
 `qq_memory_profile` (read the whole profile), `qq_memory_inspect` (self-inspection: what do I remember, and what will be injected next).
 The console's **"Her Memory"** page shows scale, salience tiers, profile, recent recalls and the consistency audit on one screen.

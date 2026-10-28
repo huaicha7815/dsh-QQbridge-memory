@@ -104,10 +104,14 @@
       <p>每次唤醒只注入 ≤1000 字符（≈700 token）。三年后仍然是 1000 字符。</p></div>
     <div class="card"><span class="ico">🔍</span><h3>她自己会查</h3>
       <p>给她 <code>qq_memory_search</code> 等工具，并在提示里说清「什么时候该查、查不到别编」。</p></div>
-    <div class="card"><span class="ico">✂️</span><h3>能纠错</h3>
-      <p>发现档案记错了可以说 <code>kind:"correct"</code> 替换旧事实，旧文本留档可追溯。</p></div>
+    <div class="card"><span class="ico">✂️</span><h3>能纠错，且有证据闸门</h3>
+      <p>用 <code>kind:"correct"</code> 替换旧事实，旧文本留档可追溯；日终归纳的写入必须附当天原文出处，
+        核对不过（二字词覆盖 &lt; 50%）直接拒绝落盘。</p></div>
+    <div class="card"><span class="ico">🩹</span><h3>档案会自愈</h3>
+      <p>同一件事换了三种说法？靠「专名槽 + 实词锚点」判为一条；<code>done</code> 一次收尾清掉所有同名未完结；
+        同人不同名自动归并。</p></div>
     <div class="card"><span class="ico">🩺</span><h3>能自省</h3>
-      <p><code>npm run memory-health</code> 看规模、分档、检索质量，并给出可执行建议。</p></div>
+      <p><code>npm run memory-health</code> 看规模、分档、检索质量、档案自检，并给出可执行建议。</p></div>
   </div>
 </section>
 
@@ -126,8 +130,9 @@
       <small>只处理「已经走完」的周和月，跨周期去重。</small>
       <span class="tag">粗粒度</span></div>
     <div class="layer"><b>L3 档案</b>
-      <small>人物事实（带确认时间与纠错历史）、未完结的线、她自己的心事。</small>
-      <span class="tag">有上限 · 可替换</span></div>
+      <small>人物事实（带确认时间与纠错历史）、未完结的线、她自己的心事。写入时做「同一件事」判重，
+        了结时一次收掉所有同名 open 线，注入侧再过滤掉已经还完的债。</small>
+      <span class="tag">有上限 · 可自愈</span></div>
     <div class="layer"><b>L4 注入</b>
       <small>四块预算：线 22% / 人 22% / 检索 36% / 热话题 20%，硬上限 1000 字符，外面套 &lt;memory-context&gt;。</small>
       <span class="tag">恒定</span></div>
@@ -152,9 +157,31 @@
 <span class="k">const</span> query = memoryQueryV3(state);        <span class="c">// 自动带上活跃发言人</span>
 <span class="k">const</span> hits  = store.<span class="s">search</span>(query, { topK: 6, days: 60 });
 <span class="c">// BM25 打分 × 分档时间衰减 × 热度(对数) × 回音降权</span>
-<span class="c">// → 同日/同人去重 → 同人关键事件扩散 → 记录命中热度</span>
+<span class="c">// → 同日同人去重 → 同人关键事件扩散 → 记录命中热度</span>
 <span class="k">const</span> block = <span class="s">buildInjection</span>({ profile, hits, hot, query, budgetChars: 1000 });
 <span class="c">// → XML 边界 + 防注入声明 + 四块预算，超了就从低优先级截断</span></code></pre>
+
+  <h3 style="margin:34px 0 10px">档案怎么保持自洽</h3>
+  <p style="color:var(--dim); max-width:780px; margin-bottom:14px">
+    长期档案最怕的不是「记不住」，是「记错还不知道」。所以除了写入时判重，还有两道自动核对。
+  </p>
+  <table>
+    <tr><th>问题</th><th>解法</th></tr>
+    <tr><td>同一件事换了三种说法，成了三条线</td>
+        <td><b>专名槽 + 实词锚点</b>判同一件事：书名号/引号里的专名不变，换句式也能认出来；
+            专名冲突是硬否决，宁可两条都不合并</td></tr>
+    <tr><td>债已经还完了，档案还挂着「欠着」</td>
+        <td>一次 <code>done</code> 收尾会扫掉所有同专名的 open 线，记下 <code>resolvedBy</code> 可追溯；
+            注入侧再过滤「比了结时间更早」的 open 线兜底</td></tr>
+    <tr><td>同一个人两份档案（<code>爸爸</code> / <code>爸爸（凉州词）</code>）</td>
+        <td>剥掉备注后完全同名才归并，<b>不做模糊匹配</b>——宁可不合，也不能张冠李戴</td></tr>
+    <tr><td>日终归纳时模型编造事实</td>
+        <td><b>证据闸门</b>：写入必须附当天原文出处，二字词覆盖率 ≥ 50% 才落盘，否则 400 拒绝</td></tr>
+  </table>
+  <pre style="margin-top:18px"><code><span class="c"># 档案体检：同人合并 / 重复线合并 / done 收尾（先预览）</span>
+npm run memory-repair
+<span class="c"># 确认没问题再写回（自动备份 profile.json.bak-&lt;时间戳&gt;）</span>
+node scripts/repair-memory-profile.mjs --apply</code></pre>
 </section>
 
 <section id="start">
