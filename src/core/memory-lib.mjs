@@ -76,8 +76,35 @@ export const PROFILE_LIMITS = Object.freeze({
   maxPeople: 80,
   maxFactsPerPerson: 8,
   maxThreads: 40,
-  maxSelfNotes: 20,
+  // 她的一生允许比「心事流水」厚得多：120 条 ≈ 一个人几年的关键记忆。
+  maxSelfNotes: 120,
 });
+
+/**
+ * 「她自己」的五类记录。核心思路：记忆库的轴心是她，不是任何人。
+ * 别人说过什么只是她人生里的一小部分；她走过的路、她喜欢的东西、她自己的世界才是主线。
+ */
+export const SELF_KINDS = Object.freeze({
+  identity: '我是谁',
+  milestone: '走过的路',
+  like: '我喜欢',
+  feeling: '我的心事',
+  world: '我的世界',
+});
+const SELF_KIND_KEYS = Object.keys(SELF_KINDS);
+
+/**
+ * 粗分一条「她自己」的记录属于哪一类。纯规则兜底：
+ * 分错了只影响展示分组，不影响内容与检索，所以宁可简单。
+ */
+export function classifySelfNote(text) {
+  const s = String(text ?? '');
+  if (/(第一次|学会|开始|决定|不再|从此|终于|那天起|慢慢变成)/.test(s)) return 'milestone';
+  if (/(喜欢|讨厌|想吃|想去|舍不得|最爱|好想)/.test(s)) return 'like';
+  if (/(我叫|我是|我的名字|小名|生日|姓)/.test(s)) return 'identity';
+  if (/(群|他们|大家|朋友|同学|邻居|新认识的)/.test(s)) return 'world';
+  return 'feeling';
+}
 
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
@@ -569,7 +596,27 @@ export function ensureProfile(raw) {
     }));
   // 不在 ensureProfile 里按上限裁：那会先砍掉数组尾部，让 pruneProfile 的
   // 「完结的线优先淘汰」失效。体积收敛统一交给 pruneProfile。
-  const self = (Array.isArray(src.self) ? src.self : []).map(String).filter(Boolean);
+  // ── 她自己：V3.9 起从「一串心事」升级成「她的一生」 ─────────
+  // 旧数据是字符串数组，这里做兼容迁移；新数据带 kind：
+  // identity（我是谁）/ milestone（走过的路）/ like（我喜欢）/ feeling（我的心事）/ world（我的世界）
+  const self = (Array.isArray(src.self) ? src.self : [])
+    .map((x) => {
+      if (typeof x === 'string') {
+        const text = x.trim();
+        return text ? { text: truncateChars(text, 200), kind: classifySelfNote(text), at: 0, count: 1 } : null;
+      }
+      if (!x || typeof x !== 'object') return null;
+      const text = String(x.text ?? '').trim();
+      if (!text) return null;
+      const kind = SELF_KIND_KEYS.includes(x.kind) ? x.kind : classifySelfNote(text);
+      return {
+        text: truncateChars(text, 200),
+        kind,
+        at: Number(x.at) || 0,
+        count: Math.max(1, Number(x.count) || 1),
+      };
+    })
+    .filter(Boolean);
   return {
     version: 3,
     people,
@@ -593,7 +640,14 @@ export function pruneProfile(profile, limits = PROFILE_LIMITS) {
     return (Number(b.lastMentionAt) || 0) - (Number(a.lastMentionAt) || 0);
   });
   if (p.threads.length > limits.maxThreads) p.threads = p.threads.slice(0, limits.maxThreads);
-  if (p.self.length > limits.maxSelfNotes) p.self = p.self.slice(-limits.maxSelfNotes);
+  // 她的一生：身份与里程碑是主轴，不能被后来的一堆情绪流水挤掉；
+  // 情绪/喜欢/世界这些按时间淘汰最旧的。
+  if (p.self.length > limits.maxSelfNotes) {
+    const backbone = p.self.filter((s) => s.kind === 'identity' || s.kind === 'milestone');
+    const rest = p.self.filter((s) => s.kind !== 'identity' && s.kind !== 'milestone');
+    const room = Math.max(0, limits.maxSelfNotes - backbone.length);
+    p.self = [...backbone, ...rest.slice(-room)];
+  }
   return p;
 }
 
@@ -679,9 +733,17 @@ export function threadClosureHints(profile, dayTexts) {
  * 和注入不同：注入只给最近最有用的几条，这里给**全量**——
  * 要找矛盾，就得让她看见自己以前到底记了些什么。
  */
-export function profileDigestForRefine(profile, { maxFacts = 8, maxThreads = 20 } = {}) {
+export function profileDigestForRefine(profile, { maxFacts = 8, maxThreads = 20, maxSelf = 12 } = {}) {
   const p = ensureProfile(profile);
   const lines = [];
+  // 先摆她自己的记录：归纳任务的主语是她，不是人物档案。
+  const groups = groupSelfNotes(p);
+  const selfLabels = { identity: '我是谁', milestone: '走过的路', like: '我喜欢', feeling: '我的心事', world: '我的世界' };
+  for (const [kind, list] of Object.entries(groups)) {
+    if (!list.length) continue;
+    lines.push(`【${selfLabels[kind] || kind}】`);
+    for (const s of list.slice(-Math.max(1, Number(maxSelf) || 12))) lines.push(`  · ${s.text}`);
+  }
   const people = Object.entries(p.people).sort((a, b) => (Number(b[1].lastSeen) || 0) - (Number(a[1].lastSeen) || 0));
   if (people.length) {
     lines.push('【人物档案】（每条都可以被纠正）');
@@ -737,7 +799,7 @@ function hash32(text) {
  * @param {{maxEvents?:number, minSemantic?:number, maxSemanticPerNode?:number, now?:number}} opts
  * @returns {{nodes:Array, edges:Array, stats:object}}
  */
-export function buildMemoryGraph(profile, events, { maxEvents = 48, minSemantic = 0.34, maxSemanticPerNode = 3, now = Date.now() } = {}) {
+export function buildMemoryGraph(profile, events, { maxEvents = 48, minSemantic = 0.34, maxSemanticPerNode = 3, now = Date.now(), selfName = '我' } = {}) {
   const p = ensureProfile(profile);
   const nodes = [];
   const edges = [];
@@ -755,6 +817,18 @@ export function buildMemoryGraph(profile, events, { maxEvents = 48, minSemantic 
     if (edges.some((e) => e.key === key)) return;
     edges.push({ key, source: a.id, target: b.id, kind, weight: Number(weight.toFixed(3)) || 0.5 });
   };
+
+  // ── 中心：她自己 ───────────────────────────────────────
+  // 记忆库的轴心是她本人，不是任何人。所以图上有一个「我」节点，
+  // 她走过的路、她认识的人、她还挂着的线都连到她身上——
+  // 一眼看过去是「她的宇宙」，而不是「一堆关于别人的资料」。
+  const me = addNode({
+    id: 'me',
+    type: 'me',
+    label: truncateChars(String(selfName || '我'), 20),
+    seed: hash32('me'),
+    meta: { selfNotes: p.self.length },
+  });
 
   // ── 节点：人物 / 线 / 心事 / 关键事件 ─────────────────────
   for (const [name, v] of Object.entries(p.people)) {
@@ -775,13 +849,14 @@ export function buildMemoryGraph(profile, events, { maxEvents = 48, minSemantic 
       meta: { state: t.state, with: Array.isArray(t.with) ? t.with : [], at: Number(t.lastMentionAt) || Number(t.createdAt) || 0 },
     });
   });
-  p.self.forEach((text) => {
+  p.self.forEach((s) => {
+    const text = typeof s === 'string' ? s : s.text;
     addNode({
       id: `s:${hash32(text)}`,
       type: 'self',
       label: truncateChars(text, 40),
       seed: hash32(`s:${text}`),
-      meta: { at: Number(p.updatedAt) || 0 },
+      meta: { at: Number(s?.at) || Number(p.updatedAt) || 0, kind: s?.kind || 'feeling' },
     });
   });
   // 事件节点只放 S2/S3：S0/S1 是流水，放进图里就是噪声墙（Hindsight 也提醒过这一点）。
@@ -831,6 +906,14 @@ export function buildMemoryGraph(profile, events, { maxEvents = 48, minSemantic 
       for (const who of node.meta.with || []) addEdge(node, ensurePerson(who), 'entity', 1);
     }
     if (node.type === 'event') addEdge(node, ensurePerson(node.meta.who), 'entity', 0.8);
+  }
+
+  // 一切都连回她：她走过的路（心事）最重，这条线她欠着的次之，她认识的人最轻。
+  // 这样图的中心永远是「她」，人物只是围绕她的星。
+  for (const node of nodes.slice()) {
+    if (node.type === 'self') addEdge(node, me, 'entity', 1);
+    if (node.type === 'thread') addEdge(node, me, 'entity', 0.6);
+    if (node.type === 'person') addEdge(node, me, 'entity', 0.45);
   }
 
   // 事件的 who 字段经常是空的或会话标签（消息归档本来就只保证记录正文），
@@ -944,6 +1027,7 @@ export function buildMemoryGraph(profile, events, { maxEvents = 48, minSemantic 
       nodes: nodes.length,
       edges: edges.length,
       byType: {
+        me: nodes.filter((n) => n.type === 'me').length,
         person: nodes.filter((n) => n.type === 'person').length,
         thread: nodes.filter((n) => n.type === 'thread').length,
         self: nodes.filter((n) => n.type === 'self').length,
@@ -1464,16 +1548,44 @@ export function mergeThread(profile, text, { withWho = [], now = Date.now(), sta
   return { profile: pruneProfile(p), changed: true, resolved };
 }
 
-/** 追加一条「自我状态」记录（她自己的心情/转变，最长期的那种记忆）。 */
-export function mergeSelfNote(profile, text, { now = Date.now() } = {}) {
+/**
+ * 追加一条「她自己」的记录（她走过的路、她喜欢的、她的心事……），最长期的那种记忆。
+ *
+ * V3.9 起带 kind（identity / milestone / like / feeling / world）：
+ * 记忆库的轴心是她自己，分类是为了让她的人生能分得清层次，不是为了归档整齐。
+ * 不传 kind 时用规则粗分（分错了只影响展示分组，不影响内容）。
+ */
+export function mergeSelfNote(profile, text, { now = Date.now(), kind } = {}) {
   const p = ensureProfile(profile);
-  const body = truncateChars(String(text ?? '').trim(), 120);
+  const body = truncateChars(String(text ?? '').trim(), 200);
   if (!body) return { profile: p, changed: false };
-  if (p.self.includes(body)) return { profile: p, changed: false };
-  p.self.push(body);
-  if (p.self.length > PROFILE_LIMITS.maxSelfNotes) p.self.splice(0, p.self.length - PROFILE_LIMITS.maxSelfNotes);
+  const k = SELF_KIND_KEYS.includes(kind) ? kind : classifySelfNote(body);
+  const hit = p.self.find((s) => s.text === body || factSimilarity(s.text, body) >= 0.9);
+  if (hit) {
+    hit.count = (Number(hit.count) || 1) + 1;
+    hit.at = now;
+    // 明确指定分类时以调用方为准（她比规则更清楚这条属于她人生的哪一部分）
+    if (SELF_KIND_KEYS.includes(kind)) hit.kind = kind;
+    p.updatedAt = now;
+    return { profile: p, changed: true, action: 'CORROBORATE' };
+  }
+  p.self.push({ text: body, kind: k, at: now, count: 1 });
   p.updatedAt = now;
-  return { profile: p, changed: true };
+  return { profile: pruneProfile(p), changed: true, action: 'CREATE' };
+}
+
+/**
+ * 把她自己的一生按类分组（给注入、控制台、星图共用）。
+ * @returns {Record<string, Array<{text:string,kind:string,at:number,count:number}>>}
+ */
+export function groupSelfNotes(profile) {
+  const p = ensureProfile(profile);
+  const out = Object.fromEntries(SELF_KIND_KEYS.map((k) => [k, []]));
+  for (const s of p.self) {
+    if (!out[s.kind]) out[s.kind] = [];
+    out[s.kind].push(s);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -1489,11 +1601,14 @@ function mmdd(ts) {
 }
 
 /**
- * 组装唤醒注入文本（L4）。预算按比例分给四块，任何一块都受硬上限约束。
+ * 组装唤醒注入文本（L4）。预算按比例分块，任何一块都受硬上限约束。
  *
- * 优先级依据「此刻最有用」：
- *   未完结的线（欠的饭钱、答应了的事） > 人物档案 > 检索命中 > 热话题
- * 热话题排最后，因为它的内容大多还在 recentMessages 里看得到。
+ * 优先级（V3.9 起重新排过）：**她自己 > 她在意的事 > 她认识的人 > 检索命中 > 刚才在聊**。
+ *
+ * 为什么要改顺序：以前的注入第一段就是「你心里记着的线」，锚点是别人——
+ * 记忆库读起来像是"谁欠了谁什么"，而不是"我过成了一个什么样的人"。
+ * 现在第一块永远是她自己（我是谁 / 我走过的路 / 我喜欢什么），
+ * 别人和事情都是围绕她展开的枝节。
  */
 export function buildInjection(input = {}) {
   const cfg = normalizeMemoryConfig(input.config);
@@ -1505,12 +1620,31 @@ export function buildInjection(input = {}) {
   const hot = input.hot && typeof input.hot === 'object' ? input.hot : {};
 
   // 预算切分（比例固定，保证任何一块都不会独占；总量由 budget 兜底）
+  const bSelf = Math.floor(budget * 0.26);
   const bThreads = Math.floor(budget * 0.22);
-  const bPeople = Math.floor(budget * 0.22);
-  const bHits = Math.floor(budget * 0.36);
-  const bTopics = budget - bThreads - bPeople - bHits;
+  const bPeople = Math.floor(budget * 0.18);
+  const bHits = Math.floor(budget * 0.26);
+  const bTopics = budget - bSelf - bThreads - bPeople - bHits;
 
   const sections = [];
+
+  // 0) 她自己——永远排第一。她的一生才是记忆库的主语。
+  const selfGroups = groupSelfNotes(profile);
+  const selfLines = [];
+  const identity = selfGroups.identity.slice(-2);
+  const milestones = selfGroups.milestone.slice(-3);
+  const likes = selfGroups.like.slice(-2);
+  const worlds = selfGroups.world.slice(-1);
+  for (const s of identity) selfLines.push(`- 我是：${s.text}`);
+  for (const s of milestones) selfLines.push(`- 走过的路：${s.text}`);
+  for (const s of likes) selfLines.push(`- 我喜欢：${s.text}`);
+  for (const s of worlds) selfLines.push(`- 我的世界：${s.text}`);
+  if (selfLines.length) {
+    sections.push(`【你自己】\n${pickByBudget(selfLines, bSelf)}`);
+  } else {
+    // 档案还空的时候给一句方向，比空着好——她会照着往这个方向记。
+    sections.push('【你自己】\n- 你还没写过自己的事。你是谁、你走过哪些路、你喜欢什么，这些比别人的话更值得记下来。');
+  }
 
   // 1) 未完结的线
   // 注入前先剔掉「同一专名话题已经了结」的历史矛盾线：真实数据里出过

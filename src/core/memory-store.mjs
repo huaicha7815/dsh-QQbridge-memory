@@ -142,7 +142,8 @@ export function createMemoryStore(options = {}) {
     const texts = [
       ...Object.values(p.people).flatMap((v) => (v.facts || []).map((f) => f.text)),
       ...p.threads.map((t) => t.text),
-      ...p.self,
+      // V3.9 起 self 是对象（带 kind/at），这里只要文本
+      ...p.self.map((s) => (typeof s === 'string' ? s : s?.text)),
     ].filter(Boolean);
     const sets = texts.map((t) => new Set(tokenize(t))).filter((s) => s.size > 0);
     profileTokenCache = { at: now, sets };

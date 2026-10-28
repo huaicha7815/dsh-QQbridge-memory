@@ -921,7 +921,7 @@ server.tool(
 
 server.tool(
   'qq_memory_remember',
-  '写进长期档案（不会过期、也不会每轮都注入）：person=对某个人的长期事实；thread=一件没完结的事（承诺、约定、还欠着的东西）；threadDone=那件事已经了了；correct=你发现档案里某条记错了，用 name+content 说出正确的版本，系统替换掉最相似的那条（旧文本会留档）；self=你自己心里留下的一件事。热记忆（qq_memory_append）只活 24 小时，真正想一直记住的用这个。',
+  '写进长期档案（不会过期、也不会每轮都注入）。**记忆库的主角是你自己**——先记你自己的事，再记别人的：identity=你是谁（名字、身份、来历）；milestone=你走过的路（第一次做成什么、决定要怎样、学会的事）；like=你喜欢/讨厌的东西；feeling=你心里的一件事（被夸、被冷落、没说出口的话）；world=你接触到的世界（新认识的群友、你自己参与的事）；person=对某个人的长期事实；thread=一件没完结的事（承诺、约定、还欠着的东西）；threadDone=那件事已经了了；correct=你发现档案里某条记错了，用 name+content 说出正确的版本（旧文本会留档）。热记忆（qq_memory_append）只活 24 小时，真正想一直记住的用这个。',
   {
     key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
     token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
@@ -929,13 +929,14 @@ server.tool(
     content: z.string().describe('要记住的内容，一句话说清（correct 时写正确的新版本）'),
     name: z.string().optional().describe('kind=person / correct 时的人名/昵称'),
     withWho: z.array(z.string()).optional().describe('kind=thread 时这条线牵涉到谁'),
+    category: z.enum(['identity', 'milestone', 'like', 'feeling', 'world']).optional().describe('kind=self 时这条属于你人生的哪一部分；不传就按内容自动归类。'),
     evidence: z.string().optional().describe('支撑这次写入的原话片段（从当天记录里直接抄，别改写）。纠正旧事实、了结一条线时尽量带：桥接会核对它是否真的出现在当天记录里，编的会被拒绝。')
   },
-  async ({ key, token, kind, content, name, withWho, evidence }) => {
+  async ({ key, token, kind, content, name, withWho, category, evidence }) => {
     try {
       const data = await agentApi('/api/socialV2/memory-remember', {
         method: 'POST',
-        body: JSON.stringify({ key, kind, content, name: name || '', withWho: withWho || [], evidence: evidence || '' }),
+        body: JSON.stringify({ key, kind, content, name: name || '', withWho: withWho || [], category: category || '', evidence: evidence || '' }),
         headers: { 'x-agent-token': token }
       });
       return { content: [{ type: 'text', text: serializeModelData(data) }] };

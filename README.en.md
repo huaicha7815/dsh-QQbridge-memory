@@ -45,11 +45,13 @@ Every write from this task must carry an **evidence** snippet copied verbatim fr
 
 The task costs one extra model call per day. It can be turned off with `socialV2.memoryRefine.enabled: false`; V3.6's self-repair and the injection-side consistency filter keep working without it.
 
-She also has four memory tools: `qq_memory_search` (recall), `qq_memory_remember` (write; supports `correct` for fixing a wrong fact),
-`qq_memory_profile` (read the whole profile), `qq_memory_inspect` (self-inspection: what do I remember, and what will be injected next).
-The console's **"Her Memory"** page shows scale, salience tiers, profile, recent recalls and the consistency audit on one screen.
+**The protagonist of the memory bank is her.** The "self" section of `profile.json` is not a string of moods but her life, in five layers: who I am (name, identity, origin), the road I have walked (firsts, decisions), what I like, what is on my mind, and the world I touch. The first block of every wake-up injection is **"yourself"**; people and promises come after. The nightly consolidation records her own life first and other people's second. Her life is capped at 120 entries, and identity/milestones are **never evicted** — moods may age out, the backbone of a life does not.
 
-The **Memory Constellation** page draws her memory as an explorable graph: people, open threads, private notes and noteworthy events, with entity / semantic / temporal links colour-coded and brighter nodes meaning better connected. It does not feed retrieval — it exists to show the **structure** of memory: what clusters, what is left floating, which node is a noisy hub. The layout is deterministic, so the same data always produces the same shape and you can compare before/after a change.
+She also has four memory tools: `qq_memory_search` (recall), `qq_memory_remember` (write; supports `correct` for fixing a wrong fact, and `self` with a category),
+`qq_memory_profile` (read the whole profile), `qq_memory_inspect` (self-inspection: what do I remember, and what will be injected next).
+The console's **"Her Memory"** page is layered and collapsible — **her life / what she cares about / people she knows / the ledger** — with a **Full Memory Archive** entry (raw profile, day-by-day event stream, search).
+
+The **Memory Constellation** page is her universe: the golden star in the middle is *her*, surrounded by the people she knows, open threads, private notes and noteworthy events, with entity / semantic / temporal links colour-coded. Drag to rotate, scroll to zoom, click a star for details. It does not feed retrieval — it exists to show the **structure** of memory: what clusters, what is left floating, which node is a noisy hub. The 3D layout is deterministic, so the same data always produces the same shape and you can compare before/after a change.
 
 ```bash
 npm run memory-health   # size / salience tiers / retrieval quality / profile audit / actionable advice

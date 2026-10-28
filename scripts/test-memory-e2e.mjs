@@ -120,7 +120,10 @@ test('方式 0：日记 prompt 带「顺手记住」，且可用配置关掉', a
     assert.match(prompt, /【顺手记住】/, '日记 prompt 应包含记忆提示');
     assert.match(prompt, /qq_memory_remember/, '要明确让她调 remember 工具');
     assert.match(prompt, /thread|person|self/, '要给出三类档案的区分');
-    assert.match(prompt, /日记是写给空间看的情绪/, '要避免她把日记内容重复写进档案');
+    // V3.9：记忆的主角是她自己——日记里的记录提示必须先说「记你自己」
+    assert.match(prompt, /先记你自己/, '首要任务变成记录她自己的一天');
+    assert.match(prompt, /category="milestone"/, '要给出她自己的分类参数');
+    assert.match(prompt, /你的人生是主线/, '要明确主题是她的人生，不是别人的话');
     assert.match(prompt, /没有就别硬凑/, '要明确允许不记，防止为了凑数污染档案');
   } finally {
     await on.close();

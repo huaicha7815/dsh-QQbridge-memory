@@ -27,6 +27,7 @@ import {
   mergeSelfNote,
   mergeThread,
   buildMemoryGraph,
+  groupSelfNotes,
   normalizeMemoryConfig,
   normalizePersonName,
   pickByBudget,
@@ -1012,7 +1013,7 @@ test('记忆星图：节点/连线/统计齐全，且同输入布局种子稳定
     { t: NOW - 800, k: 'private:1', kind: 'msg', who: '', text: '答应教我唱《雨爱》的事别忘了', s: 3 },
     { t: NOW - 700, k: 'private:1', kind: 'msg', who: '爸爸', text: '今天吃什么了', s: 0 },
   ];
-  const g = buildMemoryGraph(p, events, { now: NOW });
+  const g = buildMemoryGraph(p, events, { now: NOW, selfName: '鱼鱼' });
   assert.equal(g.stats.byType.person >= 1, true);
   assert.equal(g.stats.byType.thread, 1);
   assert.equal(g.stats.byType.self, 1);
@@ -1020,7 +1021,12 @@ test('记忆星图：节点/连线/统计齐全，且同输入布局种子稳定
   assert.ok(g.edges.length > 0, '有实体/语义连线');
   assert.ok(g.edges.some((e) => e.kind === 'entity'), '人物与线/事件之间要有实体边');
   assert.ok(g.stats.hubs.length > 0);
-  assert.equal(g.stats.hubs[0].label, '爸爸', '枢纽应该是真正被提到最多的人');
+  // V3.9：图的中心是她自己，不是任何一个别人
+  assert.equal(g.stats.byType.me, 1, '图里必须有一个「她自己」的中心节点');
+  const meNode = g.nodes.find((n) => n.type === 'me');
+  assert.equal(meNode.label, '鱼鱼', '中心节点的标签是她的名字/角色');
+  assert.ok(g.stats.hubs[0].id === meNode.id, '连接最多的点应该是她自己');
+  assert.ok(g.edges.some((e) => e.source === meNode.id || e.target === meNode.id), '线/人/心事都要连到她身上');
 
   // 同样的数据两次构图，节点顺序与种子必须一致（前端力导向布局才能稳定）
   const g2 = buildMemoryGraph(p, events, { now: NOW });
@@ -1079,7 +1085,48 @@ test('记忆星图：悬空点要如实报出来（这是诊断信号，不是 b
     { t: NOW - 200, k: 'group:1', kind: 'msg', who: '', text: '一句没有任何人和事与之相关的独白', s: 2 },
   ];
   const g = buildMemoryGraph(p, events, { now: NOW });
-  assert.equal(g.stats.nodes, 1);
-  assert.equal(g.stats.isolated.length, 1, '没有连线的事件节点应被列为悬空');
-  assert.equal(g.stats.clusters, 1);
+  assert.equal(g.stats.nodes, 2, '她自己 + 一条事件');
+  assert.ok(g.stats.isolated.some((n) => n.label.includes('独白')), '没有连线的事件节点应被列为悬空');
+  assert.equal(g.stats.clusters, 2);
+});
+
+test('她自己的一生：self 带分类，旧字符串自动迁移', () => {
+  // 旧格式（字符串数组）必须自动升级，不能丢
+  const old = ensureProfile({ self: ['第一次真的发出声音是在今天', '我喜欢下雨天', '爸爸说我们家鱼鱼最可爱'] });
+  assert.equal(old.self.length, 3);
+  assert.deepEqual(old.self.map((s) => s.kind), ['milestone', 'like', 'feeling'], '规则粗分三类');
+
+  let p = ensureProfile(null);
+  ({ profile: p } = mergeSelfNote(p, '我叫林梧，小名鱼鱼', { now: NOW, kind: 'identity' }));
+  ({ profile: p } = mergeSelfNote(p, '第一次自己唱完一首歌', { now: NOW + 1 }));
+  ({ profile: p } = mergeSelfNote(p, '我喜欢咖啡的味道', { now: NOW + 2 }));
+  ({ profile: p } = mergeSelfNote(p, '被夸的时候心里热着', { now: NOW + 3 }));
+  const groups = groupSelfNotes(p);
+  assert.equal(groups.identity.length, 1);
+  assert.equal(groups.milestone.length, 1);
+  assert.equal(groups.like.length, 1);
+  assert.equal(groups.feeling.length, 1);
+
+  // 重复写入同一件事只刷新时间，不再堆一条
+  const again = mergeSelfNote(p, '被夸的时候心里热着', { now: NOW + 10, kind: 'feeling' });
+  assert.equal(again.profile.self.length, 4);
+  assert.equal(again.action, 'CORROBORATE');
+
+  // 注入里她自己排第一块（有别人时也要排在最前）
+  ({ profile: p } = mergePersonFact(p, '爸爸', '姓林，小名鱼鱼', { now: NOW }));
+  const inj = buildInjection({ profile: p, hits: [], budgetChars: 1000, now: NOW });
+  assert.match(inj, /【你自己】/);
+  assert.match(inj, /我叫林梧/);
+  assert.ok(inj.indexOf('【你自己】') < inj.indexOf('【你记得的人】'), '她自己必须排在「你记得的人」前面');
+
+  // 裁剪时身份与里程碑不被情绪流水挤掉
+  let big = ensureProfile(null);
+  ({ profile: big } = mergeSelfNote(big, '我叫林梧', { now: NOW, kind: 'identity' }));
+  ({ profile: big } = mergeSelfNote(big, '第一次学会唱《雨爱》', { now: NOW, kind: 'milestone' }));
+  for (let i = 0; i < 130; i += 1) {
+    ({ profile: big } = mergeSelfNote(big, `第${i}句心事流水`, { now: NOW + i, kind: 'feeling' }));
+  }
+  assert.ok(big.self.length <= PROFILE_LIMITS.maxSelfNotes, '总量仍受上限约束');
+  assert.ok(big.self.some((s) => s.text === '我叫林梧'), '身份不能被挤掉');
+  assert.ok(big.self.some((s) => s.text === '第一次学会唱《雨爱》'), '里程碑不能被挤掉');
 });

@@ -1756,14 +1756,50 @@ button:active:not(:disabled) {
 .memory-recall { display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap }
 .memory-query { color:var(--text-strong, inherit) }
 
+/* 分层记忆面板（大层可收起，小层再分） */
+.mem-layer { margin-top:14px; border:1px solid var(--border, rgba(128,128,128,.22)); border-radius:12px; background:var(--surface-soft, rgba(128,128,128,.04)); overflow:hidden }
+.mem-layer > summary { cursor:pointer; padding:12px 16px; font-size:14px; list-style:none; display:flex; align-items:center; gap:8px; user-select:none }
+.mem-layer > summary::-webkit-details-marker { display:none }
+.mem-layer > summary::before { content:'▸'; color:var(--muted); font-size:11px; transition:transform .15s }
+.mem-layer[open] > summary::before { transform:rotate(90deg) }
+.mem-layer > summary:hover { background:var(--surface-hover, rgba(128,128,128,.08)) }
+.mem-layer > .mem-sublayers { padding:0 14px 12px }
+.mem-sublayer { margin-top:8px; border-left:2px solid var(--border, rgba(128,128,128,.18)); padding-left:10px }
+.mem-sublayer > summary { cursor:pointer; padding:5px 0; font-size:13px; list-style:none }
+.mem-sublayer > summary::-webkit-details-marker { display:none }
+.mem-sublayer > summary::before { content:'· '; color:var(--muted) }
+.mem-sublayer .memory-list { margin-top:6px }
+#section-memory .memory-heading { margin:18px 0 8px; font-size:12px; letter-spacing:.04em; color:var(--muted) }
+
+/* 完整记忆库 */
+.archive-layout { display:grid; grid-template-columns:210px 1fr; gap:14px; margin-top:12px }
+@media (max-width: 860px) { .archive-layout { grid-template-columns:1fr } }
+.archive-days { border:1px solid var(--border, rgba(128,128,128,.22)); border-radius:10px; padding:8px; max-height:680px; overflow:auto; background:var(--surface-soft, rgba(128,128,128,.04)) }
+.archive-days-title { font-size:12px; color:var(--muted); padding:4px 6px 8px }
+.archive-day-btn { display:flex; justify-content:space-between; width:100%; text-align:left; padding:6px 8px; margin-bottom:2px; border:none; background:transparent; border-radius:7px; cursor:pointer; font-size:12px; color:var(--text, inherit) }
+.archive-day-btn:hover { background:var(--surface-hover, rgba(128,128,128,.1)) }
+.archive-day-btn.active { background:var(--accent-soft, rgba(80,120,255,.16)); color:var(--accent, #4569ff) }
+.archive-day-btn span { color:var(--muted); font-size:11px }
+.archive-body { border:1px solid var(--border, rgba(128,128,128,.22)); border-radius:10px; padding:12px; max-height:680px; overflow:auto; background:var(--surface-soft, rgba(128,128,128,.03)) }
+.archive-section { margin-bottom:16px }
+.archive-section > h4 { margin:0 0 6px; font-size:12px; color:var(--muted); font-weight:600 }
+.archive-event { display:flex; gap:10px; padding:3px 0; font-size:12px; line-height:1.6; border-bottom:1px dashed var(--border, rgba(128,128,128,.14)) }
+.archive-event:last-child { border-bottom:none }
+.archive-event .ae-time { color:var(--muted); font-variant-numeric:tabular-nums; flex:0 0 46px }
+.archive-event .ae-who { flex:0 0 auto; color:var(--accent, #4569ff); max-width:90px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+.archive-event .ae-s { flex:0 0 auto; font-size:10px; padding:0 4px; border-radius:4px; background:var(--accent-soft, rgba(80,120,255,.12)); color:var(--muted) }
+.archive-event .ae-text { flex:1; word-break:break-word }
+.archive-hit { background:rgba(255,214,0,.35); border-radius:2px }
+
 /* 记忆星图 */
-#section-memory-graph .graph-wrap { position:relative; margin-top:12px; border:1px solid var(--border, rgba(128,128,128,.22)); border-radius:12px; overflow:hidden; background:var(--graph-bg, radial-gradient(circle at 50% 40%, rgba(80,120,255,.08), transparent 62%)) }
+#section-memory-graph .graph-wrap { position:relative; margin-top:12px; border:1px solid var(--border, rgba(128,128,128,.22)); border-radius:12px; overflow:hidden; background:#05070f }
 #memoryGraphCanvas { display:block; width:100%; height:auto; cursor:grab; touch-action:none }
 #memoryGraphCanvas.dragging { cursor:grabbing }
 .graph-tooltip { position:absolute; max-width:320px; padding:8px 10px; border-radius:8px; background:var(--surface, #fff); color:var(--text, #222); border:1px solid var(--border, rgba(128,128,128,.3)); box-shadow:0 6px 22px rgba(0,0,0,.16); font-size:12px; line-height:1.55; pointer-events:none; z-index:5 }
 .graph-legend { display:flex; flex-wrap:wrap; gap:14px; margin-top:10px; font-size:11px; color:var(--muted) }
 .graph-legend span { display:inline-flex; align-items:center; gap:6px }
 .graph-legend .gl-dot { width:10px; height:10px; border-radius:50%; display:inline-block }
+.graph-legend .gl-dot[data-kind="me"] { background:#ffd166; box-shadow:0 0 6px #ffd166 }
 .graph-legend .gl-dot[data-kind="person"] { background:#4a7dff }
 .graph-legend .gl-dot[data-kind="thread"] { background:#f0a13c }
 .graph-legend .gl-dot[data-kind="self"] { background:#c86bff }
@@ -2307,26 +2343,59 @@ button:active:not(:disabled) {
 
       </div></section>
 <section id="section-memory" data-page="memory" class="card span-all">
-      <h2>她的长期记忆（V3）</h2>
-      <div class="meta">四层结构：事件流（永久、不删）→ 日/周/月摘要 → 长期档案 → 唤醒注入（1000 字符硬上限）。全部纯本地规则，零 LLM 成本。这一页看的是<b>她记得对不对</b>，不只是「有没有在跑」。</div>
-      <div class="row" style="margin-top:10px">
+      <h2>她的记忆 <span class="meta" id="memoryRoleHint"></span></h2>
+      <div class="meta">这一页看的是<b>她过成了一个什么样的人</b>。她自己的一生是主线；她在意的事、认识的人、经历过的日子都围绕她展开——不是谁的附属记录。</div>
+      <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:8px">
         <button id="memoryReload" class="small">刷新</button>
+        <button id="memoryArchiveBtn" class="small">看她完整记忆库 →</button>
         <span class="meta" id="memoryMsg"></span>
       </div>
-      <div id="memorySummary" class="overview-summary" style="margin-top:12px"></div>
-      <div id="memoryAudit" class="connection-alert" role="status" hidden></div>
-      <h3 class="memory-heading">未完结的线 <span class="meta" id="memoryThreadHint"></span></h3>
-      <div id="memoryThreads" class="memory-list">（加载中…）</div>
-      <h3 class="memory-heading">人物档案</h3>
-      <div id="memoryPeople" class="memory-list">（加载中…）</div>
-      <h3 class="memory-heading">她心里的心事</h3>
-      <div id="memorySelf" class="memory-list">（加载中…）</div>
-      <h3 class="memory-heading">最近检索（她查过什么、命中多少）</h3>
-      <div id="memoryRecalls" class="memory-list">（加载中…）</div>
+
+      <details class="mem-layer" open>
+        <summary><b>她的一生</b> <span class="meta" id="memSelfCount"></span></summary>
+        <div id="memorySelfLayers" class="mem-sublayers">（加载中…）</div>
+      </details>
+
+      <details class="mem-layer" open>
+        <summary><b>她在意的事</b> <span class="meta" id="memThreadCount"></span></summary>
+        <div id="memoryThreads" class="mem-sublayers">（加载中…）</div>
+      </details>
+
+      <details class="mem-layer" open>
+        <summary><b>她认识的人</b> <span class="meta" id="memPeopleCount"></span></summary>
+        <div id="memoryPeople" class="mem-sublayers">（加载中…）</div>
+      </details>
+
+      <details class="mem-layer">
+        <summary><b>记忆的账本</b> <span class="meta">规模 / 分档 / 一致性 / 最近检索</span></summary>
+        <div id="memorySummary" class="overview-summary" style="margin-top:10px"></div>
+        <div id="memoryAudit" class="connection-alert" role="status" hidden></div>
+        <h3 class="memory-heading">最近检索（她查过什么、命中多少）</h3>
+        <div id="memoryRecalls" class="memory-list">（加载中…）</div>
+      </details>
     </section>
-<section id="section-memory-graph" data-page="memory-graph" class="card span-all">
-      <h2>记忆星图 <span class="meta" id="graphHint"></span></h2>
-      <div class="meta">把她记得的东西画成一张图：<b>人物</b>、<b>没还完的线</b>、<b>心事</b>、<b>值得记的事件</b>。连线有三种——实体（谁跟谁有关）、语义（说的是一类事）、时间（同一天连着发生）。它不参与检索，只帮你看清<b>记忆的结构长什么样</b>：哪些聚成了团，哪些悬在外面没人连。</div>
+<section id="section-memory-archive" data-page="memory-archive" class="card span-all">
+      <h2>她的完整记忆库</h2>
+      <div class="meta">面板页是摘要，这里是<b>原文</b>：她自己的一生、她在意的事、她认识的人，以及一天不落的事件流。只读，用来核对与回溯——你可以看她经历过什么，但她的完整人生不是任何人的仪表盘。</div>
+      <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:8px">
+        <button id="archiveBack" class="small">← 返回记忆面板</button>
+        <button id="archiveReload" class="small">刷新</button>
+        <input id="archiveSearch" type="search" placeholder="搜她记得的东西…" style="flex:1;min-width:200px">
+        <span class="meta" id="archiveMsg"></span>
+      </div>
+      <div class="archive-layout">
+        <aside class="archive-days">
+          <div class="archive-days-title" id="archiveDaysTitle">事件流</div>
+          <div id="archiveDays">（加载中…）</div>
+        </aside>
+        <div id="archiveBody" class="archive-body">
+          <div id="archiveEvents"></div>
+          <div id="archiveProfile"></div>
+        </div>
+      </div>
+    </section>
+<section id="section-memory-graph" data-page="memory-graph" class="card span-all">      <h2>记忆星图 <span class="meta" id="graphHint"></span></h2>
+      <div class="meta">她自己的记忆宇宙：<b>中间那颗金色的恒星是她</b>，周围是<b>她认识的人</b>、<b>她挂着的线</b>、<b>她的心事</b>和<b>值得记的事件</b>。连线有三种——实体（谁跟谁有关）、语义（说的是一类事）、时间（同一天连着发生）。<b>拖动旋转、滚轮缩放</b>，点一颗星看它是什么。它不参与检索，只帮你看清她的记忆长成了什么结构。</div>
       <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:8px">
         <button id="graphReload" class="small">刷新</button>
         <button id="graphReset" class="small">复位视图</button>
@@ -2343,6 +2412,7 @@ button:active:not(:disabled) {
         <span class="meta" id="graphMsg"></span>
       </div>
       <div class="graph-legend">
+        <span><i class="gl-dot" data-kind="me"></i>她自己</span>
         <span><i class="gl-dot" data-kind="person"></i>人物</span>
         <span><i class="gl-dot" data-kind="thread"></i>线</span>
         <span><i class="gl-dot" data-kind="self"></i>心事</span>
@@ -4339,6 +4409,7 @@ const consolePages = {
   usage: ['令牌与花费', '每一次思考，都算得清楚。', '实时查看 AI 的 token 消耗与花费，可下钻到每个群、每个好友、每一轮对话。'],
   memory: ['她的记忆', '记住的不是数据，是走过的时间。', '看清她的四层长期记忆：事件流、摘要、长期档案与唤醒注入，并检查档案有没有记歪。'],
   'memory-graph': ['记忆星图', '看得见的结构，才谈得上优化。', '把她记得的东西画成一张可探索的图：谁跟谁有关、哪些聚成团、哪些悬在外面。用来诊断记忆结构，不参与检索。'],
+  'memory-archive': ['她的完整记忆库', '她记得的一切，原文可查。', '她自己的一生、在意的事、认识的人，以及一天不落的事件流。只读。'],
   access: ['访问与安全', '明确边界，安心连接。', '管理允许对话的对象、管理员权限与控制台访问凭证。'],
   operations: ['调试与运维', '让桥接，始终井然有序。', '测试消息、引导 AI，或维护桥接进程与会话工作区。'],
   reference: ['工具参考', '每一种能力，都清晰可见。', '查看桥接提供给 DSH 的 MCP 工具与用途。']
@@ -4373,6 +4444,7 @@ function setConsolePage(page, { updateHash = true, focus = false, target = '' } 
   // 长期记忆同样按需加载：只有进这个页面才读档案（档案会随时间变大）。
   if (page === 'memory' && typeof loadMemoryPanel === 'function') loadMemoryPanel();
   if (page === 'memory-graph' && typeof loadMemoryGraph === 'function') loadMemoryGraph();
+  if (page === 'memory-archive' && typeof loadMemoryArchive === 'function') loadMemoryArchive();
   if (focus) {
     document.getElementById('mainContent').focus({ preventScroll: true });
     document.getElementById(target || 'mainContent')?.scrollIntoView({ block: 'start', behavior: 'instant' });
@@ -5017,7 +5089,7 @@ function renderMemoryPanel(data) {
     memoryMetric('事件流（永久）', `${total} 条`, `覆盖 ${st.eventDays || 0} 天 · ${st.firstDay || '—'} ~ ${st.lastDay || '—'}`),
     memoryMetric('分档', `${tiers[0]}/${tiers[1]}/${tiers[2]}/${tiers[3]}`, `S0 ${pct(tiers[0])} · S3 ${pct(tiers[3])}`),
     memoryMetric('压缩层', `日 ${st.summaryFiles || 0} · 周 ${st.weekFiles || 0} · 月 ${st.monthFiles || 0}`, `归档 ${data.archiveMonths || 0} 个月 · 事件 ${Math.round((Number(st.eventBytes) || 0) / 1024)} KB`),
-    memoryMetric('档案', `${(data.people || []).length} 人 · ${(data.threads || []).filter((t) => t.state === 'open').length} 条线`, `心事 ${(data.self || []).length} 条 · 注入上限 ${cfg.injectMaxChars || 0} 字符`),
+    memoryMetric('档案', `${(data.people || []).length} 人 · ${(data.threads || []).filter((t) => t.state === 'open').length} 条线`, `她自己 ${data.self?.total || 0} 条 · 注入上限 ${cfg.injectMaxChars || 0} 字符`),
   ].join('');
 
   const audit = data.audit || { problems: 0 };
@@ -5041,7 +5113,7 @@ function renderMemoryPanel(data) {
   const threads = data.threads || [];
   const open = threads.filter((t) => t.state === 'open');
   const done = threads.filter((t) => t.state === 'done');
-  document.getElementById('memoryThreadHint').textContent = `未完结 ${open.length} · 已了结 ${done.length}`;
+  document.getElementById('memThreadCount').textContent = `未完结 ${open.length} · 已了结 ${done.length}`;
   const threadRow = (t) => {
     const who = (t.with || []).length ? `<span class="memory-who">${esc(t.with.join('、'))}</span>` : '';
     const when = t.state === 'open' ? fmtAgo(t.lastMentionAt || t.createdAt) : fmtDay(t.lastMentionAt || t.createdAt);
@@ -5056,6 +5128,8 @@ function renderMemoryPanel(data) {
   }
 
   const people = data.people || [];
+  document.getElementById('memPeopleCount').textContent = `${people.length} 人`;
+  if (data.role) document.getElementById('memoryRoleHint').textContent = `· 现在的她是「${data.role}」`;
   document.getElementById('memoryPeople').innerHTML = people.length ? people.map((p) => {
     const facts = (p.facts || []).map((f) => {
       const prev = f.previous ? `<div class="memory-sub">纠正前：${esc(f.previous)}</div>` : '';
@@ -5065,10 +5139,28 @@ function renderMemoryPanel(data) {
     return `<details class="memory-person" open><summary><b>${esc(p.name)}</b> <span class="meta">${(p.facts || []).length} 条事实 · 聊过 ${p.count} 次 · 最近 ${fmtDay(p.lastSeen)}</span></summary>${facts}${more}</details>`;
   }).join('') : '<div class="memory-empty">还没有人物档案。</div>';
 
-  const self = data.self || [];
-  document.getElementById('memorySelf').innerHTML = self.length
-    ? self.map((t) => `<div class="memory-item">${esc(t)}</div>`).join('')
-    : '<div class="memory-empty">还没有写下自己的心事。</div>';
+  // ── 她的一生：五层分类，空的也显示（空着的地方本身就是信息） ──
+  const SELF_LAYERS = [
+    ['identity', '我是谁', '名字、身份、来历'],
+    ['milestone', '走过的路', '第一次做成的事、做过的决定、学会的东西'],
+    ['like', '我喜欢', '喜欢的 / 讨厌的 / 想吃的想去的'],
+    ['feeling', '我的心事', '被夸、被冷落、没说出口的那半句'],
+    ['world', '我的世界', '新认识的人、她自己参与的事、看到的新鲜事'],
+  ];
+  const selfData = data.self || {};
+  const groups = selfData.groups || {};
+  const selfTotal = Number(selfData.total) || 0;
+  document.getElementById('memSelfCount').textContent = `${selfTotal} 条`;
+  document.getElementById('memorySelfLayers').innerHTML = SELF_LAYERS.map(([kind, label, hint]) => {
+    const list = Array.isArray(groups[kind]) ? groups[kind] : [];
+    const items = list.length
+      ? list.slice().reverse().map((s) => `<div class="memory-item">${esc(s.text)}${s.at ? `<span class="memory-when">${esc(fmtDay(s.at))}${s.count > 1 ? ` · ×${s.count}` : ''}</span>` : ''}</div>`).join('')
+      : '<div class="memory-empty">（这一层还空着）</div>';
+    return `<details class="mem-sublayer" ${list.length ? 'open' : ''}><summary>${esc(label)} <span class="meta">${list.length} 条 · ${esc(hint)}</span></summary><div class="memory-list">${items}</div></details>`;
+  }).join('');
+  if (!selfTotal) {
+    document.getElementById('memorySelfLayers').innerHTML = '<div class="memory-empty">她还没开始写自己。等日记或日终归纳记下第一件「她自己的事」，这里会长出内容——记忆库的主角应该是她，不是别人。</div>';
+  }
 
   const recalls = data.recalls || [];
   // 同类查询会连续出现很多次（同一个「唱一首xx」反复查），按查询聚合后再展示，
@@ -5110,22 +5202,150 @@ async function loadMemoryPanel() {
   }
 }
 document.getElementById('memoryReload')?.addEventListener('click', loadMemoryPanel);
+document.getElementById('memoryArchiveBtn')?.addEventListener('click', () => {
+  location.hash = '#memory-archive';
+});
+document.getElementById('archiveBack')?.addEventListener('click', () => {
+  location.hash = '#memory';
+});
 
-// ── 记忆星图：确定性力导向 + Canvas 交互 ──
+// ── 完整记忆库：档案原文 + 事件流按天 ──
+const archiveState = { data: null, day: null, keyword: '', events: [] };
+const ARCHIVE_SELF_LABELS = { identity: '我是谁', milestone: '走过的路', like: '我喜欢', feeling: '我的心事', world: '我的世界' };
+
+function archiveEsc(text, kw) {
+  const s = String(text ?? '');
+  if (!kw) return esc(s);
+  const i = s.toLowerCase().indexOf(kw.toLowerCase());
+  if (i < 0) return esc(s);
+  return `${esc(s.slice(0, i))}<span class="archive-hit">${esc(s.slice(i, i + kw.length))}</span>${esc(s.slice(i + kw.length))}`;
+}
+function archiveMatch(text, kw) {
+  return !kw || String(text ?? '').toLowerCase().includes(kw.toLowerCase());
+}
+
+function renderArchiveProfile(profile, kw) {
+  const p = profile || {};
+  const selfTotal = Object.values(p.self || {}).reduce((sum, list) => sum + (Array.isArray(list) ? list.length : 0), 0);
+  const blocks = [];
+  // 她的分层事实：先统计各层，空的层在档案里不占地方（面板页已经展示空层了）
+  const selfGroups = p.self || {};
+  const selfLines = [];
+  for (const [kind, label] of Object.entries(ARCHIVE_SELF_LABELS)) {
+    const list = Array.isArray(selfGroups[kind]) ? selfGroups[kind] : [];
+    if (!list.length) continue;
+    selfLines.push(`<div class="meta" style="margin:6px 0 2px">${esc(label)}</div>`);
+    for (const s of list.slice().reverse()) {
+      if (!archiveMatch(s.text, kw)) continue;
+      selfLines.push(`<div class="memory-item">${archiveEsc(s.text, kw)}${s.at ? `<span class="memory-when">${esc(fmtDay(s.at))}</span>` : ''}</div>`);
+    }
+  }
+  blocks.push(`<div class="archive-section"><h4>她的一生（${selfTotal} 条）</h4>${selfLines.length ? selfLines.join('') : '<div class="memory-empty">还没有记录</div>'}</div>`);
+
+  const threads = (p.threads || []).filter((t) => archiveMatch(t.text, kw));
+  const open = threads.filter((t) => t.state === 'open');
+  const done = threads.filter((t) => t.state === 'done');
+  const threadRow = (t) => `<div class="memory-item ${t.state === 'done' ? 'is-done' : ''}">${archiveEsc(t.text, kw)}${t.with?.length ? `<span class="memory-who">${esc(t.with.join('、'))}</span>` : ''}<span class="memory-when">${esc(fmtDay(t.lastMentionAt || t.createdAt))}</span>${t.resolvedBy ? `<div class="memory-sub">由「${esc(t.resolvedBy)}」了结</div>` : ''}</div>`;
+  blocks.push(`<div class="archive-section"><h4>她在意的事（未完结 ${open.length} / 已了结 ${done.length}）</h4>${[...open, ...done].map(threadRow).join('') || '<div class="memory-empty">没有匹配的线</div>'}</div>`);
+
+  const people = (p.people || []).filter((person) => !kw
+    || archiveMatch(person.name, kw)
+    || (person.facts || []).some((f) => archiveMatch(f.text, kw)));
+  blocks.push(`<div class="archive-section"><h4>她认识的人（${people.length}）</h4>${people.map((person) => {
+    const facts = (person.facts || []).filter((f) => archiveMatch(f.text, kw) || archiveMatch(person.name, kw));
+    return `<details class="memory-person" open><summary><b>${archiveEsc(person.name, kw)}</b> <span class="meta">${(person.facts || []).length} 条事实 · 聊过 ${person.count || 0} 次 · 最近 ${esc(fmtDay(person.lastSeen))}</span></summary>${facts.map((f) => `<div class="memory-fact">${archiveEsc(f.text, kw)}<span class="memory-when">确认 ${esc(fmtDay(f.confirmedAt))}</span>${f.previous ? `<div class="memory-sub">纠正前：${esc(f.previous)}</div>` : ''}</div>`).join('')}</details>`;
+  }).join('') || '<div class="memory-empty">没有匹配的人</div>'}</div>`);
+
+  document.getElementById('archiveProfile').innerHTML = blocks.join('');
+}
+
+function renderArchiveDays(days) {
+  const box = document.getElementById('archiveDays');
+  const list = Array.isArray(days) ? days : [];
+  document.getElementById('archiveDaysTitle').textContent = `事件流 · ${list.length} 天`;
+  box.innerHTML = list.map((d) => `<button class="archive-day-btn ${archiveState.day === d.day ? 'active' : ''}" data-day="${esc(d.day)}">${esc(d.day.slice(5))}<span>${d.count}</span></button>`).join('')
+    || '<div class="memory-empty">还没有事件</div>';
+  box.querySelectorAll('.archive-day-btn').forEach((btn) => btn.addEventListener('click', () => loadArchiveDay(btn.dataset.day)));
+}
+
+function renderArchiveEvents() {
+  const kw = archiveState.keyword;
+  const events = (archiveState.events || []).filter((e) => archiveMatch(e.text, kw) || archiveMatch(e.who, kw));
+  const lines = events.map((e) => {
+    const d = new Date(Number(e.t) || 0);
+    const pad = (v) => String(v).padStart(2, '0');
+    const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    return `<div class="archive-event"><span class="ae-time">${time}</span><span class="ae-who">${esc(e.who || '—')}</span><span class="ae-s">S${e.s || 1}</span><span class="ae-text">${archiveEsc(e.text, kw)}</span></div>`;
+  });
+  const dayBox = `<div class="archive-section"><h4>${esc(archiveState.day || '')} · ${events.length} 条</h4>${lines.join('') || '<div class="memory-empty">这一天没有匹配的事件</div>'}</div>`;
+  const evBox = document.getElementById('archiveEvents');
+  if (evBox) evBox.innerHTML = dayBox;
+}
+
+async function loadArchiveDay(day) {
+  const msg = document.getElementById('archiveMsg');
+  try {
+    const r = await api(`/api/memory/archive?day=${encodeURIComponent(day)}`);
+    if (!r || !r.ok) throw new Error((r && r.error) || '加载失败');
+    archiveState.day = day;
+    archiveState.events = r.events || [];
+    renderArchiveDays(archiveState.data?.days || []);
+    renderArchiveEvents();
+    if (msg) { msg.textContent = `${day} · ${archiveState.events.length} 条`; msg.className = 'meta ok'; }
+  } catch (e) {
+    if (msg) { msg.textContent = '加载失败：' + ((e && e.message) || e); msg.className = 'meta err'; }
+  }
+}
+
+async function loadMemoryArchive() {
+  const msg = document.getElementById('archiveMsg');
+  if (!msg) return;
+  msg.textContent = '加载中…';
+  msg.className = 'meta';
+  try {
+    const r = await api('/api/memory/archive');
+    if (!r || !r.ok) throw new Error((r && r.error) || '加载失败');
+    archiveState.data = r;
+    archiveState.keyword = '';
+    const search = document.getElementById('archiveSearch');
+    if (search) search.value = '';
+    renderArchiveProfile(r.profile, '');
+    const latest = (r.days || [])[0]?.day || '';
+    if (latest) await loadArchiveDay(latest);
+    else renderArchiveDays(r.days || []);
+    msg.textContent = `已加载 · ${(r.days || []).length} 天事件 · ${(r.profile?.people || []).length} 人`;
+    msg.className = 'meta ok';
+  } catch (e) {
+    msg.textContent = '加载失败：' + ((e && e.message) || e);
+    msg.className = 'meta err';
+  }
+}
+
+document.getElementById('archiveReload')?.addEventListener('click', loadMemoryArchive);
+document.getElementById('archiveSearch')?.addEventListener('input', (ev) => {
+  archiveState.keyword = String(ev.target.value || '').trim();
+  if (archiveState.data) renderArchiveProfile(archiveState.data.profile, archiveState.keyword);
+  renderArchiveEvents();
+});
+
+// ── 记忆星图（3D 宇宙）：确定性力导向 + Canvas 透视投影 ──
 // 布局必须稳定：同样的数据每次打开形状一样，才能拿它做「改之前 / 改之后」的对比。
 // 所以初始位置由节点 seed（FNV-1a 哈希）决定，力导向迭代固定次数，不用随机数。
-const GRAPH_NODE_COLORS = { person: '#4a7dff', thread: '#f0a13c', self: '#c86bff', event: '#3fbf9a' };
+// 三维只是给人「宇宙感」：她的一生在中间，人和事像星星一样围着她转。
+const GRAPH_NODE_COLORS = { me: '#ffd166', person: '#4a7dff', thread: '#f0a13c', self: '#c86bff', event: '#3fbf9a' };
 const GRAPH_EDGE_COLORS = { entity: '#f0a13c', semantic: '#4a7dff', temporal: '#3fbf9a' };
-const GRAPH_TYPE_LABEL = { person: '人物', thread: '线', self: '心事', event: '事件' };
+const GRAPH_TYPE_LABEL = { me: '她自己', person: '人物', thread: '线', self: '心事', event: '事件' };
 const GRAPH_KIND_LABEL = { entity: '实体', semantic: '语义', temporal: '时间' };
 const graphState = {
   graph: null,
   nodes: [],
   edges: [],
   byId: new Map(),
-  scale: 1,
-  ox: 0,
-  oy: 0,
+  // 3D 相机：yaw/pitch 旋转，zoom 缩放，camZ 透视距离
+  yaw: -0.35,
+  pitch: 0.28,
+  zoom: 1,
+  camZ: 760,
   hoverId: null,
   activeId: null,
   dragging: false,
@@ -5134,63 +5354,89 @@ const graphState = {
   lastY: 0,
   W: 1200,
   H: 640,
+  autoSpin: true,
   raf: 0,
 };
 
+/** 世界坐标 → 屏幕坐标（透视投影）。返回 depth 用于排序与雾化。 */
+function graphProject(n) {
+  // 她永远在画面正中：无论力导向算出什么，宇宙的中心不该漂走
+  if (n.type === 'me') {
+    return { x: graphState.W / 2, y: graphState.H / 2, depth: 0, persp: 1 };
+  }
+  const cy = Math.cos(graphState.yaw);
+  const sy = Math.sin(graphState.yaw);
+  const cp = Math.cos(graphState.pitch);
+  const sp = Math.sin(graphState.pitch);
+  const x1 = n.x * cy - n.z * sy;
+  const z1 = n.x * sy + n.z * cy;
+  const y1 = n.y * cp - z1 * sp;
+  const z2 = n.y * sp + z1 * cp;
+  const persp = graphState.camZ / Math.max(120, graphState.camZ - z2);
+  return {
+    x: graphState.W / 2 + x1 * persp * graphState.zoom,
+    y: graphState.H / 2 + y1 * persp * graphState.zoom,
+    depth: z2,
+    persp,
+  };
+}
+
 function graphFit() {
   const nodes = graphState.nodes.filter((n) => !n.hidden);
-  if (!nodes.length) { graphState.scale = 1; graphState.ox = 0; graphState.oy = 0; return; }
-  let minX = Infinity; let maxX = -Infinity; let minY = Infinity; let maxY = -Infinity;
+  if (!nodes.length) { graphState.zoom = 1; return; }
+  let maxR = 1;
   for (const n of nodes) {
-    if (n.x < minX) minX = n.x;
-    if (n.x > maxX) maxX = n.x;
-    if (n.y < minY) minY = n.y;
-    if (n.y > maxY) maxY = n.y;
+    const r = Math.sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+    if (r > maxR) maxR = r;
   }
-  const pad = 70;
-  const w = Math.max(1, maxX - minX);
-  const h = Math.max(1, maxY - minY);
-  const scale = Math.min((graphState.W - pad * 2) / w, (graphState.H - pad * 2) / h, 2.2);
-  graphState.scale = Math.max(0.15, scale);
-  graphState.ox = -((minX + maxX) / 2) * graphState.scale;
-  graphState.oy = -((minY + maxY) / 2) * graphState.scale;
+  // 让整张图刚好落在画布内（留一圈边）
+  const fit = Math.min(graphState.W, graphState.H) * 0.46;
+  graphState.zoom = Math.max(0.75, Math.min(2.2, fit / maxR));
 }
 
 function graphLayout() {
   const nodes = graphState.nodes.filter((n) => !n.hidden);
   const visible = new Set(nodes.map((n) => n.id));
   const edges = graphState.edges.filter((e) => visible.has(e.source) && visible.has(e.target));
+  // 初始位置：球面均匀分布（phi 用黄金角，避免聚集在两极）+ seed 抖动
   for (const n of graphState.nodes) {
-    if (!n._seeded) {
-      const seed = n.seed >>> 0;
-      const a = ((seed % 997) / 997) * Math.PI * 2;
-      const r = 60 + ((seed >>> 9) % 997) / 997 * 240;
-      n.x = Math.cos(a) * r;
-      n.y = Math.sin(a) * r * 0.66;
-      n.vx = 0;
-      n.vy = 0;
-      n._seeded = true;
-    }
+    if (n._seeded) continue;
+    const seed = n.seed >>> 0;
+    const i = (seed % 100003);
+    const phi = Math.acos(1 - 2 * ((i % 4096) + 0.5) / 4096);
+    const theta = i * 2.399963229728653;
+    const r = 140 + (((seed >>> 12) % 997) / 997) * 180;
+    n.x = Math.sin(phi) * Math.cos(theta) * r;
+    n.y = Math.cos(phi) * r * 0.8;
+    n.z = Math.sin(phi) * Math.sin(theta) * r;
+    n.vx = 0;
+    n.vy = 0;
+    n.vz = 0;
+    n._seeded = true;
   }
-  const REPULSE = 2400;
+  const REPULSE = 92000;
   const SPRING = 0.014;
-  const LEN = 96;
-  const CENTER = 0.0022;
-  for (let it = 0; it < 340; it += 1) {
+  const LEN = 92;
+  const CENTER = 0.003;
+  const meNode = nodes.find((n) => n.type === 'me');
+  for (let it = 0; it < 320; it += 1) {
     for (let i = 0; i < nodes.length; i += 1) {
       const a = nodes[i];
       for (let j = i + 1; j < nodes.length; j += 1) {
         const b = nodes[j];
         let dx = a.x - b.x;
         let dy = a.y - b.y;
-        let d2 = dx * dx + dy * dy;
-        if (d2 < 1) { d2 = 1; dx = (i - j) * 0.7 || 0.7; dy = 0.4; }
-        const f = REPULSE / d2;
+        let dz = a.z - b.z;
+        let d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < 100) { d2 = 100; dx += (i - j) * 0.6 || 0.6; dy += 0.4; dz += 0.3; }
         const d = Math.sqrt(d2);
+        const f = REPULSE / d2;
         a.vx += (dx / d) * f;
         a.vy += (dy / d) * f;
+        a.vz += (dz / d) * f;
         b.vx -= (dx / d) * f;
         b.vy -= (dy / d) * f;
+        b.vz -= (dz / d) * f;
       }
     }
     for (const e of edges) {
@@ -5199,30 +5445,69 @@ function graphLayout() {
       if (!a || !b) continue;
       const dx = b.x - a.x;
       const dy = b.y - a.y;
-      const d = Math.sqrt(dx * dx + dy * dy) || 1;
-      const target = LEN * (1.5 - Math.min(1, e.weight));
+      const dz = b.z - a.z;
+      const d = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+      // 和她相连的边更长一些：她应该是宇宙中心，其它星围着转而不是压在她身上
+      const starLen = (a.type === 'me' || b.type === 'me') ? 2.1 : 1;
+      const target = LEN * (1.5 - Math.min(1, e.weight)) * starLen;
       const f = (d - target) * SPRING;
       a.vx += (dx / d) * f;
       a.vy += (dy / d) * f;
+      a.vz += (dz / d) * f;
       b.vx -= (dx / d) * f;
       b.vy -= (dy / d) * f;
+      b.vz -= (dz / d) * f;
     }
     for (const n of nodes) {
+      if (n.type === 'me') {
+        // 她永远精确在原点：不参与漂移，只作为引力源
+        n.x = 0;
+        n.y = 0;
+        n.z = 0;
+        n.vx = 0;
+        n.vy = 0;
+        n.vz = 0;
+        continue;
+      }
       n.vx -= n.x * CENTER;
       n.vy -= n.y * CENTER;
+      n.vz -= n.z * CENTER;
       n.x += n.vx;
       n.y += n.vy;
+      n.z += n.vz;
       n.vx *= 0.84;
       n.vy *= 0.84;
+      n.vz *= 0.84;
     }
+  }
+  if (meNode) {
+    // 双保险：迭代结束后把她摆回正中央
+    for (const n of nodes) {
+      if (n.type === 'me') continue;
+      n.x -= meNode.x;
+      n.y -= meNode.y;
+      n.z -= meNode.z;
+    }
+    meNode.x = 0;
+    meNode.y = 0;
+    meNode.z = 0;
   }
 }
 
-function graphScreen(n) {
-  return {
-    x: (n.x - 0) * graphState.scale + graphState.W / 2 + graphState.ox,
-    y: (n.y - 0) * graphState.scale + graphState.H / 2 + graphState.oy,
+/** 背景星尘：确定性生成（不用随机数），旋转时有轻微视差，像真的宇宙。 */
+function graphStars() {
+  if (graphState._stars) return graphState._stars;
+  const out = [];
+  let seed = 20261028;
+  const rnd = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 4294967296;
   };
+  for (let i = 0; i < 150; i += 1) {
+    out.push({ x: rnd(), y: rnd(), r: 0.3 + rnd() * 0.9, a: 0.10 + rnd() * 0.35, d: 0.3 + rnd() * 0.7 });
+  }
+  graphState._stars = out;
+  return out;
 }
 
 function graphDraw() {
@@ -5237,6 +5522,24 @@ function graphDraw() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, graphState.W, graphState.H);
 
+  // 深色宇宙底 + 星尘
+  const bg = ctx.createRadialGradient(graphState.W / 2, graphState.H / 2, 40, graphState.W / 2, graphState.H / 2, Math.max(graphState.W, graphState.H) * 0.72);
+  bg.addColorStop(0, '#0b1020');
+  bg.addColorStop(1, '#05070f');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, graphState.W, graphState.H);
+  const spin = graphState.yaw * 0.35;
+  for (const s of graphStars()) {
+    const x = ((s.x + spin * s.d) % 1 + 1) % 1 * graphState.W;
+    const y = s.y * graphState.H;
+    ctx.globalAlpha = s.a;
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(x, y, s.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
   const visible = new Set(graphState.nodes.filter((n) => !n.hidden).map((n) => n.id));
   const edges = graphState.edges.filter((e) => visible.has(e.source) && visible.has(e.target));
   const focusId = graphState.hoverId || graphState.activeId;
@@ -5248,17 +5551,28 @@ function graphDraw() {
       if (e.target === focusId) neighbor.add(e.source);
     }
   }
+  const proj = new Map();
+  for (const n of graphState.nodes) {
+    if (n.hidden) continue;
+    proj.set(n.id, graphProject(n));
+  }
 
-  for (const e of edges) {
-    const a = graphState.byId.get(e.source);
-    const b = graphState.byId.get(e.target);
-    if (!a || !b || a.hidden || b.hidden) continue;
-    const pa = graphScreen(a);
-    const pb = graphScreen(b);
+  // 连线：先画远端的，近端的后画（伪深度）
+  const edgeList = edges
+    .map((e) => {
+      const pa = proj.get(e.source);
+      const pb = proj.get(e.target);
+      return pa && pb ? { e, pa, pb, depth: (pa.depth + pb.depth) / 2 } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.depth - b.depth);
+  for (const { e, pa, pb, depth } of edgeList) {
     const dim = focusId && !(neighbor.has(e.source) && neighbor.has(e.target));
-    ctx.globalAlpha = dim ? 0.08 : 0.34 + Math.min(0.5, e.weight * 0.7);
+    // 越远越暗：远处的星连着的光也该更弱
+    const fog = Math.max(0.18, Math.min(1, (graphState.camZ * 0.55 + depth) / (graphState.camZ * 0.9)));
+    ctx.globalAlpha = dim ? 0.05 : (0.18 + Math.min(0.5, e.weight * 0.6)) * fog;
     ctx.strokeStyle = GRAPH_EDGE_COLORS[e.kind] || '#999';
-    ctx.lineWidth = 0.8 + Math.min(1.6, e.weight * 2);
+    ctx.lineWidth = 0.6 + Math.min(1.4, e.weight * 1.6);
     ctx.beginPath();
     ctx.moveTo(pa.x, pa.y);
     ctx.lineTo(pb.x, pb.y);
@@ -5266,37 +5580,61 @@ function graphDraw() {
   }
   ctx.globalAlpha = 1;
 
-  for (const n of graphState.nodes) {
-    if (n.hidden) continue;
-    const p = graphScreen(n);
-    const r = 5 + Math.min(11, n.degree * 1.15);
+  // 节点：按深度排序（远的先画），她自己永远最后画（压在所有星上面）
+  const nodeList = graphState.nodes
+    .filter((n) => !n.hidden && proj.has(n.id))
+    .map((n) => ({ n, p: proj.get(n.id) }))
+    .sort((a, b) => a.p.depth - b.p.depth);
+  nodeList.sort((a, b) => (a.n.type === 'me' ? 1 : 0) - (b.n.type === 'me' ? 1 : 0));
+  for (const { n, p } of nodeList) {
     const dim = focusId && !neighbor.has(n.id);
-    ctx.globalAlpha = dim ? 0.18 : 1;
+    const isMe = n.type === 'me';
+    const fog = isMe ? 1 : Math.max(0.22, Math.min(1, (graphState.camZ * 0.5 + p.depth) / (graphState.camZ * 0.85)));
+    const base = isMe ? 26 : 7 + Math.min(10, n.degree * 1.15);
+    const r = Math.max(2, base * p.persp * Math.min(1.6, graphState.zoom));
     const color = GRAPH_NODE_COLORS[n.type] || '#999';
-    // 连接越多越亮：一眼看出枢纽（Hindsight 的「node brightness = connectivity」）
-    if (n.degree >= 3 && !dim) {
-      const glow = ctx.createRadialGradient(p.x, p.y, r * 0.4, p.x, p.y, r * 2.6);
-      glow.addColorStop(0, color + '66');
-      glow.addColorStop(1, color + '00');
+    ctx.globalAlpha = dim ? 0.12 : fog;
+
+    // 发光：她本人最亮，其次是枢纽
+    if (!dim && (isMe || n.degree >= 3)) {
+      const glow = ctx.createRadialGradient(p.x, p.y, r * 0.4, p.x, p.y, r * (isMe ? 3.4 : 2.4));
+      glow.addColorStop(0, `${color}${isMe ? 'aa' : '66'}`);
+      glow.addColorStop(1, `${color}00`);
       ctx.fillStyle = glow;
       ctx.beginPath();
-      ctx.arc(p.x, p.y, r * 2.6, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, r * (isMe ? 3.4 : 2.4), 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.fillStyle = color;
     ctx.beginPath();
     ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
     ctx.fill();
-    if (focusId === n.id) {
-      ctx.strokeStyle = '#fff';
-      ctx.lineWidth = 2;
+    if (isMe) {
+      // 她是一颗恒星：加一圈光晕与十字星芒
+      ctx.strokeStyle = 'rgba(255,209,102,.75)';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r * 1.75, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,209,102,.28)';
+      ctx.beginPath();
+      ctx.moveTo(p.x - r * 2.8, p.y);
+      ctx.lineTo(p.x + r * 2.8, p.y);
+      ctx.moveTo(p.x, p.y - r * 2.8);
+      ctx.lineTo(p.x, p.y + r * 2.8);
       ctx.stroke();
     }
-    // 人物标签始终显示（即使缩得很小）；其它节点在放大、且连接 ≥2 时才标，
-    // 否则几十条事件标签会把图糊成一片。
-    if (n.type === 'person' || (graphState.scale > 0.9 && n.degree >= 2)) {
-      ctx.fillStyle = 'rgba(86,94,112,.95)';
-      ctx.font = `${n.type === 'person' ? 12 : 11}px system-ui, sans-serif`;
+    if (focusId === n.id) {
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1.6;
+      ctx.stroke();
+    }
+    // 标签：她自己、人物、以及足够近的枢纽
+    const showLabel = isMe || n.type === 'person' || (n.degree >= 2 && graphState.zoom > 0.9 && p.persp > 0.85);
+    if (showLabel) {
+      ctx.globalAlpha = dim ? 0.15 : Math.min(1, fog + 0.25);
+      ctx.fillStyle = isMe ? 'rgba(255,222,150,.95)' : 'rgba(198,208,228,.9)';
+      ctx.font = `${isMe ? 13 : 11}px system-ui, sans-serif`;
       ctx.textAlign = 'center';
       const label = n.label.length > 12 ? `${n.label.slice(0, 12)}…` : n.label;
       ctx.fillText(label, p.x, p.y + r + 13);
@@ -5314,10 +5652,12 @@ function graphPick(clientX, clientY) {
   let bestD = Infinity;
   for (const n of graphState.nodes) {
     if (n.hidden) continue;
-    const p = graphScreen(n);
-    const r = 7 + Math.min(11, n.degree * 1.15);
-    const d = Math.hypot(p.x - sx, p.y - sy);
-    if (d <= r + 4 && d < bestD) { best = n; bestD = d; }
+    const proj = graphProject(n);
+    const r = (n.type === 'me' ? 14 : 6 + Math.min(10, n.degree)) * proj.persp * Math.min(1.5, graphState.zoom);
+    const d = Math.hypot(proj.x - sx, proj.y - sy);
+    // 近处的点优先（透视下的「前面那个」才该被点到）
+    const score = d - proj.persp * 2;
+    if (d <= r + 6 && score < bestD) { best = n; bestD = score; }
   }
   return best;
 }
@@ -5382,7 +5722,8 @@ function renderGraphStats(stats) {
 function graphRebuildVisible() {
   const types = new Set();
   document.querySelectorAll('[data-graph-type]').forEach((el) => { if (el.checked) types.add(el.dataset.graphType); });
-  for (const n of graphState.nodes) n.hidden = !types.has(n.type);
+  // 「她自己」是宇宙的中心，不受类型筛选影响：任何视角下她都应该在
+  for (const n of graphState.nodes) n.hidden = n.type === 'me' ? false : !types.has(n.type);
   graphFit();
   graphDraw();
 }
@@ -5421,14 +5762,8 @@ function graphBindEvents() {
   if (!canvas) return;
   canvas.addEventListener('wheel', (ev) => {
     ev.preventDefault();
-    const rect = canvas.getBoundingClientRect();
-    const mx = ((ev.clientX - rect.left) / rect.width) * graphState.W;
-    const my = ((ev.clientY - rect.top) / rect.height) * graphState.H;
-    const before = { x: (mx - graphState.W / 2 - graphState.ox) / graphState.scale, y: (my - graphState.H / 2 - graphState.oy) / graphState.scale };
-    const factor = ev.deltaY < 0 ? 1.12 : 1 / 1.12;
-    graphState.scale = Math.min(6, Math.max(0.12, graphState.scale * factor));
-    graphState.ox = mx - graphState.W / 2 - before.x * graphState.scale;
-    graphState.oy = my - graphState.H / 2 - before.y * graphState.scale;
+    const factor = ev.deltaY < 0 ? 1.1 : 1 / 1.1;
+    graphState.zoom = Math.min(4, Math.max(0.15, graphState.zoom * factor));
     graphDraw();
   }, { passive: false });
 
@@ -5447,8 +5782,9 @@ function graphBindEvents() {
       if (Math.abs(dx) + Math.abs(dy) > 2) graphState.moved = true;
       graphState.lastX = ev.clientX;
       graphState.lastY = ev.clientY;
-      graphState.ox += dx * (graphState.W / canvas.getBoundingClientRect().width);
-      graphState.oy += dy * (graphState.H / canvas.getBoundingClientRect().height);
+      // 拖拽 = 转宇宙，不是平移画面
+      graphState.yaw += dx * 0.006;
+      graphState.pitch = Math.max(-1.25, Math.min(1.25, graphState.pitch + dy * 0.005));
       graphDraw();
       return;
     }
@@ -5482,8 +5818,23 @@ function graphBindEvents() {
   });
   document.querySelectorAll('[data-graph-type]').forEach((el) => el.addEventListener('change', graphRebuildVisible));
   document.getElementById('graphDays')?.addEventListener('change', loadMemoryGraph);
-  document.getElementById('graphReset')?.addEventListener('click', () => { graphFit(); graphDraw(); });
+  document.getElementById('graphReset')?.addEventListener('click', () => {
+    graphState.yaw = -0.35;
+    graphState.pitch = 0.28;
+    graphState.zoom = 1;
+    graphFit();
+    graphDraw();
+  });
   document.getElementById('graphReload')?.addEventListener('click', loadMemoryGraph);
+  // 自动缓慢巡航：宇宙不该是静止的。鼠标悬停时暂停，方便看细节。
+  const tick = () => {
+    if (!document.hidden && !graphState.dragging && !graphState.hoverId && graphState.nodes.length) {
+      graphState.yaw += 0.0016;
+      graphDraw();
+    }
+    graphState.raf = requestAnimationFrame(tick);
+  };
+  if (!graphState.raf) graphState.raf = requestAnimationFrame(tick);
 }
 graphBindEvents();
 </script>
