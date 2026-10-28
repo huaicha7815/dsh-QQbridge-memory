@@ -6362,6 +6362,23 @@ async function main() {
               })(),
             },
             days,
+            // 分级浏览用：日摘要 / 周要点 / 月要点（完整记忆库不是只有流水）
+            summaries: {
+              days: memoryStore.readSummaries({ days: 14, now: Date.now() }).map((s) => ({
+                day: String(s.day || ''),
+                count: Number(s.count) || 0,
+                tiers: Array.isArray(s.tiers) ? s.tiers : [],
+                lines: (s.lines || []).map((x) => ({ t: String(x?.t ?? ''), s: Number(x?.s) || 1 })),
+              })),
+              weeks: memoryStore.readWeekNotes({ weeks: 8, now: Date.now() }).map((w) => ({
+                week: String(w.week || w.id || ''),
+                lines: (w.lines || w.notes || []).map((x) => String(x?.t ?? x?.text ?? x)),
+              })),
+              months: memoryStore.readMonthNotes({ months: 6, now: Date.now() }).map((m) => ({
+                month: String(m.month || m.id || ''),
+                lines: (m.lines || m.notes || []).map((x) => String(x?.t ?? x?.text ?? x)),
+              })),
+            },
           });
           return;
         }

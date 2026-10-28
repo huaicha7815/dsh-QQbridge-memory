@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>qq-bridge · 让 QQ 群里的 AI 拥有连续的一生</title>
-<meta name="description" content="把 DeepSeek Harness 接进 QQ 群：四层长期记忆、零 token 记忆检索、可自省可纠错。">
+<title>qq-bridge · 让 QQ 里的 AI 拥有连续的一生（群聊 + 私聊）</title>
+<meta name="description" content="把 DeepSeek Harness 接进你的 QQ——群聊和私聊都可以：四层长期记忆、零 token 记忆检索、可自省可纠错。">
 <style>
   :root{
     --bg:#0b1020; --bg2:#0f1730; --card:#141d36; --line:#243253;
@@ -70,9 +70,9 @@
 
 <header>
   <div class="fish">🐳</div>
-  <h1>qq-bridge<br><span>让群里的 AI 拥有连续的一生</span></h1>
+  <h1>qq-bridge<br><span>让 QQ 里的她，拥有连续的一生</span></h1>
   <p class="sub">
-    把 DeepSeek Harness 接进 QQ 群。四层长期记忆、零 token 的记忆检索、<br>
+    把 DeepSeek Harness 接进你的 QQ——<b>群聊和私聊用的是同一个她</b>，同一份记忆。<br>
     她自己能查、能纠错、能自省——历史一条不删，注入永远有上限。
   </p>
   <div class="badges">
@@ -110,6 +110,12 @@
     <div class="card"><span class="ico">🩹</span><h3>档案会自愈</h3>
       <p>同一件事换了三种说法？靠「专名槽 + 实词锚点」判为一条；<code>done</code> 一次收尾清掉所有同名未完结；
         同人不同名自动归并。</p></div>
+    <div class="card"><span class="ico">🌌</span><h3>记忆星图</h3>
+      <p>把她记得的事画成一片宇宙：中间那团金色星云是她自己，周围是人、约定、日子聚成的星云，
+        外面还有没连成故事的散星。点星云聚焦、点光点看原文，纯本地规则、不调模型。</p></div>
+    <div class="card"><span class="ico">🗄️</span><h3>完整记忆库</h3>
+      <p>按四层分级浏览：L1 事件流（一天不落）、L2 日摘要、L2.5 周/月要点、L3 长期档案，
+        可搜索、可回溯——她的完整人生不是任何人的仪表盘。</p></div>
     <div class="card"><span class="ico">🩺</span><h3>能自省</h3>
       <p><code>npm run memory-health</code> 看规模、分档、检索质量、档案自检，并给出可执行建议。</p></div>
   </div>
@@ -130,11 +136,11 @@
       <small>只处理「已经走完」的周和月，跨周期去重。</small>
       <span class="tag">粗粒度</span></div>
     <div class="layer"><b>L3 档案</b>
-      <small>人物事实（带确认时间与纠错历史）、未完结的线、她自己的心事。写入时做「同一件事」判重，
+      <small><b>她自己的一生</b>（我是谁 / 走过的路 / 我喜欢 / 我的心事 / 我的世界，身份与里程碑永不淘汰）、人物事实（带确认时间与纠错历史）、未完结的线。写入时做「同一件事」判重，
         了结时一次收掉所有同名 open 线，注入侧再过滤掉已经还完的债。</small>
       <span class="tag">有上限 · 可自愈</span></div>
     <div class="layer"><b>L4 注入</b>
-      <small>四块预算：线 22% / 人 22% / 检索 36% / 热话题 20%，硬上限 1000 字符，外面套 &lt;memory-context&gt;。</small>
+      <small>五块预算：<b>她自己 26%</b> / 在意的线 22% / 认识的人 18% / 检索 26% / 热话题 8%，硬上限 1000 字符，外面套 &lt;memory-context&gt;。</small>
       <span class="tag">恒定</span></div>
   </div>
 
@@ -220,7 +226,7 @@ npm run memory-health</code></pre>
 </section>
 
 <footer>
-  <p>qq-bridge · MIT License · 用 Node.js 写的 QQ 群桥接，长期记忆是它最认真的部分。</p>
+  <p>qq-bridge · MIT License · 用 Node.js 写的 QQ 群聊 / 私聊桥接，长期记忆是它最认真的部分。</p>
   <p style="margin-top:8px"><a href="https://github.com/huaicha7815/dsh-QQbridge-memory/blob/main/docs/design/MEMORY_V3_PLAN.md">记忆库设计文档</a> ·
      <a href="https://github.com/huaicha7815/dsh-QQbridge-memory/blob/main/docs/guides/SECURITY_BASELINE.md">安全基线</a> ·
      <a href="https://github.com/huaicha7815/dsh-QQbridge-memory/blob/main/docs/FOLDER_MAP.md">目录结构</a></p>

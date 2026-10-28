@@ -1839,18 +1839,35 @@ export function buildMemoryUniverse(profile, events, { maxStars = 420, minTopicS
     kind: String(meta.kind || 'event'),
     type: String(meta.type || 'event'),
     weight: Number(meta.weight) || 1,
+    // 她自己的一生五层：前端按层给不同深浅的金色（其它类型的星没有这个字段）
+    ...(meta.layer ? { layer: String(meta.layer) } : {}),
   });
 
-  // 1) 她的一生：五层各一团（空层不出现）
+  // 1) 她自己：一团「我」星云。她的一生五层都是这团里的光点（按层着色）。
+  // 不单独画一颗钉在正中的恒星——她和别的星云是同一个画风，只是颜色是金色、
+  // 位置在宇宙中心，旋转时一样会动。
   const groups = groupSelfNotes(p);
+  const selfStars = [];
   for (const [kind, list] of Object.entries(groups)) {
-    if (!list.length) continue;
+    for (const s of list) {
+      selfStars.push(star(s.text, {
+        id: `self:${hash32(s.text)}`,
+        at: s.at,
+        s: 3,
+        kind: 'self',
+        type: 'self',
+        weight: 3.4,
+        layer: kind,
+      }));
+    }
+  }
+  if (selfStars.length) {
     push({
-      id: `self:${kind}`,
-      label: SELF_CLOUD_LABELS[kind] || kind,
-      kind: 'self',
-      sub: '她的一生',
-      stars: list.map((s) => star(s.text, { id: `self:${hash32(s.text)}`, at: s.at, s: 3, kind: 'self', type: 'self', weight: 2.4 })),
+      id: 'me',
+      label: truncateChars(String(selfName || '我'), 20),
+      kind: 'me',
+      sub: '她自己',
+      stars: selfStars,
     });
   }
 

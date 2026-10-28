@@ -1785,7 +1785,17 @@ button:active:not(:disabled) {
 #section-memory .memory-heading { margin:18px 0 8px; font-size:12px; letter-spacing:.04em; color:var(--muted) }
 
 /* 完整记忆库 */
+.archive-tabs { display:flex; gap:6px; flex-wrap:wrap; margin-top:12px }
+.archive-tabs button { padding:6px 12px; border-radius:8px; border:1px solid var(--border, rgba(128,128,128,.22)); background:transparent; color:var(--muted); font-size:12px; cursor:pointer }
+.archive-tabs button:hover { background:var(--surface-hover, rgba(128,128,128,.08)) }
+.archive-tabs button.active { background:var(--accent-soft, rgba(80,120,255,.16)); color:var(--accent, #4569ff); border-color:var(--accent, #4569ff) }
 .archive-layout { display:grid; grid-template-columns:210px 1fr; gap:14px; margin-top:12px }
+.archive-layout.no-side { grid-template-columns:1fr }
+.archive-sum { padding:12px 14px; border:1px solid var(--border, rgba(128,128,128,.2)); border-radius:11px; background:var(--surface-soft, rgba(128,128,128,.04)); margin-bottom:10px }
+.archive-sum h5 { margin:0 0 6px; font-size:12.5px; color:var(--text-strong, inherit) }
+.archive-sum .as-line { font-size:12.5px; line-height:1.7; padding:2px 0; color:var(--text, inherit) }
+.archive-sum .as-line .meta { font-size:10.5px }
+.archive-sum .as-empty { font-size:12px; color:var(--muted) }
 @media (max-width: 860px) { .archive-layout { grid-template-columns:1fr } }
 .archive-days { border:1px solid var(--border, rgba(128,128,128,.22)); border-radius:10px; padding:8px; max-height:680px; overflow:auto; background:var(--surface-soft, rgba(128,128,128,.04)) }
 .archive-days-title { font-size:12px; color:var(--muted); padding:4px 6px 8px }
@@ -1818,7 +1828,14 @@ button:active:not(:disabled) {
 .atlas-actions { display:flex; gap:8px; margin-top:6px; flex-wrap:wrap }
 .atlas-actions button { background:rgba(90,140,255,.14); border:1px solid rgba(120,170,255,.28); color:#bcd0f5; padding:6px 12px; border-radius:8px; font-size:12px; cursor:pointer }
 .atlas-actions button:hover { background:rgba(90,140,255,.24) }
-.atlas-body { display:grid; grid-template-columns:212px minmax(0,1fr) 292px; gap:0; align-items:stretch }
+.atlas-body { display:grid; grid-template-columns:212px minmax(0,1fr) 292px; gap:0; align-items:stretch; transition:grid-template-columns .18s }
+.atlas.panels-hidden .atlas-body { grid-template-columns:0 minmax(0,1fr) 0 }
+.atlas.panels-hidden .atlas-left, .atlas.panels-hidden .atlas-right { display:none }
+.atlas-canvas-wrap { min-height:700px }
+.atlas.is-full { position:fixed; inset:0; z-index:80; background:#070b14; display:flex; flex-direction:column }
+.atlas.is-full .atlas-body { flex:1; min-height:0 }
+.atlas.is-full .atlas-canvas-wrap { min-height:0; height:100% }
+.atlas.is-full #memoryGraphCanvas { height:100% !important; object-fit:contain }
 @media (max-width: 1180px) { .atlas-body { grid-template-columns:1fr } .atlas-left, .atlas-right { display:none } }
 .atlas-left { padding:16px 14px; border-right:1px solid rgba(140,160,200,.12); overflow:auto; max-height:760px }
 .atlas-caption { font-size:11px; line-height:1.7; color:#7f93b4 }
@@ -2418,7 +2435,14 @@ button:active:not(:disabled) {
         <input id="archiveSearch" type="search" placeholder="搜她记得的东西…" style="flex:1;min-width:200px">
         <span class="meta" id="archiveMsg"></span>
       </div>
-      <div class="archive-layout">
+      <div class="archive-tabs" id="archiveTabs">
+        <button data-tab="events" class="active">L1 事件流</button>
+        <button data-tab="days">L2 日摘要</button>
+        <button data-tab="weeks">L2.5 周要点</button>
+        <button data-tab="months">L2.5 月要点</button>
+        <button data-tab="profile">L3 长期档案</button>
+      </div>
+      <div class="archive-layout" id="archiveLayout">
         <aside class="archive-days">
           <div class="archive-days-title" id="archiveDaysTitle">事件流</div>
           <div id="archiveDays">（加载中…）</div>
@@ -2442,11 +2466,13 @@ button:active:not(:disabled) {
             <button id="graphPause" class="small">暂停旋转</button>
             <button id="graphReset" class="small">重置视角</button>
             <button id="graphReload" class="small">刷新数据</button>
+            <button id="graphPanels" class="small">收起侧栏</button>
+            <button id="graphFull" class="small">全屏</button>
           </div>
         </div>
         <div class="atlas-body">
           <aside class="atlas-left">
-            <div class="atlas-caption">中间金色那颗是<b>她自己</b>；周围一团团是她的<b>星云</b>（她的一生、她认识的人、约定、她经历的日子）；点开星云能看见里面的光点。蓝色是选中的记忆，白色是普通记录。</div>
+            <div class="atlas-caption">中央那团<b>金色星云就是她自己</b>（她的一生五层都在里面，按深浅着色）；周围是她的<b>星云</b>（她认识的人、约定、她经历的日子）和外围的散星。点星云聚焦、点光点看原文。蓝色是选中的记忆。</div>
             <div class="atlas-legend" id="atlasLegend"></div>
             <div class="atlas-clouds" id="atlasClouds"></div>
           </aside>
@@ -5277,7 +5303,7 @@ document.getElementById('archiveBack')?.addEventListener('click', () => {
 });
 
 // ── 完整记忆库：档案原文 + 事件流按天 ──
-const archiveState = { data: null, day: null, keyword: '', events: [] };
+const archiveState = { data: null, day: null, keyword: '', events: [], tab: 'events' };
 const ARCHIVE_SELF_LABELS = { identity: '我是谁', milestone: '走过的路', like: '我喜欢', feeling: '我的心事', world: '我的世界' };
 
 function archiveEsc(text, kw) {
@@ -5364,6 +5390,66 @@ async function loadArchiveDay(day) {
   }
 }
 
+
+function archiveSummaries(kind) {
+  const s = (archiveState.data && archiveState.data.summaries) || {};
+  return Array.isArray(s[kind]) ? s[kind] : [];
+}
+
+function renderArchiveSummaries(kind) {
+  const list = archiveSummaries(kind);
+  const kw = archiveState.keyword;
+  const titleMap = { days: '日摘要', weeks: '周要点', months: '月要点' };
+  const keyMap = { days: 'day', weeks: 'week', months: 'month' };
+  if (!list.length) return `<div class="memory-empty">还没有${esc(titleMap[kind] || '')}——压缩层要在过完一天/一周/一月之后才生成。</div>`;
+  return list.slice().reverse().map((item) => {
+    const key = String(item[keyMap[kind]] || '');
+    const lines = (item.lines || []).filter((x) => {
+      const text = typeof x === 'string' ? x : (x.t || '');
+      return archiveMatch(text, kw);
+    });
+    if (kw && !lines.length) return '';
+    const body = lines.map((x) => {
+      const text = typeof x === 'string' ? x : (x.t || '');
+      const s = typeof x === 'object' ? Number(x.s) || 0 : 0;
+      return `<div class="as-line">${archiveEsc(text, kw)}${s ? `<span class="meta"> · S${s}</span>` : ''}</div>`;
+    }).join('');
+    const extra = item.count ? `<span class="meta"> · 当天 ${item.count} 条</span>` : '';
+    return `<div class="archive-sum"><h5>${esc(key)}${extra}</h5>${body || '<div class="as-empty">（没有内容）</div>'}</div>`;
+  }).join('') || '<div class="memory-empty">没有匹配的摘要</div>';
+}
+
+async function renderArchiveTab() {
+  const layout = document.getElementById('archiveLayout');
+  const eventsBox = document.getElementById('archiveEvents');
+  const profileBox = document.getElementById('archiveProfile');
+  const daysBox = document.getElementById('archiveDays');
+  const tab = archiveState.tab || 'events';
+  document.querySelectorAll('#archiveTabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
+  if (!layout) return;
+  if (tab === 'events') {
+    layout.classList.remove('no-side');
+    if (daysBox) daysBox.parentElement.style.display = '';
+    renderArchiveDays(archiveState.data?.days || []);
+    if (eventsBox) eventsBox.style.display = '';
+    if (profileBox) profileBox.style.display = 'none';
+    const latest = archiveState.day || (archiveState.data?.days || [])[0]?.day || '';
+    if (latest) await loadArchiveDay(latest); else if (eventsBox) eventsBox.innerHTML = '<div class="memory-empty">还没有事件</div>';
+    return;
+  }
+  if (daysBox) daysBox.parentElement.style.display = 'none';
+  layout.classList.add('no-side');
+  if (eventsBox) eventsBox.style.display = 'none';
+  if (profileBox) {
+    profileBox.style.display = '';
+    if (tab === 'profile') {
+      renderArchiveProfile(archiveState.data?.profile || {}, archiveState.keyword);
+    } else {
+      profileBox.innerHTML = renderArchiveSummaries(tab);
+    }
+  }
+}
+
 async function loadMemoryArchive() {
   const msg = document.getElementById('archiveMsg');
   if (!msg) return;
@@ -5376,10 +5462,7 @@ async function loadMemoryArchive() {
     archiveState.keyword = '';
     const search = document.getElementById('archiveSearch');
     if (search) search.value = '';
-    renderArchiveProfile(r.profile, '');
-    const latest = (r.days || [])[0]?.day || '';
-    if (latest) await loadArchiveDay(latest);
-    else renderArchiveDays(r.days || []);
+    await renderArchiveTab();
     msg.textContent = `已加载 · ${(r.days || []).length} 天事件 · ${(r.profile?.people || []).length} 人`;
     msg.className = 'meta ok';
   } catch (e) {
@@ -5389,17 +5472,22 @@ async function loadMemoryArchive() {
 }
 
 document.getElementById('archiveReload')?.addEventListener('click', loadMemoryArchive);
-document.getElementById('archiveSearch')?.addEventListener('input', (ev) => {
+document.querySelectorAll('#archiveTabs button').forEach((b) => b.addEventListener('click', async () => {
+  archiveState.tab = b.dataset.tab || 'events';
+  await renderArchiveTab();
+}));
+document.getElementById('archiveSearch')?.addEventListener('input', async (ev) => {
   archiveState.keyword = String(ev.target.value || '').trim();
-  if (archiveState.data) renderArchiveProfile(archiveState.data.profile, archiveState.keyword);
-  renderArchiveEvents();
+  await renderArchiveTab();
 });
 
 // ── 记忆星图 · Atlas：星云宇宙（她自己是中心） ──
 // 拓扑：她（核心恒星）→ 星云（她的一生 / 她认识的人 / 约定 / 她经历的日子）→ 星云里的光点（一句原话）
 // 交互：拖动旋转、滚轮缩放、点星云聚焦、点光点看原文、搜索高亮、悬停气泡。
 // 位置由 id 的 FNV-1a 哈希确定性生成：同样数据每次打开宇宙形状一致，能直接对比改前改后。
-const ATLAS_COLORS = { self: '#ffd166', person: '#5b9dff', thread: '#f0a13c', topic: '#57d6b0' };
+const ATLAS_COLORS = { me: '#ffd166', self: '#ffd166', person: '#5b9dff', thread: '#f0a13c', topic: '#57d6b0' };
+// 她的一生五层：同一团金色星云里的五种深浅（同画风，不搞特殊图形）
+const ATLAS_LAYER_COLORS = { identity: '#ffe0a3', milestone: '#ffd166', like: '#ffc2d8', feeling: '#f0b06a', world: '#ffe9c0' };
 const ATLAS_GROUPS = { self: '她的一生', person: '她认识的人', thread: '约定', topic: '她经历的日子' };
 const ATLAS_LAYERS = { identity: '我是谁', milestone: '走过的路', like: '我喜欢', feeling: '我的心事', world: '我的世界' };
 const atlas = {
@@ -5450,11 +5538,12 @@ function atlasBuildPositions(u) {
     const t = (i + 0.5) / Math.max(1, (u.clusters || []).length);
     const phi = Math.acos(1 - 2 * t);
     const theta = i * 2.399963229728653 + 0.6; // 黄金角：14 个星云均匀铺满整个球面
-    const R = 560 - Math.min(230, Math.sqrt(c.stars.length) * 11) + (h % 70);
-    const cx = Math.sin(phi) * Math.cos(theta) * R;
-    const cy = Math.cos(phi) * R * 0.88;
-    const cz = Math.sin(phi) * Math.sin(theta) * R;
-    const rad = 18 + Math.sqrt(c.stars.length) * 5.2;
+    const isMe = c.kind === 'me';
+    const R = isMe ? 0 : 560 - Math.min(230, Math.sqrt(c.stars.length) * 11) + (h % 70);
+    const cx = isMe ? 0 : Math.sin(phi) * Math.cos(theta) * R;
+    const cy = isMe ? 26 : Math.cos(phi) * R * 0.88; // 她略偏一点：旋转时会跟着动，不是钉在正中
+    const cz = isMe ? 0 : Math.sin(phi) * Math.sin(theta) * R;
+    const rad = isMe ? 46 + Math.sqrt(c.stars.length) * 4.5 : 18 + Math.sqrt(c.stars.length) * 5.2;
     const stars = c.stars.map((s) => {
       const rnd = atlasRand(atlasHash(s.id) ^ h);
       const a = rnd() * Math.PI * 2;
@@ -5467,7 +5556,7 @@ function atlasBuildPositions(u) {
         z: cz + Math.sin(b) * Math.sin(a) * r,
         cloud: c.id,
         cloudLabel: c.label,
-        color: ATLAS_COLORS[c.kind] || '#9fb4d8',
+        color: isMe ? (ATLAS_LAYER_COLORS[s.layer] || ATLAS_COLORS.me) : (ATLAS_COLORS[c.kind] || '#9fb4d8'),
       };
     });
     return { ...c, cx, cy, cz, radius: rad, stars };
@@ -5502,18 +5591,39 @@ function atlasProject(p) {
   const z2 = p.y * sp + z1 * cp;
   const persp = atlas.cam.camZ / Math.max(160, atlas.cam.camZ - z2);
   return {
-    x: atlas.W / 2 + x1 * persp * atlas.cam.zoom,
-    y: atlas.H / 2 + y1 * persp * atlas.cam.zoom,
+    x: atlas.W / 2 + x1 * persp * atlas.cam.zoom + (atlas.cam.ox || 0),
+    y: atlas.H / 2 + y1 * persp * atlas.cam.zoom + (atlas.cam.oy || 0),
     depth: z2,
     persp,
   };
 }
 
-/** 核心恒星（她自己）永远在正中。 */
-function atlasCorePoint() {
-  return { x: atlas.W / 2, y: atlas.H / 2, depth: 0, persp: 1 };
-}
 
+function atlasFit() {
+  // 只按星云取景：散星本来就该在远处（允许出画），否则整片宇宙会被缩得很小
+  const pts = atlas.clusters.map((cl) => ({ x: cl.cx, y: cl.cy, z: cl.cz }));
+  if (!pts.length) return;
+  const measure = () => {
+    let minX = Infinity; let maxX = -Infinity; let minY = Infinity; let maxY = -Infinity;
+    for (const p of pts) {
+      const q = atlasProject(p);
+      if (q.x < minX) minX = q.x;
+      if (q.x > maxX) maxX = q.x;
+      if (q.y < minY) minY = q.y;
+      if (q.y > maxY) maxY = q.y;
+    }
+    return { minX, maxX, minY, maxY };
+  };
+  atlas.cam.ox = 0;
+  atlas.cam.oy = 0;
+  let b = measure();
+  const k = Math.min((atlas.W * 0.8) / Math.max(1, b.maxX - b.minX), (atlas.H * 0.8) / Math.max(1, b.maxY - b.minY));
+  atlas.cam.zoom = Math.max(0.35, Math.min(2.4, atlas.cam.zoom * k));
+  // 再把整片宇宙挪到画布正中（她不在原点正中时也不会偏）
+  b = measure();
+  atlas.cam.ox = -((b.minX + b.maxX) / 2 - atlas.W / 2);
+  atlas.cam.oy = -((b.minY + b.maxY) / 2 - atlas.H / 2);
+}
 function atlasBackgroundStars() {
   if (atlas.starsBg) return atlas.starsBg;
   const out = [];
@@ -5570,7 +5680,7 @@ function atlasDraw() {
     const color = ATLAS_COLORS[c.kind] || '#9fb4d8';
     const fog = Math.max(0.25, Math.min(1, (atlas.cam.camZ * 0.55 + p.depth) / (atlas.cam.camZ * 0.95)));
     const active = !dimAll || focusId === c.id;
-    const r = Math.max(17, c.radius * p.persp * atlas.cam.zoom * 0.48);
+    const r = Math.max(c.kind === 'me' ? 26 : 17, c.radius * p.persp * atlas.cam.zoom * 0.48);
     ctx.globalAlpha = active ? 0.6 * fog : 0.08;
     const glow = ctx.createRadialGradient(p.x, p.y, 2, p.x, p.y, r * 1.9);
     glow.addColorStop(0, `${color}55`);
@@ -5644,45 +5754,6 @@ function atlasDraw() {
     ctx.fill();
   }
   ctx.globalAlpha = 1;
-
-  // 她自己：中心恒星（always on top）
-  const me = atlasCorePoint();
-  const pulse = 1 + Math.sin(Date.now() / 1400) * 0.06;
-  const coreR = 18 * pulse;
-  const halo = ctx.createRadialGradient(me.x, me.y, coreR * 0.2, me.x, me.y, coreR * 5.2);
-  halo.addColorStop(0, 'rgba(255,214,120,.55)');
-  halo.addColorStop(0.35, 'rgba(255,190,90,.18)');
-  halo.addColorStop(1, 'rgba(255,190,90,0)');
-  ctx.fillStyle = halo;
-  ctx.beginPath();
-  ctx.arc(me.x, me.y, coreR * 5.2, 0, Math.PI * 2);
-  ctx.fill();
-  // 五层光晕环（她的一生五层化作不同颜色的细环）
-  const layerColors = ['#ffd166', '#7fd4ff', '#ff9ecb', '#c8a4ff', '#9ff5c8'];
-  for (let i = 0; i < layerColors.length; i += 1) {
-    ctx.strokeStyle = `${layerColors[i]}${i === 0 ? 'aa' : '55'}`;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.arc(me.x, me.y, coreR * (1.35 + i * 0.52), 0, Math.PI * 2);
-    ctx.stroke();
-  }
-  // 星芒
-  ctx.strokeStyle = 'rgba(255,214,120,.5)';
-  ctx.lineWidth = 1.3;
-  ctx.beginPath();
-  ctx.moveTo(me.x - coreR * 3.6, me.y);
-  ctx.lineTo(me.x + coreR * 3.6, me.y);
-  ctx.moveTo(me.x, me.y - coreR * 3.6);
-  ctx.lineTo(me.x, me.y + coreR * 3.6);
-  ctx.stroke();
-  ctx.fillStyle = '#ffe6a8';
-  ctx.beginPath();
-  ctx.arc(me.x, me.y, coreR, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#fff6dc';
-  ctx.font = '13px system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText(atlas.universe?.core?.label || '我', me.x, me.y + coreR + 22);
 }
 
 function atlasRenderStats(u) {
@@ -5805,6 +5876,7 @@ async function loadMemoryGraph() {
     atlas.keyword = '';
     const search = document.getElementById('graphSearch');
     if (search) search.value = '';
+    atlasFit();
     atlasRenderStats(u);
     atlasRenderLeft(u);
     atlasRenderCore(u);
@@ -5881,7 +5953,10 @@ function atlasBindEvents() {
     atlas.cam.yaw = -0.42;
     atlas.cam.pitch = 0.22;
     atlas.cam.zoom = 0.92;
+    atlas.cam.ox = 0;
+    atlas.cam.oy = 0;
     atlas.focus = null;
+    atlasFit();
     atlas.keyword = '';
     const search = document.getElementById('graphSearch');
     if (search) search.value = '';
@@ -5893,6 +5968,24 @@ function atlasBindEvents() {
     ev.currentTarget.textContent = atlas.spinning ? '暂停旋转' : '继续旋转';
   });
   document.getElementById('graphReload')?.addEventListener('click', loadMemoryGraph);
+  document.getElementById('graphPanels')?.addEventListener('click', (ev) => {
+    const root = document.querySelector('#section-memory-graph .atlas');
+    if (!root) return;
+    const hidden = root.classList.toggle('panels-hidden');
+    ev.currentTarget.textContent = hidden ? '展开侧栏' : '收起侧栏';
+    atlasDraw();
+  });
+  document.getElementById('graphFull')?.addEventListener('click', (ev) => {
+    const root = document.querySelector('#section-memory-graph .atlas');
+    if (!root) return;
+    const on = root.classList.toggle('is-full');
+    ev.currentTarget.textContent = on ? '退出全屏' : '全屏';
+    // 全屏时画布更高：把内部画布同步放大
+    atlas.H = on ? Math.max(700, Math.round(window.innerHeight - 150)) : 700;
+    const cv = document.getElementById('memoryGraphCanvas');
+    if (cv) { cv.height = atlas.H; cv.style.height = on ? '100%' : ''; }
+    atlasDraw();
+  });
   // 自动巡航：宇宙不该静止。悬停/拖拽/搜索时停住，方便看细节。
   const tick = () => {
     if (!document.hidden && atlas.spinning && !atlas.dragging && !atlas.hover && atlas.stars.length) {
