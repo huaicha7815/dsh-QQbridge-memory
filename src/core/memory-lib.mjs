@@ -1863,10 +1863,10 @@ export function buildMemoryUniverse(profile, events, { maxStars = 420, minTopicS
   }
   if (selfStars.length) {
     push({
-      id: 'me',
-      label: truncateChars(String(selfName || '我'), 20),
-      kind: 'me',
-      sub: '她自己',
+      id: 'self:life',
+      label: '她自己',
+      kind: 'self',
+      sub: '她的一生',
       stars: selfStars,
     });
   }

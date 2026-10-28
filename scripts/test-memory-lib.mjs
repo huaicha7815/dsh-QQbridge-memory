@@ -1151,10 +1151,13 @@ test('记忆星云：她自己是核心，星云分层、光点唯一、散星�
   ];
   const u = buildMemoryUniverse(p, events, { now: NOW, selfName: '鱼鱼' });
   assert.equal(u.core.label, '鱼鱼');
-  assert.equal(u.stats.byKind.me, 1, '她自己是一团星云（她的一生五层都在里面，不再各成一团）');
-  const meCloud = u.clusters.find((cl) => cl.kind === 'me');
+  // 她不再是一颗钉在中心的恒星：她自己就是一团普通星云，和其他星云一起绕宇宙中心 */
+  assert.equal(u.stats.byKind.self, 1, '她自己是一团星云（她的一生五层都在里面，不各成一团）');
+  const meCloud = u.clusters.find((cl) => cl.kind === 'self');
   assert.equal(meCloud.stars.length, 2, '她的两条记录都是她星云里的光点');
   assert.ok(meCloud.stars.every((s) => s.layer), '她的光点带 layer，用于按层着色');
+  assert.equal(u.core.label, '鱼鱼', 'core 仍保留她的名字给右侧面板用');
+  assert.ok(!u.clusters.some((cl) => cl.id === 'me'), '数据层不再有单独的「我」节点');
   assert.equal(u.stats.byKind.person, 1);
   assert.equal(u.stats.byKind.thread, 1);
   const tools = u.clusters.find((c) => c.label === '工具与日常');
