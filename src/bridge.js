@@ -6821,15 +6821,21 @@ async function main() {
       const now = new Date();
       if (now.getHours() !== hh || now.getMinutes() !== mm) return;
       const day = localDayString(now);
-      // 用持久化标记判断：重启后同一窗口内不会重复发日记
-          if (readDiaryState().lastFiredDay === day) return;
-          writeDiaryState({ lastFiredDay: day });
+      // 顺序很重要：先确认「能发」（owner/角色就绪），再判断「今天是否已发」，
+      // 最后**投递成功之后**才写标记。之前把标记写在检查之前，
+      // 会导致「owner 没配好那天永久漏发日记」。
       const ownerKey = cfg.ownerQQ ? `private:${String(cfg.ownerQQ)}` : null;
       if (!ownerKey || !readRoleState().role) { log('[diary] 跳过：没有 owner 或没有启用角色'); return; }
+      if (readDiaryState().lastFiredDay === day) return;
       log(`[diary] 触发 ${day} 的日记写作`);
       Promise.resolve()
         .then(() => sendWakePromptV2(ownerKey, 'diary'))
-        .catch((error) => log('[diary] 唤醒失败:', error?.message ?? error));
+        .then(() => writeDiaryState({ lastFiredDay: day }))
+        .catch((error) => {
+          log('[diary] 唤醒失败，稍后重试:', error?.message ?? error);
+          // 失败就清掉标记，让下一个 30 秒窗口还能重试
+          writeDiaryState({ lastFiredDay: null });
+        });
     }, 30000);
     timer.unref?.();
     log(`[diary] 每天 ${hhmm} 提醒写日记，记录目录 ${DIARY_DIR}`);

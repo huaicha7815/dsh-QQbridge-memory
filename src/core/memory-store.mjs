@@ -134,7 +134,15 @@ export function createMemoryStore(options = {}) {
   const salientFile = path.join(root, 'salient.jsonl');
   const profileFile = path.join(root, 'profile.json');
   // 事件写入失败计数与最后一次错误（健康检查会读它判断「L1 是否悄悄缺数据」）
-  let writeFailureCount = 0;
+  // 失败计数从持久文件读初始值：以前是纯进程内变量，重启就归零，
+  // 于是「刚丢过数据」这件事在健康页上看不出来。
+  const writeFailFile = path.join(root, 'write-failures.jsonl');
+  function readFailureLines() {
+    try {
+      return fs.readFileSync(writeFailFile, 'utf8').split('\n').filter(Boolean);
+    } catch { return []; }
+  }
+  let writeFailureCount = readFailureLines().length;
   let lastWriteFailure = null;
   let cfg = normalizeMemoryConfig(options.config);
 
@@ -289,8 +297,7 @@ export function createMemoryStore(options = {}) {
       try {
         // 注意：这里不能用 ensureDirs()——它可能正是失败原因（目录被占/只读）。
         // root 目录通常已存在，直接追加即可。
-        const failFile = path.join(root, 'write-failures.jsonl');
-        fs.appendFileSync(failFile, JSON.stringify({ at: Date.now(), error: String(error?.message ?? error), row }) + '\n', 'utf8');
+        fs.appendFileSync(writeFailFile, JSON.stringify({ at: Date.now(), error: String(error?.message ?? error), row }) + '\n', 'utf8');
       } catch {
         // 连失败清单都写不进去，就只能靠上面的 console.warn 了
       }
@@ -1073,6 +1080,39 @@ export function createMemoryStore(options = {}) {
   }
 
   /** 存储概况（给控制台/工具看，不进 prompt）。 */
+  /**
+   * 重放 write-failures.jsonl 里没写进 L1 的事件。
+   * 「留痕」不等于「恢复」：失败的那条消息还在文件里，可以补写回去。
+   * 返回 { replayed, failed }。
+   */
+  function replayWriteFailures() {
+    const lines = readFailureLines();
+    if (!lines.length) return { replayed: 0, failed: 0 };
+    let replayed = 0;
+    const remaining = [];
+    for (const line of lines) {
+      let item;
+      try { item = JSON.parse(line); } catch { continue; } // 坏行直接丢
+      const row = item && item.row;
+      if (!row || typeof row !== 'object') continue;
+      // 直接写文件，绕过 appendEvent 的错误处理，避免再次记录失败
+      try {
+        ensureDirs();
+        const day = dayString(Number(row.t) || Date.now());
+        fs.appendFileSync(path.join(eventsDir, `${day}.jsonl`), JSON.stringify(row) + '\n', 'utf8');
+        replayed += 1;
+      } catch (error) {
+        remaining.push(line);
+        lastWriteFailure = { at: Date.now(), error: String(error?.message ?? error) };
+      }
+    }
+    try {
+      if (remaining.length) fs.writeFileSync(writeFailFile, remaining.join('\n') + '\n', 'utf8');
+      else fs.unlinkSync(writeFailFile);
+    } catch {}
+    writeFailureCount = remaining.length;
+    return { replayed, failed: remaining.length };
+  }
   function stats({ now = Date.now() } = {}) {
     // 写入失败计数：健康检查据此判断「L1 是否悄悄缺数据」
     const days = listEventDays();
@@ -1133,6 +1173,7 @@ export function createMemoryStore(options = {}) {
 
   return {
     root,
+    replayWriteFailures,
     eventsDir,
     daysDir,
     weeksDir,

@@ -56,6 +56,11 @@ say('');
 
 // ── 1. 规模 ───────────────────────────────────────────────
 say('【规模】');
+// 事件写入失败：这是「聊天看起来正常、但 L1 已经缺数据」的唯一信号。
+if (st.writeFailures > 0) {
+  say(`  ⚠️ 事件写入失败 ${st.writeFailures} 条（最近一次：${st.lastWriteFailure?.error ?? "未知"}）`);
+  say('     这些消息没进 L1，可以用 store.replayWriteFailures() 重新写回；先修好 events/ 目录权限或磁盘空间。');
+}
 say(`  事件：${st.events} 条 / 覆盖 ${st.eventDays} 天（${st.firstDay || '-'} ~ ${st.lastDay || '-'}）`);
 say(`  （注：以上只算活动日文件；另有 ${archiveMonths} 个月归档文件未计入，历史规模更大）`);
 say(`  体积：事件 ${(st.eventBytes / 1024).toFixed(0)} KB · S3 档案 ${(st.salient.bytes / 1024).toFixed(1)} KB`);
