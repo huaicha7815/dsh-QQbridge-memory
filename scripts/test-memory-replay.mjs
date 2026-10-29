@@ -314,3 +314,56 @@ test('多个遗留快照都会被处理，不互相覆盖', () => {
   assert.ok(content.includes('快照gen-2'));
   cleanup(dir);
 });
+
+test('快照读取失败时不能被删除（保留待下次）', () => {
+  const { dir, store } = freshStore();
+  // 主清单正常
+  const rowA = { id: 'ok-a', t: Date.now(), k: 'g:1', kind: 'msg', text: '能读的', s: 1 };
+  fs.writeFileSync(
+    path.join(dir, 'write-failures.jsonl'),
+    JSON.stringify({ at: Date.now(), phase: 'event', id: 'ok-a', row: rowA, error: 'x' }) + '\n',
+    'utf8',
+  );
+  // 一个读不出来的快照：用目录冒充文件，readFileSync 会抛 EISDIR
+  const badSnapshot = path.join(dir, 'write-failures.jsonl.processing-broken');
+  fs.mkdirSync(badSnapshot, { recursive: true });
+
+  const r = store.replayWriteFailures();
+  assert.equal(r.replayed, 1, '能读的那条要恢复');
+  assert.equal(r.unreadable, 1, '读失败的快照要计入 unreadable');
+  assert.ok(fs.existsSync(badSnapshot), '读失败的快照必须保留，不能删');
+  cleanup(dir);
+});
+
+test('dry-run 与 apply 对重复 id 的计数一致', () => {
+  const { dir, store } = freshStore();
+  const row = { id: 'dup-1', t: Date.now(), k: 'g:1', kind: 'msg', text: '同一条', s: 1 };
+  // 两个快照里放同一个 id
+  for (const name of ['write-failures.jsonl.processing', 'write-failures.jsonl.processing-2']) {
+    fs.writeFileSync(
+      path.join(dir, name),
+      JSON.stringify({ at: Date.now(), phase: 'event', id: 'dup-1', row, error: 'x' }) + '\n',
+      'utf8',
+    );
+  }
+  const dry = store.replayWriteFailures({ dryRun: true });
+  const applied = store.replayWriteFailures();
+  assert.equal(dry.replayed, applied.replayed, '预览与实际必须一致');
+  assert.equal(applied.replayed, 1, '同一个 id 只该恢复一次');
+  cleanup(dir);
+});
+
+test('故障风暴下失败清单有上限，不会无限增长', () => {
+  const { dir, store } = freshStore();
+  fs.rmSync(path.join(dir, 'events'), { recursive: true, force: true });
+  fs.writeFileSync(path.join(dir, 'events'), 'blocked');
+  // 模拟大量失败（超过上限）
+  for (let i = 0; i < 10500; i += 1) {
+    store.appendEvent({ t: Date.now(), k: 'g:1', kind: 'msg', text: `消息${i}`, s: 1 });
+  }
+  const failFile = path.join(dir, 'write-failures.jsonl');
+  const lines = fs.existsSync(failFile) ? fs.readFileSync(failFile, 'utf8').split('\n').filter(Boolean).length : 0;
+  assert.ok(lines <= 10000, `清单行数应被限制在 10000 以内，实际 ${lines}`);
+  assert.equal(store.stats().writeFailures, 10500, '计数仍然准确（只是不记明细）');
+  cleanup(dir);
+});

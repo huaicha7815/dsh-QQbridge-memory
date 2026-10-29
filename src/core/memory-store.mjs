@@ -138,6 +138,11 @@ export function createMemoryStore(options = {}) {
   // 失败计数从持久文件读初始值：以前是纯进程内变量，重启就归零，
   // 于是「刚丢过数据」这件事在健康页上看不出来。
   const writeFailFile = path.join(root, 'write-failures.jsonl');
+  // 故障风暴保护：L1/S3 持续失败时，每条消息都会走一次同步 append。
+  // 没有上限的话失败清单会无限增长（每条带完整消息文本），把磁盘和内存拖垮，
+  // 后续 replay 也要整份读进内存。这里做两道限制：条目数上限 + 单条文本截断。
+  const MAX_FAILURE_ENTRIES = 10000;
+  const MAX_FAILURE_TEXT = 200;
   function readFailureLines() {
     try {
       return fs.readFileSync(writeFailFile, 'utf8').split('\n').filter(Boolean);
@@ -288,9 +293,20 @@ export function createMemoryStore(options = {}) {
     console.warn(`[memory] 事件写入失败(${phase}):`, error?.message ?? error);
     writeFailureCount += 1;
     lastWriteFailure = { at: Date.now(), error: String(error?.message ?? error), phase };
+    // 背压：清单超过上限后只累加计数、不再写明细，避免故障期间无限增长。
+    if (writeFailureCount > MAX_FAILURE_ENTRIES) {
+      if (writeFailureCount === MAX_FAILURE_ENTRIES + 1) {
+        console.warn(`[memory] 失败清单已达 ${MAX_FAILURE_ENTRIES} 条上限，后续失败只计数不记录明细。`);
+      }
+      return;
+    }
     try {
+      // 文本截断：失败行不该把整段长消息都塞进清单。
+      const compactRow = row && typeof row === 'object'
+        ? { ...row, text: String(row.text ?? '').slice(0, MAX_FAILURE_TEXT) }
+        : row;
       fs.appendFileSync(writeFailFile, JSON.stringify({
-        at: Date.now(), phase, id: row?.id, row,
+        at: Date.now(), phase, id: row?.id, row: compactRow,
         error: String(error?.message ?? error),
       }) + '\n', 'utf8');
     } catch {
@@ -1228,21 +1244,35 @@ export function createMemoryStore(options = {}) {
         try { fs.renameSync(writeFailFile, snapshotFile); } catch { /* 主清单不存在 */ }
       }
       // dryRun 不动文件，直接读「遗留快照 + 主清单」；apply 读「遗留快照 + 本次快照」。
-      const sources = dryRun ? [...leftovers, writeFailFile] : [...leftovers, snapshotFile];
+      // 按文件名排序：`.processing` 比 `.processing-<时间戳>` 更早，先处理旧快照。
+      const sources = (dryRun ? [...leftovers, writeFailFile] : [...leftovers, snapshotFile]).sort();
       const lines = [];
+      // 关键：读失败的文件绝不能删。把「文件存在」当成「内容已安全读入」，
+      // 会导致一次 IO 抖动就把整份未恢复记录删掉（审查复现过）。
+      const readableFiles = [];
+      const unreadableFiles = [];
       for (const file of sources) {
-        try { lines.push(...fs.readFileSync(file, 'utf8').split('\n').filter(Boolean)); } catch { /* 读不到就跳过 */ }
+        try {
+          lines.push(...fs.readFileSync(file, 'utf8').split('\n').filter(Boolean));
+          readableFiles.push(file);
+        } catch (error) {
+          unreadableFiles.push(file);
+          console.warn('[memory] 快照读取失败，保留待下次处理:', file, error?.message ?? error);
+        }
       }
       if (!lines.length) {
-        if (!dryRun) { for (const f of sources) { try { fs.unlinkSync(f); } catch {} } }
-        return { replayed: 0, skipped: 0, failed: 0, quarantined: 0, dryRun };
+        // 一个都没读到：只清理确实读成功的空文件，读失败的保留。
+        if (!dryRun) { for (const f of readableFiles) { try { fs.unlinkSync(f); } catch {} } }
+        return { replayed: 0, skipped: 0, failed: unreadableFiles.length, quarantined: 0, dryRun };
       }
       let replayed = 0;
       let skipped = 0;
       let quarantined = 0;
+      let quarantineFailed = false;
       const remaining = [];
       const bad = [];
       let lastRenew = Date.now();
+      const seenIds = new Set();
       for (const line of lines) {
         // 按时间续租（不是按行数）：单行 IO 慢时也能及时告诉别人「我还活着」。
         if (lockHeld && Date.now() - lastRenew > 60_000) {
@@ -1257,6 +1287,10 @@ export function createMemoryStore(options = {}) {
         let phase = item.phase === 'salient' ? 'salient' : 'event';
         const day = dayString(Number(row.t) || Date.now());
         const tier = Number(row.s) || 0;
+        // 本轮去重：同一个 id 出现在多个快照里时，dry-run 不能重复计数，
+        // 否则预览会比 apply 高（审查指出过）。
+        if (seenIds.has(id)) { skipped += 1; continue; }
+        seenIds.add(id);
         // 幂等判断要覆盖「该 id 的两个阶段都完成」：
         // 只看 L1 有 id 就 skip，会漏掉「L1 已有但 S3 副本缺失」的情况。
         if (phase === 'event' && l1HasId(day, id)) {
@@ -1301,17 +1335,24 @@ export function createMemoryStore(options = {}) {
           }
           // 坏行（JSON 损坏 / 缺 id）隔离：留在主清单会导致下次又 parse 失败，无限循环。
           if (bad.length) {
-            try { fs.appendFileSync(writeFailFile + '.quarantine', bad.join('\n') + '\n', 'utf8'); } catch {}
+            try {
+              fs.appendFileSync(writeFailFile + '.quarantine', bad.join('\n') + '\n', 'utf8');
+            } catch (error) {
+              quarantineFailed = true;
+              console.warn('[memory] 坏行隔离失败，保留快照:', error?.message ?? error);
+            }
           }
-          // 所有读过的快照都删掉（遗留的 + 本次的）；删失败也没关系，
-          // 下次会被当遗留快照再处理一遍，幂等检查保证不会重复写 L1。
-          for (const f of sources) { try { fs.unlinkSync(f); } catch {} }
+          // 只删「成功读入」的快照；读失败的保留，下次还能再试。
+          // quarantine 写失败时也整批保留：坏行既没进隔离区，就不能把快照删了。
+          if (!quarantineFailed) {
+            for (const f of readableFiles) { try { fs.unlinkSync(f); } catch {} }
+          }
         } catch {
           // 回填失败：.processing 还在，下次会再处理（幂等检查保证不会重复写 L1）
         }
         writeFailureCount = pendingFailureCount();
       }
-      return { replayed, skipped, failed: remaining.length, quarantined, dryRun };
+      return { replayed, skipped, failed: remaining.length, quarantined, dryRun, unreadable: unreadableFiles.length };
     } finally {
       if (lockHeld) releaseReplayLock(lockFile, owner);
     }
