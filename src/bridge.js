@@ -60,6 +60,10 @@ import {
 } from './sticker-lib.js';
 import { createMemoryStore } from './core/memory-store.mjs';
 import { canonicalV2Key, createConversationStateV2, defaultWakeConfigV2, hydrateConversationStateV2, normalizeSpeakerIdsV2, serializeSocialV2 } from './core/socialv2-store.mjs';
+import {
+  computeWakeSafetyV2, evaluateWakeTriggerV2 as evaluateWakeTriggerV2Core,
+  isDirectedAtAi, isTimeBasedWakeV2, isWakeableV2, wakePriorityV2, WAKE_PRIORITY, TIME_BASED_WAKE_V2,
+} from './core/socialv2-wake.mjs';
 import { auditProfile, buildInjection, buildMemoryGraph, buildMemoryUniverse, groupSelfNotes, mergePersonFact, mergeSelfNote, mergeThread, profileDigestForRefine, threadClosureHints, verifyMemoryClaim } from './core/memory-lib.mjs';
 import { handleMemoryApiRequest } from './routes/memory-api.mjs';
 import { handleRoleApiRequest } from './routes/roles-api.mjs';
@@ -7748,18 +7752,6 @@ async function main() {
     return true;
   }
 
-  function computeWakeSafetyV2(wc) {
-    const tr = wc?.triggers || {};
-    const hard = wc?.mode === 'active' || tr.anyMessage || tr.atMention || tr.nameMention || tr.question || tr.poke ||
-      (Array.isArray(tr.keywords) && tr.keywords.length > 0) ||
-      normalizeSpeakerIdsV2(tr.speakerIds).length > 0;
-    const timed = !wc?.infinite && wc?.sleepUntil && Date.parse(wc.sleepUntil) > Date.now();
-    const soft = Number(tr.probability) > 0;
-    const guaranteed = hard || timed || soft;
-    const confirmedNum = Number(wc?.confirmedAt);
-    const stale = !wc?.confirmedAt || !Number.isFinite(confirmedNum) || Date.now() - confirmedNum > 24 * 60 * 60 * 1000;
-    return { hard, timed, soft, guaranteed, stale };
-  }
 
   // 防“永眠”：检查当前 WakeConfig 是否至少有一个可触发唤醒的途径；没有则重置为默认配置。
   // opts.skipSave=true 用于加载状态阶段，避免中途落盘覆盖尚未加载的会话。
@@ -7771,10 +7763,7 @@ async function main() {
     const tr = wc.triggers;
     // 掉垃圾数据只留有效 QQ 号，避免“null”/对象等脏值被当成可唤醒条件绕过防永眠。
     tr.speakerIds = normalizeSpeakerIdsV2(tr.speakerIds);
-    const timed = !wc.infinite && wc.sleepUntil && Number.isFinite(Date.parse(wc.sleepUntil)) && Date.parse(wc.sleepUntil) > Date.now();
-    const wakeable = wc.mode === 'active' || tr.anyMessage || tr.atMention || tr.nameMention || tr.poke ||
-      (Array.isArray(tr.keywords) && tr.keywords.length > 0) || tr.question || Number(tr.probability) > 0 ||
-      tr.speakerIds.length > 0 || timed;
+    const wakeable = isWakeableV2(wc);
     if (!wakeable) {
       if (st.sleepTimer) {
         clearTimeout(st.sleepTimer);
@@ -8188,21 +8177,6 @@ async function main() {
   }
 
   // 是否"直接针对 AI"的提问/挑战：提到 AI 相关词且带疑问/比较，或对"你"开火，或追问催促
-  function isDirectedAtAi(textContent) {
-    const lower = String(textContent ?? '').toLowerCase();
-    const aiMention = /deepseek|claude|chatgpt|gpt|大肥鱼|小鲸鱼|鲸鱼|d指导|d老师|d师傅|深度求索|\bds\b|ai|人工智障|机器人|模型/.test(lower);
-    const challenge = /强|弱|行不行|能不能|会不会|是不是|一半|水平|垃圾|废物|白嫖|菜|不如|厉害|赢|输|比.*强|比.*弱/.test(lower);
-    const question = /[?？吗呢吧]|怎么|为什么|哪|谁/.test(lower);
-    if (aiMention && (question || challenge)) return true;
-    // "你/您" + 疑问/比较/挑战（放宽，避免漏掉"你有claude一半强吗"这类直接问）
-    if (/(你|您).{0,10}(吗|呢|？|\?|怎么|是不是|能不能|行不行|有没有|有|没有|比|不如|强|弱|一半|厉害|垃圾|菜|赢|输)/.test(lower)) return true;
-    if (/^(你|您)(是不是|行不行|能不能|会不会|觉得|有|没有)/.test(lower)) return true;
-    // "你是...还是... / 你是...吗 / 你是...？"（如：你是人类还是ai、你是真人吗）
-    if (/(你|您)是[^？?。！!]{0,14}(还是|或者|吗|么|？|\?)/.test(lower)) return true;
-    // 追问/催促：AI 没回时的真人式催促
-    if (/怎么不说话|人呢|回我|说话啊|理我|别装死|在不在|装死|说话/.test(lower)) return true;
-    return false;
-  }
 
   // 活跃期批量检测用的"必须回"判断：不依赖 event，只认昵称/关键词/直接针对 AI 的提问
   function isMustReplyText(textContent) {
@@ -9466,41 +9440,14 @@ async function main() {
     return text;
   }
 
+  // 判定逻辑已抽到 src/core/socialv2-wake.mjs（纯函数，可单测）；
+  // 这里只负责把 bridge 里的全局状态（她自己的昵称、随机源）喂进去。
   function evaluateWakeTriggerV2(key, st, event, kind, textContent, plainContent, quoteTargetIsSelf) {
-    if (kind === 'private') return 'private';
-    const tr = st.wakeConfig?.triggers ?? {};
-    if (tr.anyMessage) return 'anyMessage';
-    if (tr.atMention) {
-      const atSelf = Array.isArray(event?.message) && event.message.some((seg) => seg?.type === 'at' && String(seg.data?.qq) === String(event?.self_id ?? ''));
-      if (atSelf || quoteTargetIsSelf) return 'atMention';
-    }
-    if (tr.nameMention && selfNickname) {
-      const lower = String(textContent ?? '').toLowerCase();
-      if (lower.includes('@' + selfNickname.toLowerCase()) || lower.includes(selfNickname.toLowerCase())) return 'nameMention';
-    }
-    if (Array.isArray(tr.keywords) && tr.keywords.length) {
-      const lower = String(plainContent ?? '').toLowerCase();
-      for (const kw of tr.keywords) {
-        const kwStr = String(kw ?? '').toLowerCase();
-        if (!kwStr) continue;
-        // 短英文/数字关键词（如 DS/R1）用词边界匹配，避免 ADS/BDSM/DSL 误触发。
-        if (/^[a-z0-9]+$/.test(kwStr) && kwStr.length <= 4) {
-          if (new RegExp(`\\b${kwStr}\\b`, 'i').test(lower)) return `keyword:${kw}`;
-        } else if (lower.includes(kwStr)) {
-          return `keyword:${kw}`;
-        }
-      }
-    }
-    if (tr.question && isDirectedAtAi(plainContent)) return 'question';
-    if (Array.isArray(tr.speakerIds) && tr.speakerIds.length) {
-      const speakerId = String(event?.user_id ?? event?.sender?.user_id ?? '');
-      if (speakerId && tr.speakerIds.some((id) => String(id) === speakerId)) {
-        const senderLabel = event?.sender?.card || event?.sender?.nickname || speakerId;
-        return `speaker:${senderLabel}`;
-      }
-    }
-    if (Number(tr.probability) > 0 && Math.random() < Number(tr.probability)) return 'probability';
-    return null;
+    return evaluateWakeTriggerV2Core({
+      triggers: st.wakeConfig?.triggers ?? {},
+      kind, event, textContent, plainContent, quoteTargetIsSelf,
+      selfNickname,
+    });
   }
 
   // Only messages actually offered to the model authorize cursor-based acknowledgement.
@@ -9937,24 +9884,8 @@ async function main() {
     return false;
   }
 
-  const WAKE_PRIORITY = {
-    private: 100,
-    atMention: 90,
-    question: 80,
-    speaker: 75,
-    nameMention: 70,
-    keyword: 60,
-    anyMessage: 50,
-    replyCheck: 40,
-    timeout: 30,
-    proactiveCheck: 20
-  };
 
   // 唤醒原因可能带子类型（如 keyword:小鲸鱼、speaker:昵称），取冒号前的基名计算优先级。
-  function wakePriorityV2(reason) {
-    const base = String(reason ?? '').split(':')[0];
-    return WAKE_PRIORITY[base] ?? 0;
-  }
 
   // 时间型唤醒：到点就该发生，跟「有没有新未读」无关。
   //
@@ -9963,10 +9894,6 @@ async function main() {
   // 对 diary 却是致命的：2026-10-27 23:00 的日记触发时她正在聊天，唤醒被暂存；之后她
   // 把消息读完并 mark_read，unread 里就没有更大的 seq 了，补发判定「已处理」直接跳过
   // —— 当天的日记和晚安一起消失，而且不会有任何报错。
-  const TIME_BASED_WAKE_V2 = new Set(['diary', 'greeting', 'timeout', 'proactiveCheck', 'chatStart']);
-  function isTimeBasedWakeV2(reason) {
-    return TIME_BASED_WAKE_V2.has(String(reason ?? '').split(':')[0]);
-  }
 
   function scheduleWakeV2(key, reason) {
     if (cfg.socialV2?.enabled === false) return;

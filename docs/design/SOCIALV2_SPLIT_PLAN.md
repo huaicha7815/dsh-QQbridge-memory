@@ -3,7 +3,7 @@
 > 目标：把「她什么时候该说话、怎么调度、状态存哪」从 1.15 万行的 `bridge.js` 里拆出来，
 > 分三步做，每步可独立回滚、独立验证。
 >
-> 状态：**设计稿，未实施**。开工前请先读第 8 节「不做的事」。
+> 状态：**Step 1 已完成、Step 2 纯函数部分已完成**（2026-10-29）。进度见第 10 节「实施记录」。
 
 ---
 
@@ -311,3 +311,42 @@ src/routes/socialv2-stats-api.mjs    ← 诊断与统计
 - 需要在唤醒逻辑里加新触发条件（比如「有人引用她」），而现有结构改起来吃力。
 
 **注意**：Step 1 和 Step 2 之间建议隔至少一天，让 Step 1 在真实流量下跑一跑再动核心逻辑。
+
+---
+
+## 10. 实施记录
+
+### Step 1 状态存储 —— 完成（2026-10-29，commit `9ace92b`）
+
+- 新增 `src/core/socialv2-store.mjs`：canonicalV2Key / normalizeSpeakerIdsV2 /
+  defaultWakeConfigV2 / createConversationStateV2 / hydrateConversationStateV2 / serializeSocialV2
+- `bridge.js` 11537 → 11406 行；三个状态函数改成调用新模块，行为不变
+- 验证：四个会话的 recentMessages / unread / lastUnreadSeq / 文本逐一比对一致
+- 新增 `scripts/test-socialv2-store.mjs`（9 项），已进每日自检
+
+### Step 2 唤醒调度 —— 纯函数部分完成（2026-10-29）
+
+已迁出（全部纯函数，可单测）：
+
+| 函数 | 说明 |
+| --- | --- |
+| `WAKE_PRIORITY` / `wakePriorityV2` | 唤醒优先级表与查表 |
+| `TIME_BASED_WAKE_V2` / `isTimeBasedWakeV2` | 时间型唤醒判定 |
+| `isDirectedAtAi` | 是否在直接问她 |
+| `computeWakeSafetyV2` | 安全阀（now 可注入） |
+| `isWakeableV2` | 防永眠判定（从 ensureWakeableV2 拆出） |
+| `evaluateWakeTriggerV2` | 六种触发条件判定（随机源与昵称注入） |
+
+`bridge.js` 11406 → 11333 行。新增 `scripts/test-socialv2-wake.mjs`（8 项），已进每日自检。
+
+**仍留在 bridge.js 的部分**（有副作用，需要注入定时器或 DSH 客户端后才能搬）：
+
+- `scheduleWakeV2`：排定时器
+- `sendWakePromptV2`：真正把提示词交给 DSH
+- `buildWakeSnapshotV2` / `buildWakePromptV2` / `buildWakeReminderPromptV2`：依赖人格与记忆注入
+
+### 待做
+
+1. Step 2 剩余：把 `scheduleWakeV2` 的定时器依赖抽成可注入（`setTimer/clearTimer`），
+   之后它也能用假时钟单测（推进到「该唤醒」的时刻）。
+2. Step 3：54 个端点分 4 个文件搬迁。
