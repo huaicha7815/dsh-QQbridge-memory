@@ -36,22 +36,31 @@ function callArgs(fn) {
   const end = bridge.indexOf('})) return;', idx);
   if (end < 0) return null;
   const seg = bridge.slice(idx + fn.length + 2, end);
-  const keys = new Set();
-  // 按顶层逗号切（忽略对象/函数字面量里的逗号）
+  // key -> 值的源码片段（简写时值 = key 本身）。保留值才能发现 `sendJson: undefined`。
+  const parts = new Map();
   let depth = 0;
   let cur = '';
+  const flush = () => {
+    const t = cur.trim();
+    if (!t) return;
+    const ci = t.indexOf(':');
+    if (ci < 0) {
+      if (/^[A-Za-z_$][\w$]*$/.test(t)) parts.set(t, t);
+    } else {
+      const key = t.slice(0, ci).trim();
+      const value = t.slice(ci + 1).trim();
+      if (/^[A-Za-z_$][\w$]*$/.test(key)) parts.set(key, value);
+    }
+    cur = '';
+  };
   for (const ch of seg) {
     if ('{(['.includes(ch)) depth++;
     else if ('})]'.includes(ch)) depth--;
-    if (ch === ',' && depth === 0) {
-      const key = cur.trim().split(':')[0].trim();
-      if (/^[A-Za-z_$][\w$]*$/.test(key)) keys.add(key);
-      cur = '';
-    } else cur += ch;
+    if (ch === ',' && depth === 0) flush();
+    else cur += ch;
   }
-  const lastKey = cur.replace(/[{}]/g, '').trim().split(':')[0].trim();
-  if (/^[A-Za-z_$][\w$]*$/.test(lastKey)) keys.add(lastKey);
-  return keys;
+  flush();
+  return parts;
 }
 
 const FILES = [
@@ -74,6 +83,11 @@ test('bridge 调用点传齐了所有 routes 模块声明的参数', () => {
     if (!passed) { problems.push(`${file}: bridge 里找不到 ${info.fn} 调用`); continue; }
     const missing = info.params.filter((p) => !passed.has(p) && !OPTIONAL.has(p));
     if (missing.length) problems.push(`${file}: bridge 漏传 → ${missing.join(', ')}`);
+    // 值也不能是 undefined/null：键在但值是空的，等同漏传。
+    const badValues = [...passed.entries()]
+      .filter(([, v]) => /^(undefined|null)$/.test(String(v).trim()))
+      .map(([k]) => k);
+    if (badValues.length) problems.push(`${file}: 传了空值 → ${badValues.join(', ')}`);
   }
   assert.deepEqual(problems, [], `调用点与模块声明不一致:\n${problems.join('\n')}`);
 });

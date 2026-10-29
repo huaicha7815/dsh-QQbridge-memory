@@ -269,6 +269,9 @@ export function createMemoryStore(options = {}) {
   /** 写 S3 独立副本（只对 tier>=3 且配置开启时）。 */
   function writeSalientRow(row, day, tier) {
     if (!cfg.salientFile || Number(tier) < 3) return;
+    // 文件被删/重建时缓存必须失效：否则 index 里记着「已写过」但文件里其实没有，
+    // 结果就是 S3 副本永远补不上（replay 也会误判为已完成）。
+    if (!fs.existsSync(salientFile)) salientIndex = null;
     const index = loadSalientIndex();
     const key = salientKey(row);
     if (index.has(key)) return;
@@ -1124,101 +1127,166 @@ export function createMemoryStore(options = {}) {
    *
    * @param {{dryRun?: boolean}} [options] dryRun=true 只统计不落地（运维先预览）
    */
-  function replayWriteFailures({ dryRun = false } = {}) {
-    const lines = readFailureLines();
-    if (!lines.length) return { replayed: 0, skipped: 0, failed: 0, quarantined: 0, dryRun };
-
-    // 并发保护：id 检查和 append 之间不是原子的，两个进程同时 --apply 会各写一份。
-    // 用 O_EXCL 建锁文件；锁超过 5 分钟视为上次崩溃残留，自动接管。
-    let lockFd = null;
-    if (!dryRun) {
-      const lockFile = writeFailFile + '.lock';
-      try {
-        lockFd = fs.openSync(lockFile, 'wx');
-      } catch (error) {
-        if (error && error.code === 'EEXIST') {
-          let stale = false;
-          try {
-            const stat = fs.statSync(lockFile);
-            stale = Date.now() - stat.mtimeMs > 5 * 60 * 1000;
-          } catch { /* 锁文件刚好被别人删了 */ }
-          if (!stale) {
-            return { replayed: 0, skipped: 0, failed: 0, quarantined: 0, dryRun, locked: true };
-          }
-          try { fs.unlinkSync(lockFile); } catch {}
-          try { lockFd = fs.openSync(lockFile, 'wx'); } catch { /* 竞争失败就放弃本轮 */ }
-        }
-      }
-    }
+  // ── replay 锁：带 owner token 的租约 ──
+  // 审查指出的三个问题都在这里：
+  // 1. 锁创建失败（EACCES/磁盘/路径）时以前会无锁继续 → 现在一律 fail-closed；
+  // 2. 过期接管只按 mtime 判断 → 现在看 owner + at，且只接管确实过期的；
+  // 3. 释放时无条件 unlink → 现在只删自己持有（owner 匹配）的锁。
+  function acquireReplayLock(lockFile, owner) {
+    const writeLock = () => fs.writeFileSync(
+      lockFile,
+      JSON.stringify({ owner, pid: process.pid, at: Date.now() }),
+      { flag: 'wx' },
+    );
     try {
-    let replayed = 0;
-    let skipped = 0;
-    let quarantined = 0;
-    const remaining = [];
-    const bad = [];
-    for (const line of lines) {
-      let item;
-      try { item = JSON.parse(line); } catch { bad.push(line); quarantined += 1; continue; }
-      const row = item && item.row;
-      const id = String((item && item.id) ?? (row && row.id) ?? '');
-      if (!row || !id) { bad.push(line); quarantined += 1; continue; }
-      const phase = item.phase === 'salient' ? 'salient' : 'event';
-      const day = dayString(Number(row.t) || Date.now());
-      // 幂等：L1 里已有这个 id 就不再写
-      if (phase === 'event' && l1HasId(day, id)) { skipped += 1; continue; }
-      if (dryRun) { replayed += 1; continue; }
-      try {
-        ensureDirs();
-        if (phase === 'salient') {
-          writeSalientRow(row, day, Number(row.s) || 0);
-        } else {
-          writeEventRow(row);
-          try {
-            writeSalientRow(row, day, Number(row.s) || 0);
-          } catch (e) {
-            // 主事件已写进 L1，但 S3 副本没写：这条不能算「恢复完成」，
-            // 降级成 salient 阶段的待处理记录，下次 replay 只补副本。
-            remaining.push(JSON.stringify({
-              at: Date.now(), phase: 'salient', id, row, error: String(e?.message ?? e),
-            }));
-            lastWriteFailure = { at: Date.now(), error: String(e?.message ?? e), phase: 'salient' };
-            continue;
-          }
-        }
-        replayed += 1;
-      } catch (error) {
-        remaining.push(line);
-        lastWriteFailure = { at: Date.now(), error: String(error?.message ?? error), phase };
+      writeLock();
+      return true;
+    } catch (error) {
+      if (!error || error.code !== 'EEXIST') {
+        // 关键：不是「锁被占用」，而是根本创建不了锁。
+        // 这种情况下继续 replay 等于在无锁状态下写数据，两个进程会重复写 L1。
+        console.warn('[memory] 无法创建 replay 锁，本轮不执行:', error?.message ?? error);
+        return false;
       }
-    }
-    if (!dryRun) {
+      let info = null;
+      try { info = JSON.parse(fs.readFileSync(lockFile, 'utf8')); } catch { /* 锁文件损坏按过期处理 */ }
+      const age = Date.now() - (Number(info && info.at) || 0);
+      if (info && age < 5 * 60 * 1000) return false; // 活锁，放弃本轮
+      // 过期锁：先删再建；删和建都有竞争风险，失败就放弃（下次再来）
+      try { fs.unlinkSync(lockFile); } catch {}
       try {
-        if (remaining.length) {
-          const tmp = writeFailFile + '.tmp';
-          fs.writeFileSync(tmp, remaining.join('\n') + '\n', 'utf8');
-          fs.renameSync(tmp, writeFailFile);
-        } else if (fs.existsSync(writeFailFile)) {
-          fs.unlinkSync(writeFailFile);
-        }
+        writeLock();
+        return true;
       } catch {
-        // 清单替换失败：下次会再扫一遍，幂等检查保证不会重复写
-      }
-      if (bad.length) {
-        // 坏行隔离，不直接丢掉（它们是最需要人工看的部分）
-        try { fs.appendFileSync(writeFailFile + '.quarantine', bad.join('\n') + '\n', 'utf8'); } catch {}
-      }
-      writeFailureCount = remaining.length;
-    }
-    return { replayed, skipped, failed: remaining.length, quarantined, dryRun };
-    } finally {
-      if (lockFd != null) {
-        try { fs.closeSync(lockFd); } catch {}
-        try { fs.unlinkSync(writeFailFile + '.lock'); } catch {}
+        return false;
       }
     }
   }
 
-  /** 某天的 L1 里是否已有这个事件 id（replay 幂等判断）。 */
+  /** 只释放自己持有的锁，避免删掉接管者的锁。 */
+  function releaseReplayLock(lockFile, owner) {
+    try {
+      const info = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
+      if (info && info.owner === owner) fs.unlinkSync(lockFile);
+    } catch { /* 锁已经不在了 */ }
+  }
+
+  /** 长任务续租：更新锁文件的 at，避免跑超过 5 分钟被误判为过期。 */
+  function renewReplayLock(lockFile, owner) {
+    try {
+      const info = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
+      if (info && info.owner === owner) {
+        fs.writeFileSync(lockFile, JSON.stringify({ ...info, at: Date.now() }), 'utf8');
+      }
+    } catch { /* 续租失败不影响本轮，只是可能被别人误判过期 */ }
+  }
+
+  /** S3 独立副本里是否已有该 id（判断「是否还缺副本」）。 */
+  function salientHasId(id) {
+    const needle = '"id":' + JSON.stringify(id);
+    try {
+      return fs.readFileSync(salientFile, 'utf8').includes(needle);
+    } catch { return false; }
+  }
+
+  /**
+   * 重放失败清单。
+   *
+   * 正确性要求：
+   * 1. 幂等：按事件稳定 id 判重（活动日 + 归档月都查）；
+   * 2. 分阶段：L1 已有但 S3 缺时，降级为「只补 S3」，不算 skip；
+   * 3. 原子：清单用「写临时文件 + rename」替换；
+   * 4. 并发：带 owner 的租约锁，获取失败一律 fail-closed。
+   *
+   * @param {{dryRun?: boolean}} [options] dryRun=true 只统计不落地（运维先预览）
+   */
+  function replayWriteFailures({ dryRun = false } = {}) {
+    const lines = readFailureLines();
+    if (!lines.length) return { replayed: 0, skipped: 0, failed: 0, quarantined: 0, dryRun };
+
+    const lockFile = writeFailFile + '.lock';
+    const owner = `${process.pid}-${crypto.randomUUID().slice(0, 8)}`;
+    let lockHeld = false;
+    if (!dryRun) {
+      lockHeld = acquireReplayLock(lockFile, owner);
+      if (!lockHeld) {
+        return { replayed: 0, skipped: 0, failed: 0, quarantined: 0, dryRun, locked: true };
+      }
+    }
+    try {
+      let replayed = 0;
+      let skipped = 0;
+      let quarantined = 0;
+      const remaining = [];
+      const bad = [];
+      let processed = 0;
+      for (const line of lines) {
+        processed += 1;
+        if (lockHeld && processed % 200 === 0) renewReplayLock(lockFile, owner);
+        let item;
+        try { item = JSON.parse(line); } catch { bad.push(line); quarantined += 1; continue; }
+        const row = item && item.row;
+        const id = String((item && item.id) ?? (row && row.id) ?? '');
+        if (!row || !id) { bad.push(line); quarantined += 1; continue; }
+        let phase = item.phase === 'salient' ? 'salient' : 'event';
+        const day = dayString(Number(row.t) || Date.now());
+        const tier = Number(row.s) || 0;
+        // 幂等判断要覆盖「该 id 的两个阶段都完成」：
+        // 只看 L1 有 id 就 skip，会漏掉「L1 已有但 S3 副本缺失」的情况。
+        if (phase === 'event' && l1HasId(day, id)) {
+          const stillNeedsSalient = tier >= 3 && Boolean(cfg.salientFile) && !salientHasId(id);
+          if (!stillNeedsSalient) { skipped += 1; continue; }
+          phase = 'salient'; // 降级：只补 S3 副本
+        }
+        if (phase === 'salient' && salientHasId(id)) { skipped += 1; continue; }
+        if (dryRun) { replayed += 1; continue; }
+        try {
+          ensureDirs();
+          if (phase === 'salient') {
+            writeSalientRow(row, day, tier);
+          } else {
+            writeEventRow(row);
+            try {
+              writeSalientRow(row, day, tier);
+            } catch (e) {
+              // 主事件已写进 L1，但 S3 副本没写：不能算「恢复完成」，
+              // 降级成 salient 阶段的待处理记录，下次 replay 只补副本。
+              remaining.push(JSON.stringify({
+                at: Date.now(), phase: 'salient', id, row, error: String(e?.message ?? e),
+              }));
+              lastWriteFailure = { at: Date.now(), error: String(e?.message ?? e), phase: 'salient' };
+              continue;
+            }
+          }
+          replayed += 1;
+        } catch (error) {
+          remaining.push(line);
+          lastWriteFailure = { at: Date.now(), error: String(error?.message ?? error), phase };
+        }
+      }
+      if (!dryRun) {
+        try {
+          if (remaining.length) {
+            const tmp = writeFailFile + '.tmp';
+            fs.writeFileSync(tmp, remaining.join('\n') + '\n', 'utf8');
+            fs.renameSync(tmp, writeFailFile);
+          } else if (fs.existsSync(writeFailFile)) {
+            fs.unlinkSync(writeFailFile);
+          }
+        } catch {
+          // 清单替换失败：下次再扫一遍，幂等检查保证不会重复写
+        }
+        if (bad.length) {
+          try { fs.appendFileSync(writeFailFile + '.quarantine', bad.join('\n') + '\n', 'utf8'); } catch {}
+        }
+        writeFailureCount = remaining.length;
+      }
+      return { replayed, skipped, failed: remaining.length, quarantined, dryRun };
+    } finally {
+      if (lockHeld) releaseReplayLock(lockFile, owner);
+    }
+  }
+
   function l1HasId(day, id) {
     const needle = '"id":' + JSON.stringify(id);
     // 1) 当天活动文件

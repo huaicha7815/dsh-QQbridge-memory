@@ -15,7 +15,9 @@ function freshStore() {
   return { dir, store: createMemoryStore({ dir }) };
 }
 function cleanup(dir) { fs.rmSync(dir, { recursive: true, force: true }); }
-const day = (t = Date.now()) => new Date(t).toISOString().slice(0, 10);
+// 必须用本地日期：appendEvent 的 dayString() 是本地时区的，
+// 测试用 UTC 会在 Asia/Shanghai 的 00:00–08:00 窗口找错文件，产生假失败。
+const day = (t = Date.now()) => new Date(t).toLocaleDateString('en-CA');
 function countLines(file) {
   try { return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).length; } catch { return 0; }
 }
@@ -162,5 +164,47 @@ test('quarantine 数量要能被健康检查看到', () => {
   const st = store.stats();
   assert.ok(typeof st.quarantined === 'number', 'stats 应暴露 quarantined');
   assert.equal(st.quarantined, 1, 'quarantine 里的行数要计入');
+  cleanup(dir);
+});
+
+test('锁被占用时 fail-closed：不写数据、保留清单', () => {
+  const { dir, store } = freshStore();
+  // 造一条待恢复记录
+  fs.rmSync(path.join(dir, 'events'), { recursive: true, force: true });
+  fs.writeFileSync(path.join(dir, 'events'), 'blocked');
+  store.appendEvent({ t: Date.now(), k: 'g:1', kind: 'msg', text: 'x', s: 1 });
+  fs.unlinkSync(path.join(dir, 'events'));
+  // 放一个「活锁」：owner 是别人、刚创建
+  fs.writeFileSync(path.join(dir, 'write-failures.jsonl.lock'), JSON.stringify({ owner: 'other', at: Date.now() }), 'utf8');
+  const r = store.replayWriteFailures();
+  assert.equal(r.locked, true, '应该返回 locked');
+  assert.equal(r.replayed, 0, '锁被占时不能写数据');
+  assert.ok(fs.existsSync(path.join(dir, 'write-failures.jsonl')), '清单要保留');
+  // 释放：不能删掉别人的锁
+  assert.ok(fs.existsSync(path.join(dir, 'write-failures.jsonl.lock')), '不能删除别人的锁');
+  cleanup(dir);
+});
+
+test('L1 已有 id 但 S3 副本缺失 → 补副本而不是 skip', () => {
+  const { dir, store } = freshStore();
+  const t = Date.now();
+  const id = 's3-missing-1';
+  store.appendEvent({ id, t, k: 'g:1', kind: 'msg', text: '关键事件', s: 3 });
+  // 人为删掉 S3 副本，模拟「主事件在、副本丢」
+  const salientFile = path.join(dir, 'salient.jsonl');
+  fs.rmSync(salientFile, { force: true });
+  assert.ok(!fs.existsSync(salientFile), '前提：S3 副本已删掉');
+  // 造一条 event 阶段记录（同 id）
+  const row = { id, t, k: 'g:1', kind: 'msg', text: '关键事件', s: 3 };
+  fs.writeFileSync(
+    path.join(dir, 'write-failures.jsonl'),
+    JSON.stringify({ at: Date.now(), phase: 'event', id, row, error: 'simulated' }) + '\n',
+    'utf8',
+  );
+  const r = store.replayWriteFailures();
+  assert.equal(r.skipped, 0, '不能简单 skip——S3 还缺');
+  assert.equal(r.replayed, 1, '应该补 S3');
+  assert.ok(fs.existsSync(salientFile), 'S3 副本要补上');
+  assert.equal(countLines(path.join(dir, 'events', `${day(t)}.jsonl`)), 1, '主事件不能重复');
   cleanup(dir);
 });
