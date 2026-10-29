@@ -1309,3 +1309,41 @@ schtasks /create /tn "qq-bridge 记忆库自检" /sc daily /st 09:00 ^
 ```
 
 为什么是每天上午 9 点：日终归纳（23:10）跑完之后隔一晚，正好能看出它有没有把档案写坏。
+
+### 24.5 路由拆分进度（V4.7 ~ V4.9）
+
+bridge.js 是 1.2 万行单文件，126 个端点全在一个 `if` 链里。开源的第一个门槛就是
+「别人找不到东西」，所以按「耦合从低到高」分批往外拆成 `src/routes/*.mjs`。
+
+| 批次 | 模块 | 端点数 | 依赖特点 |
+| --- | --- | --- | --- |
+| V4.7 | `routes/memory-api.mjs` | 4 | 纯只读、无写副作用 |
+| V4.8 | `routes/roles-api.mjs` | 9 | 文件增删改查；`roleInjectMaxChars` 是 let → getter/setter 注入 |
+| V4.8 | `routes/tokens-api.mjs` | 6 | 只依赖账本与价表；保留「带 agent token 一律 403」双保险 |
+| V4.9 | `routes/stickers-api.mjs` | 5 | `stickerEntries/syncedAt` 是 let → getter 注入（同步后会被整体替换） |
+
+```
+bridge.js:  11955 → 11537 行（-418）
+已拆出:     24 个端点 / 4 个域
+```
+
+**抽出来的模块统一约定**：
+
+- 依赖全部由调用方注入，**不 import bridge 内部状态**——这样能单独读、也能单独测；
+- 返回 `true` = 「这个请求我处理了」，调用方直接 return；`false` = 继续往下走；
+- `let` 类型的共享状态用 getter/setter 注入（传值会拿到过期快照）；
+- 用具名导出，不做默认导出（调用点一眼能看出是哪个域）。
+
+**故意没拆的**：
+
+| 域 | 端点数 | 为什么不拆 |
+| --- | --- | --- |
+| `api/socialV2` | 58 | 依赖 socialV2 状态机 / 唤醒调度 / DSH 会话，**得先把状态管理本身抽成模块**，不是端点搬迁 |
+| `api/slang` | 9 | `slangEntries` 是 let 且会被整体替换，还牵着 4 张 Map/Set —— 同样要先把黑话存储抽出去 |
+| `api/preset` | 4 | 15+ 个依赖，且写盘路径带「安全不变量校验」（拒绝还原弱化版提示词），风险高于收益 |
+| `api/send` | 5 | 直连网关与白名单，拆出去要注入整条发送链路，收益低 |
+
+**配套：接口清单自动生成**
+
+`npm run routes:doc` → `docs/ROUTES.md`：扫描 `bridge.js` + `src/routes/*.mjs`（自动发现，
+新增模块不用改脚本），输出 132 个路由按域分组、带源码位置；`--check` 可进 CI。
