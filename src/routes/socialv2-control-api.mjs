@@ -1,3 +1,4 @@
+import path from 'node:path';
 // socialV2 控制类接口（会改状态的那批）：config / activity / reset / mark-read / wake-config。
 //
 // 这批和只读端点分开搬：它们直接改唤醒配置、读水位、会话状态，是状态机核心，
@@ -18,6 +19,7 @@ export async function handleSocialV2ControlApi({
   seenForwardIds,
   pendingWakeKeys,
   api,
+  markReadCalledKeys,
   bumpSessionEpoch,
   req, url,
   currentMode: getCurrentMode,

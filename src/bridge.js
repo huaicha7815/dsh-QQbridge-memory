@@ -3989,6 +3989,7 @@ async function main() {
           pendingWakeKeys,
           api,
           bumpSessionEpoch: () => { sessionEpoch += 1; return sessionEpoch; },
+          markReadCalledKeys,
           req, url,
           currentMode: () => currentMode,
         })) return;

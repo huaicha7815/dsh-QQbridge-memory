@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 // socialV2 工具侧接口（工具日志 / 反馈 / 自己发言 / 消息详情 / 合并转发 / 活跃成员）。
 //
 // 这批端点的调用方既有 QQ 侧 AI（带 agent token）也有控制台；

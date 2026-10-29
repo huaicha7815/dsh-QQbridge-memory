@@ -133,6 +133,9 @@ export function createMemoryStore(options = {}) {
   const monthsDir = path.join(root, 'months');
   const salientFile = path.join(root, 'salient.jsonl');
   const profileFile = path.join(root, 'profile.json');
+  // 事件写入失败计数与最后一次错误（健康检查会读它判断「L1 是否悄悄缺数据」）
+  let writeFailureCount = 0;
+  let lastWriteFailure = null;
   let cfg = normalizeMemoryConfig(options.config);
 
   // 文件解析缓存：key=绝对路径，value={size, mtimeMs, rows}
@@ -277,9 +280,20 @@ export function createMemoryStore(options = {}) {
       }
       return true;
     } catch (error) {
-      // 写失败不能静默：以前只 return false，调用方不检查返回值，
-      // 结果是「聊天一切正常，但 L1 事件已经丢了」也没人发现。
+      // 写失败不能静默，而且要留「可恢复」的痕迹：以前只 return false，
+      // 调用方不检查，结果是「聊天一切正常，但 L1 事件已经丢了」也没人发现。
+      // 现在三件事：打日志、把丢失的行写进 write-failures.jsonl、累加计数（健康检查会报）。
       console.warn('[memory] 事件写入失败:', error?.message ?? error);
+      writeFailureCount += 1;
+      lastWriteFailure = { at: Date.now(), error: String(error?.message ?? error) };
+      try {
+        // 注意：这里不能用 ensureDirs()——它可能正是失败原因（目录被占/只读）。
+        // root 目录通常已存在，直接追加即可。
+        const failFile = path.join(root, 'write-failures.jsonl');
+        fs.appendFileSync(failFile, JSON.stringify({ at: Date.now(), error: String(error?.message ?? error), row }) + '\n', 'utf8');
+      } catch {
+        // 连失败清单都写不进去，就只能靠上面的 console.warn 了
+      }
       return false;
     }
   }
@@ -374,27 +388,35 @@ export function createMemoryStore(options = {}) {
       const pending = days.sort().filter((d) => !alreadyArchived.has(d));
       if (!pending.length) continue;
       let content = '';
+      // 只把「成功读入」的日期算作已归档；读失败/解析失败的那天必须保留文件，
+      // 否则会先删掉源文件却没写进归档 —— L1 数据不可恢复地丢失。
+      const archivedOk = [];
       for (const day of pending) {
         try {
           const raw = fs.readFileSync(path.join(eventsDir, `${day}.jsonl`), 'utf8');
+          let chunk = '';
           for (const line of raw.split('\n')) {
             if (!line.trim()) continue;
-            content += JSON.stringify({ ...JSON.parse(line), srcDay: day }) + '\n';
+            chunk += JSON.stringify({ ...JSON.parse(line), srcDay: day }) + '\n';
           }
-        } catch {}
+          content += chunk;
+          archivedOk.push(day);
+        } catch (error) {
+          console.warn('[memory] 归档跳过该日（保留源文件）:', day, error?.message ?? error);
+        }
       }
       if (!content) continue;
       try {
         fs.mkdirSync(archiveDir, { recursive: true });
         fs.appendFileSync(path.join(archiveDir, `${month}.jsonl`), content, 'utf8');
-        for (const day of pending) {
+        for (const day of archivedOk) {
           const f = path.join(eventsDir, `${day}.jsonl`);
           try {
             fs.unlinkSync(f);
           } catch {}
           cache.delete(f);
         }
-        moved += pending.length;
+        moved += archivedOk.length;
       } catch {
         // 归档失败就留着日文件，不影响检索
       }
@@ -1052,6 +1074,7 @@ export function createMemoryStore(options = {}) {
 
   /** 存储概况（给控制台/工具看，不进 prompt）。 */
   function stats({ now = Date.now() } = {}) {
+    // 写入失败计数：健康检查据此判断「L1 是否悄悄缺数据」
     const days = listEventDays();
     let events = 0;
     let bytes = 0;
@@ -1102,6 +1125,9 @@ export function createMemoryStore(options = {}) {
       },
       config: getConfig(),
       today: dayString(now),
+      // 写入失败：>0 说明有事件没落进 L1（聊天看起来正常，但记忆已经缺了）
+      writeFailures: writeFailureCount,
+      lastWriteFailure,
     };
   }
 

@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 // socialV2 发送与媒体接口（发消息 / 拍一拍 / 语音 / 表情 / QQ 空间）。
 //
 // 这是权限最高的一批端点：它们真的会往 QQ 发东西。
@@ -5,7 +7,7 @@
 //
 // 约定：返回 true 表示「这个请求我处理了」，调用方直接 return；false 继续往下走。
 export async function handleSocialV2SendApi({
-  SENSITIVE_RE, agentTokenOk, appendActivity, applyStickerNoteV2, assertGroupMember, bot, collectStickerV2, computeGapsV2, describeAudio, fetch, findCjkSpaceWarning, findSplitBoundaryWarning, formatStickerList, getImageDimensions, getSocialV2State, getStickerImageData, inspectAudio, lastForcedAgentStickerSync, listAudioFiles, log, mimeFromBuffer, mimeFromUrl, modeAllowed, parseTargetKey, path, readBody, recordSentMessagesV2, resolveAudioProcessing, resolveReplyTargetV2, resolveVoicePathForOperator, resolveVoicePathForV2, safeFetchBuffer, saveSocialV2State, scheduleReplyCheckV2, sendJson, sendMessagesV2, sendStickerV2, sendVoiceForV2, sendVoiceV2, setStickerRemarkV2, shouldBlockSilentReply, socialV2, stickerEnabled, syncStickerLibrary, truncateText, v2SessionAllowed, v2ToolEnabled, verifyVoiceMessageSent, voiceBudgetCheck, voiceBudgetCommit, voiceCfg, cfg,
+  SENSITIVE_RE, agentTokenOk, appendActivity, applyStickerNoteV2, assertGroupMember, bot, collectStickerV2, computeGapsV2, describeAudio, fetch, findCjkSpaceWarning, findSplitBoundaryWarning, formatStickerList, getImageDimensions, getSocialV2State, getStickerImageData, inspectAudio, lastForcedAgentStickerSync, listAudioFiles, log, mimeFromBuffer, mimeFromUrl, modeAllowed, parseTargetKey, readBody, recordSentMessagesV2, resolveAudioProcessing, resolveReplyTargetV2, resolveVoicePathForOperator, resolveVoicePathForV2, safeFetchBuffer, saveSocialV2State, scheduleReplyCheckV2, sendJson, sendMessagesV2, sendStickerV2, sendVoiceForV2, sendVoiceV2, setStickerRemarkV2, shouldBlockSilentReply, socialV2, stickerEnabled, syncStickerLibrary, truncateText, v2SessionAllowed, v2ToolEnabled, verifyVoiceMessageSent, voiceBudgetCheck, voiceBudgetCommit, voiceCfg, cfg,
   currentMode: getCurrentMode,
   stickerEntries: getStickerEntries,
   stickerSyncedAt: getStickerSyncedAt,
@@ -23,9 +25,7 @@ export async function handleSocialV2SendApi({
           if (typeof rawMessages === 'string') {
             const trimmed = rawMessages.trim();
             if (trimmed.startsWith('[')) {
-                        const st = getSocialV2State(key);
-          const now = Date.now();
-try {
+              try {
                 const parsed = JSON.parse(trimmed);
                 if (Array.isArray(parsed)) rawMessages = parsed.map(String);
               } catch {}
@@ -95,8 +95,12 @@ try {
               return true;
             }
           }
+          // 这两个必须在 try 之前声明：catch 里的额度回滚要用到它们。
+          // （上一轮把它们错插进了字符串解析分支，导致正常数组消息路径 st is not defined。）
+          const st = getSocialV2State(key);
+          const now = Date.now();
           try {
-                const maxPerMinute = Number(sendCfg.maxSendPerMinute) || 0;
+            const maxPerMinute = Number(sendCfg.maxSendPerMinute) || 0;
             const maxPerHour = Number(sendCfg.maxSendPerHour) || 0;
             const recentMinute = (st.sendTimes || []).filter((t) => now - t < 60000).length;
             const recentHour = (st.sendTimes || []).filter((t) => now - t < 3600000).length;

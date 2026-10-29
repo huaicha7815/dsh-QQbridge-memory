@@ -13,6 +13,30 @@ import { handleSocialV2ControlApi } from '../src/routes/socialv2-control-api.mjs
 import { handleSocialV2StateApi } from '../src/routes/socialv2-state-api.mjs';
 import { handleSocialV2MemoryApi } from '../src/routes/socialv2-memory-api.mjs';
 
+// 每个高风险端点喂一份「最小有效 body」：参数齐全才会走到真正使用依赖的分支。
+// 只给空对象的话，几乎所有端点都会在参数校验处提前 return，等于什么都没测到。
+const BODIES = {
+  '/api/socialV2/send-burst': { key: 'group:1', messages: ['hello'] },
+  '/api/socialV2/send-message': { key: 'group:1', message: 'hello' },
+  '/api/socialV2/send-poke': { key: 'group:1', targetUserId: '123' },
+  '/api/socialV2/send-voice': { key: 'group:1', voice: 'test.mp3' },
+  '/api/socialV2/send-sticker': { key: 'group:1', stickerId: 'abc' },
+  '/api/socialV2/collect-sticker': { key: 'group:1', messageId: '123' },
+  '/api/socialV2/sticker-note': { key: 'group:1', stickerId: 'abc', note: 'note' },
+  '/api/socialV2/qzone-send': { key: 'private:1', content: 'hello' },
+  '/api/socialV2/qzone-list': { key: 'private:1' },
+  '/api/socialV2/tool-log/clear': {},
+  '/api/socialV2/feedback-clear': {},
+  '/api/socialV2/forward-media': { key: 'group:1', media: [] },
+  '/api/socialV2/wake': { key: 'group:1', reason: 'admin' },
+  '/api/socialV2/wait': { key: 'group:1', purpose: 'reply', timeoutMs: 1000 },
+  '/api/socialV2/check-send': { key: 'group:1', tool: 'send' },
+  '/api/socialV2/mark-read': { key: 'group:1', throughSeq: 1 },
+  '/api/socialV2/wake-config': { key: 'group:1', config: { mode: 'diving' } },
+  '/api/socialV2/reset': {},
+  '/api/socialV2/memory-append': { key: 'group:1', category: 'activeTopic', content: 'topic' },
+  '/api/socialV2/memory-remember': { key: 'group:1', kind: 'self', content: 'note' },
+};
 // ── 万能 mock：任何属性访问/调用都返回自身，用于填充大量不关心的依赖 ──
 function anyMock() {
   const fn = function () { return anyMock(); };
@@ -45,7 +69,7 @@ function baseDeps(over = {}) {
   const deps = new Proxy({
     getSocialV2State: () => st,
     sendJson: (obj) => { sent.push(obj); },
-    readBody: async () => ({}),
+    readBody: async () => (deps.__body ?? {}),
     v2ToolEnabled: () => true,
     v2SessionAllowed: () => true,
     agentTokenOk: () => true,
@@ -71,13 +95,26 @@ function baseDeps(over = {}) {
     sendToolSucceededSessions: new Set(),
     seenForwardIds: new Map(),
     pendingWakeKeys: new Set(),
+    // memory-api 的真实依赖：给一份最小可用的 store mock
+    memoryStore: {
+      readProfile: () => ({ version: 3, people: {}, threads: [], self: [], audit: [] }),
+      writeProfile: () => true,
+      stats: () => ({ events: 0, eventDays: 0, tiers: [0, 0, 0, 0], salience: {}, summaryFiles: 0, weekFiles: 0, monthFiles: 0, profile: { people: 0, openThreads: 0, selfNotes: 0 }, writeFailures: 0 }),
+      getConfig: () => ({}),
+      search: () => [],
+      readEvents: () => [],
+      readRecallLog: () => [],
+      correctFact: () => ({ profile: { version: 3, people: {}, threads: [], self: [], audit: [] }, changed: false }),
+    },
     _sent: sent,
     _st: st,
   }, {
     get(target, prop) {
       if (prop in target) return target[prop];
-      // 未知依赖一律给万能 mock（这正是我们要验证「不会因为未注入而崩」的地方）
-      return anyMock();
+      if (typeof prop === "symbol") return undefined;
+      // 严格模式：没显式提供的依赖就是漏注入，直接报给测试。
+      // （早期版本这里返回万能 mock，结果漏注入的模块也能全绿——等于没测。）
+      throw new Error(`依赖未注入: ${String(prop)}`);
     },
   });
   return Object.assign(deps, over);
@@ -127,6 +164,8 @@ const ENDPOINTS = [
   [handleSocialV2ControlApi, 'activity', 'GET', '/api/socialV2/activity', {}],
   [handleSocialV2ControlApi, 'mark-read', 'POST', '/api/socialV2/mark-read', {}],
   [handleSocialV2ControlApi, 'wake-config', 'POST', '/api/socialV2/wake-config', {}],
+  [handleSocialV2ControlApi, 'reset', 'POST', '/api/socialV2/reset', {}],
+  [handleSocialV2MemoryApi, 'memory-remember', 'POST', '/api/socialV2/memory-remember', {}],
   [handleSocialV2StateApi, 'state', 'GET', '/api/socialV2/state', {}],
   [handleSocialV2StateApi, 'prompt', 'GET', '/api/socialV2/prompt', {}],
   [handleSocialV2StateApi, 'unread', 'GET', '/api/socialV2/unread', {}],
@@ -141,19 +180,24 @@ const ENDPOINTS = [
 for (const [handler, name, method, pathname] of ENDPOINTS) {
   test(`端点 ${name} 的依赖都能解析`, async () => {
     const deps = baseDeps();
+    deps.__body = BODIES[pathname] ?? {};
     const req = makeReq(pathname, method);
     const url = makeUrl(pathname, { key: 'group:1', token: 't' });
     // 只关心「不会因为未注入而抛 ReferenceError」
     try {
       await handler({ ...deps, req, url });
     } catch (error) {
-      // ReferenceError / TypeError（未定义）都算失败；业务异常（会走 catch 返回 500）可接受
+      const msg = String(error?.message ?? error);
+      // ReferenceError = 用了没声明的标识符（真 bug）
       if (error instanceof ReferenceError) throw error;
-      if (error instanceof TypeError && /is not a function|Cannot read/.test(String(error.message))) {
-        // mock 返回的万能对象可能不是函数，这属于 mock 局限，不是真实 bug
-        return;
-      }
-      // 其他异常视为业务路径，放行
+      // 依赖未注入（严格 Proxy 抛的）
+      if (/依赖未注入/.test(msg)) throw error;
+      // 「Cannot read properties of undefined (reading xxx)」通常意味着注入值是 undefined ——
+      // 这正是漏注入的表现，必须失败。（早期版本把它当 mock 局限放行，于是漏注入全绿。）
+      if (error instanceof TypeError && /Cannot read properties of undefined/.test(msg)) throw error;
+      // 「xxx is not a function」可能只是 mock 的占位对象不可调用，放行
+      if (error instanceof TypeError && /is not a function/.test(msg)) return;
+      // 其余业务异常（内部 catch 返回 500）放行
     }
   });
 }
