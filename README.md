@@ -8,11 +8,13 @@
 >
 > 🔒 QQ 会话的权限边界与安全承诺见 **[RULES.md](RULES.md)**。
 >
+> 📝 每个版本改了什么见 **[CHANGELOG.md](CHANGELOG.md)**。
+>
 > 🎤 独立的「发语音」工具已拆到仓库上一级的 **`../voice-tool/`**（命令行 `voice-cli.mjs` / 图形界面 `voice-gui.mjs`），不再依赖 qq-bridge 运行。
 
 把 QQ 消息接入 DSH agent：QQ 好友/群发来的消息会变成 DSH 会话里的用户消息，agent 的回复（含提问、工具审批）会发回 QQ。
 
-> ⚠️ **当前版本 `v0.1.5`，适配 DSH 0.1.5-rc.1**（在该版本上逐项实测）。使用 Cookie 鉴权、斜杠 RPC 和 `/api/remote.mux` 事件流；这一代协议自 DSH `0.1.2-alpha.1` 起引入，与更早的点号 endpoint 协议不兼容——**DSH `0.1.1-rc.2` 及更早**请改用 tag [`v0.1.0`](https://github.com/huaicha7815/dsh-QQbridge-memory/releases/tag/v0.1.0)。
+> ⚠️ **当前版本 `v0.2.0`，适配 DSH 0.1.7**（在该版本上逐项实测）。使用 Cookie 鉴权、斜杠 RPC 和 `/api/remote.mux` 事件流；这一代协议自 DSH `0.1.2-alpha.1` 起引入，与更早的点号 endpoint 协议不兼容——**DSH `0.1.1-rc.2` 及更早**请改用 tag [`v0.1.0`](https://github.com/huaicha7815/dsh-QQbridge-memory/releases/tag/v0.1.0)。
 >
 > 默认分支 `main` **就是**本版本，`git clone` 直接拿到，无需切换分支。
 

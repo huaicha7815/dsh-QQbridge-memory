@@ -2,13 +2,15 @@
 
 > Connect QQ messages to DeepSeek Harness (DSH) agents: QQ friends/groups become DSH conversations, and agent replies (including questions and tool approvals) are sent back to QQ.
 
-> ⚠️ **Current release `v0.1.5`, targets DSH 0.1.5-rc.1** (verified item by item on that version). It uses Cookie auth, slash RPC endpoints and the `/api/remote.mux` event stream — a protocol generation introduced in DSH `0.1.2-alpha.1`, incompatible with the older dot-endpoint protocol. On **DSH `0.1.1-rc.2` or earlier**, use tag [`v0.1.0`](https://github.com/huaicha7815/dsh-QQbridge-memory/releases/tag/v0.1.0) instead.
+> ⚠️ **Current release `v0.2.0`, targets DSH 0.1.7** (verified item by item on that version). It uses Cookie auth, slash RPC endpoints and the `/api/remote.mux` event stream — a protocol generation introduced in DSH `0.1.2-alpha.1`, incompatible with the older dot-endpoint protocol. On **DSH `0.1.1-rc.2` or earlier**, use tag [`v0.1.0`](https://github.com/huaicha7815/dsh-QQbridge-memory/releases/tag/v0.1.0) instead.
 >
 > The default branch `main` **is** this version — a plain `git clone` gets it, no branch switching needed.
 
 For the documentation index, see **[docs/README.md](docs/README.md)**.
 The documentation index (one line per doc, with "still current?" notes) is **[docs/README.md](docs/README.md)**;
 the repository/folder and script-naming conventions are in **[docs/FOLDER_MAP.md](docs/FOLDER_MAP.md)**.
+
+See **[CHANGELOG.md](CHANGELOG.md)** for what changed in each release.
 
 ## Long-term Memory
 

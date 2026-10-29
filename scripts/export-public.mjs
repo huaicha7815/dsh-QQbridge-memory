@@ -34,6 +34,7 @@ const TOP_WHITELIST = [
   '.github',
   'README.md',
   'README.en.md',
+  'CHANGELOG.md',
   'RULES.md',
   'LICENSE',
   'package.json',
