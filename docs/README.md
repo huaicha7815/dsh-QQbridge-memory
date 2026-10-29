@@ -29,6 +29,7 @@
 | 文档 | 一句话说明 | 状态 |
 | --- | --- | --- |
 | [design/GEN2_SIMULATION_PLAN.md](design/GEN2_SIMULATION_PLAN.md) | 二代仿真（`reserved2`）「一切皆工具」实施计划：WakeConfig 唤醒调度、MCP 工具集、控制台参数、`qq-chat-v2` preset | ⚠️ 骨架/API/调度/MCP/UI 均已落地，文中「状态：实施中」与残留 TODO 以当前代码为准 |
+| [design/SOCIALV2_SCHEDULER_PLAN.md](design/SOCIALV2_SCHEDULER_PLAN.md) | 二代仿真唤醒调度拆分设计：把 4 类定时器（待唤醒/睡眠/回复检查/主动检查）抽成可注入时钟的调度器，合并两处重复的看门狗逻辑，含假时钟测试矩阵 | 📐 设计稿（未实施） |
 | [design/SOCIALV2_SPLIT_PLAN.md](design/SOCIALV2_SPLIT_PLAN.md) | 二代仿真（socialV2）拆分设计：把状态存储 / 唤醒调度 / 54 个端点从 bridge.js 拆出的三步计划，含接口契约、验收标准、风险对策与启动信号 | 📐 设计稿（未实施） |
 | [design/SOCIAL_MODE_PLAN.md](design/SOCIAL_MODE_PLAN.md) | 一代仿真模式（`reserved`）的头脑风暴定案：规则引擎管「何时说」、LLM 管「说什么」 | ⚠️ 描述的一代状态机已实现；`reserved2` 已是默认模式，设计背景仍有效 |
 | [design/DSH_QQ_TOOLS_PLAN.md](design/DSH_QQ_TOOLS_PLAN.md) | 「一切皆工具」总路线与交接文档：当前能力盘点、安全性设计、分阶段计划 | ⚠️ 阶段计划大部分已完成，作为路线/安全设计参考仍有效 |

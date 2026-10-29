@@ -1,0 +1,243 @@
+# socialV2 唤醒调度拆分设计（Step 2 剩余）
+
+> 目标：把「什么时候该叫醒她、什么时候该睡」这套定时器逻辑从 `bridge.js` 里拆出来，
+> 让它能用**假时钟**单测，同时合并两处已经重复的看门狗逻辑。
+>
+> 状态：**设计稿，未实施**。
+>
+> 前置：Step 1（状态层）、Step 2 纯函数部分（唤醒判定）、Step 3（54 个端点）已完成。
+> 本文覆盖的是 Step 2 剩下的那部分——**有副作用的调度逻辑**。
+
+---
+
+## 1. 为什么单独为它写设计
+
+前面拆的都是「无副作用的判定」或「端点搬运」，搬完就能跑。
+
+这一批不一样：**它靠 `setTimeout` 驱动**。定时器不是一个值，是一个隐式全局依赖——
+你没法把一个「5 分钟后执行」的测试真的等 5 分钟。所以必须先改造接口，让它接受注入的时钟，
+才谈得上「搬」。
+
+同时这批代码里有三处复合缺陷值得顺手处理：
+
+1. `scheduleWakeV2` 和 `sendWakePromptV2` **各自复制了一份**「会话繁忙 → 暂存 + 5 分钟看门狗」的逻辑；
+2. 四类定时器（待唤醒 / 睡眠 / 回复检查 / 主动检查）各自管理自己的 `st.xxxTimer` 字段，
+   没有统一的取消入口；
+3. 定时器是否 `unref` 靠每处手写，漏一个就会让进程无法退出。
+
+---
+
+## 2. 现状盘点
+
+| 函数 | 行号 | 行数 | 副作用 | 备注 |
+| --- | --- | --- | --- | --- |
+| `refreshDefaultWakeConfigV2` | 5297 | ~65 | 写状态 | 可并入状态层 |
+| `ensureWakeableV2` | 5362 | ~23 | 写状态 + 清定时器 | 判定已抽出，剩壳 |
+| `buildWakeSnapshotV2` | 7111 | 81 | 读状态 | 组装上下文快照 |
+| `buildWakePromptV2` | 7192 | 123 | 读状态 | 提示词组装 |
+| `buildWakeReminderPromptV2` | 7315 | 10 | 无 | 纯字符串 |
+| `sendWakePromptV2` | 7325 | 136 | **DSH 投递 + 定时器** | 唯一真副作用边界 |
+| `scheduleReplyCheckV2` | 7461 | 41 | 定时器 | 30s 后补一刀 |
+| `scheduleWakeV2` | 7502 | 75 | 定时器 + 状态 | 合并窗口、看门狗 |
+| `setupSleepTimerV2` | 7577 | 45 | 定时器 | 有限睡眠、远未来续期 |
+| `scheduleProactiveCheckV2` | 7622 | ~58 | 定时器 | 主动机会 |
+
+合计约 **570 行**，其中 4 个定时器入口、**7 处 `setTimeout`**。
+
+### 2.1 定时器清单
+
+| 位置 | 字段 | 用途 | unref |
+| --- | --- | --- | --- |
+| `scheduleWakeV2` | `st.pendingWakeTimer` | 合并窗口后投递唤醒 | ✅ |
+| `scheduleWakeV2` | `st.pendingWakeWatchdog` | 繁忙积压 5 分钟解卡 | ✅ |
+| `sendWakePromptV2` | `st.pendingWakeWatchdog` | 同上（**重复实现**） | ✅ |
+| `setupSleepTimerV2` | `st.sleepTimer` | 有限睡眠到点 | ✅ |
+| `setupSleepTimerV2` | `st.sleepTimer` | 远未来续期 | ✅ |
+| `scheduleReplyCheckV2` | `st.replyCheckTimer` | 30s 后补一刀 | ✅ |
+| `scheduleProactiveCheckV2` | `st.proactiveTimer` | 主动机会 | ✅ |
+
+### 2.2 为什么不能直接搬
+
+| 隐形依赖 | 说明 |
+| --- | --- |
+| `setTimeout` / `clearTimeout` | 全局函数，没法替换 → 测试必须真等 |
+| `Date.now()` | 决定「睡眠还剩多久」「远未来是否续期」 |
+| `st.*Timer` 字段 | 存的是 Node Timer 对象，**不能序列化**，混在会话状态里 |
+| `sendWakePromptV2` | 异步投递到 DSH，是唯一必须留在编排层的东西 |
+| `isConversationBusyV2` / `promptQueues` / `v2TurnStartAt` | 判断「她正在忙」需要看队列与 turn 状态 |
+
+---
+
+## 3. 目标架构
+
+```
+src/core/socialv2-scheduler.mjs     定时器 + 合并窗口 + 看门狗（接受注入时钟）
+src/core/socialv2-prompt.mjs        上下文快照 + 提示词组装（纯函数）
+src/bridge.js                       只留 sendWakePromptV2（真投递）与调用编排
+```
+
+依赖方向：
+
+```
+bridge.js ──> core/socialv2-scheduler.mjs ──> core/socialv2-store.mjs
+          └─> core/socialv2-prompt.mjs ─────> core/socialv2-store.mjs
+          └─> core/socialv2-wake.mjs（已存在）
+```
+
+**`core/` 一律不 import bridge**，全部注入。
+
+---
+
+## 4. 接口契约
+
+### 4.1 调度器
+
+```js
+export function createScheduler({
+  // ── 状态 ──
+  getState,            // (key) => 会话状态对象（含 wakeConfig / unread / lastUnreadSeq）
+  save,                // () => void 落盘
+  // ── 策略 ──
+  cfg,                 // 配置（enabled / batchWindowMs / 频率上限）
+  isAllowed,           // (key) => boolean 当前模式是否允许
+  isPaused,            // () => boolean 全局暂停
+  isBusy,              // (key, st) => boolean 会话是否正在跑 turn
+  // ── 时钟（测试注入假时钟）──
+  now = Date.now,
+  setTimer = (fn, ms) => { const t = setTimeout(fn, ms); t.unref?.(); return t; },
+  clearTimer = (t) => clearTimeout(t),
+  // ── 副作用回调 ──
+  onWake,              // (key, reason) => Promise<void>  真正投递（bridge 里的 sendWakePromptV2）
+  onUnstick,           // (key) => void 解卡钩子（清 busy 标志）
+  log = () => {},
+}) {
+  return {
+    scheduleWake(key, reason),
+    setupSleepTimer(key),
+    scheduleReplyCheck(key),
+    scheduleProactiveCheck(key),
+    cancelTimers(key),        // 统一取消四类定时器
+    pendingInfo(key),         // 给控制台/诊断看：当前有哪些待触发
+    _timers,                  // 仅测试用：假时钟可推进
+  };
+}
+```
+
+### 4.2 提示词组装
+
+```js
+export function buildWakeSnapshot(key, {
+  getState, cfg, now, tools, roleHint, memoryBlock, // 全部注入
+}) { ... }
+
+export function buildWakePrompt(key, reason, {
+  getState, cfg, now, selfName, buildSnapshot, buildReminder,
+}) { ... }
+
+export function buildWakeReminderPrompt(reason) { ... } // 纯字符串，无需注入
+```
+
+### 4.3 bridge 保留
+
+```js
+async function sendWakePromptV2(key, reason) {
+  // 唯一副作用边界：投递到 DSH（deliverPrompt / ensureSession）
+  // 内部的「繁忙 → 暂存 + 看门狗」改为调用 scheduler 的同一份实现
+}
+```
+
+---
+
+## 5. 合并重复逻辑（本设计的核心收益）
+
+现状：`scheduleWakeV2` 与 `sendWakePromptV2` 各有一份几乎相同的代码——
+
+```
+if (isConversationBusyV2(...)) {
+  pendingWakeReasons.push({ reason, seq })   // 有界 20 条
+  if (!pendingWakeWatchdog) { 5 分钟后：判断还相关 → 清 busy → 补发 }
+  return
+}
+```
+
+两份的分歧风险很高：任何一边改了阈值，另一边不会同步。
+
+**合并后**：调度器暴露 `stashBusyWake(key, reason)`，两个调用点都走它；
+看门狗只在调度器里存在一份，`bridge` 通过 `onUnstick` 回调执行「清 busy 标志」这个动作。
+
+---
+
+## 6. 可测性：假时钟测试矩阵
+
+注入时钟后能做到「秒级验证 5 分钟后的行为」。计划覆盖：
+
+| # | 场景 | 断言 |
+| --- | --- | --- |
+| 1 | 合并窗口内第二次 schedule | 不新建定时器；reason 按优先级升级 |
+| 2 | 先 probability 后 atMention | 最终 reason 是 atMention（不被概率覆盖） |
+| 3 | 会话繁忙 | 进 pendingWakeReasons，不建定时器；队列上限 20 |
+| 4 | 看门狗 | 推进 5 分钟 → onUnstick 被调用一次，补发一次 |
+| 5 | 看门狗但消息已读完 | 不补发，只清队列 |
+| 6 | 有限睡眠到点 | 推进到 sleepUntil → onWake('timeout') |
+| 7 | 远未来睡眠 | 首段 100009ms 后续期，不提前唤醒 |
+| 8 | paused / disabled / 不在模式内 | 不排任何定时器 |
+| 9 | 取消 | cancelTimers 后推进时钟，onWake 不被调用 |
+| 10 | 定时器都 unref | `_timers` 里每个 timer 的 hasRef() === false |
+
+---
+
+## 7. 分步实施
+
+### Step A：调度器（低风险，收益最大）
+
+搬出：`scheduleWakeV2` + `setupSleepTimerV2` + `scheduleReplyCheckV2` + `scheduleProactiveCheckV2`
+
+**验收**：
+- [ ] 10 个假时钟用例全过
+- [ ] `bridge.js` 里不再出现 `setTimeout` 管理这四类定时器
+- [ ] 真实会话跑一晚：唤醒、睡眠、回复检查行为无变化（看日志里「计划唤醒/设置有限潜水定时器」出现频率）
+
+**回滚**：`config.socialV2.wake.useLegacyScheduler = true` 切回旧实现（两套并存两周）。
+
+### Step B：提示词组装（低风险）
+
+搬出：`buildWakeSnapshotV2` + `buildWakePromptV2` + `buildWakeReminderPromptV2`
+
+**验收**：
+- [ ] 现有 e2e（`test-memory-e2e` 里断言提示词内容的用例）全过
+- [ ] 抓一次真实唤醒的 prompt 文本，与拆分前逐字比对一致
+
+### Step C：清理（低风险）
+
+- `ensureWakeableV2` 并入状态层
+- `refreshDefaultWakeConfigV2` 并入状态层
+- 统一 `cancelTimers`
+
+---
+
+## 8. 风险与对策
+
+| 风险 | 可能性 | 影响 | 对策 |
+| --- | --- | --- | --- |
+| 注入时钟后漏掉 `unref`，进程退不出 | 中 | 中 | 默认 `setTimer` 实现自带 unref；用例 10 断言 |
+| 远未来续期逻辑改错，睡眠提前/推迟 | 低 | 高 | 用例 6/7 覆盖边界；回滚开关 |
+| 合并看门狗时漏掉「消息已读完不补发」 | 中 | 中 | 用例 5 专门覆盖 |
+| 两套实现并存期间行为分叉 | 中 | 中 | 开关只允许整体切换，不做逐函数混合 |
+
+---
+
+## 9. 验收标准（整体）
+
+- [ ] `bridge.js` 降到 **8500 行以下**
+- [ ] 调度器与提示词模块可单独 import 测试（不启动 bridge）
+- [ ] 假时钟用例 10 项全过，且进了每日自检
+- [ ] 真实环境跑满 24 小时，唤醒/睡眠行为与拆分前一致
+
+---
+
+## 10. 不做的事
+
+1. **不改唤醒策略**。合并窗口时长、频率上限、看门狗阈值一律保持原值。
+2. **不重新设计定时器类型**。还是四类，只是统一管理。
+3. **不在同一次改动里做「按会话并发度动态调频」这类新功能**。
+4. **不碰 `sendWakePromptV2` 的 DSH 投递协议**——它只搬内部那段暂存逻辑，投递本身不动。
