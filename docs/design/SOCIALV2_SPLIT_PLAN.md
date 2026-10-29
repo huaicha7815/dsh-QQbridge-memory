@@ -437,3 +437,55 @@ GET /api/socialV2/states
 | 唤醒与等待 | 3 | 中 |
 | 黑话 | 2 | 中 |
 | 发送与媒体 | 15 | 高 |
+
+### Step 3 全部完成：54 个端点全部搬出（2026-10-29）
+
+一次性做完的三批：
+
+| 模块 | 端点数 | 内容 |
+| --- | --- | --- |
+| `socialv2-control-api.mjs` | 7 | config / activity / reset / mark-read / wake-config |
+| `socialv2-tools-api.mjs` | 10 | tool-log / feedback / my-recent / record-sent / message-detail / forward-* / active-members |
+| `socialv2-wake-slang-api.mjs` | 5 | wake / wait / check-send / slang query / slang submit |
+| `socialv2-send-api.mjs` | 15 | send-* / qzone-* / sticker-* / voices |
+
+**总计**：
+
+```
+bridge.js       11955 → 8937 行（-3018，-25%）
+已拆出模块       10 个
+已拆出端点       78 个（54 socialV2 + 24 其他）
+```
+
+| 模块 | 端点数 |
+| --- | --- |
+| memory-api | 4 |
+| roles-api | 9 |
+| tokens-api | 6 |
+| stickers-api | 5 |
+| socialv2-memory-api | 10 |
+| socialv2-state-api | 5 |
+| socialv2-control-api | 7 |
+| socialv2-tools-api | 10 |
+| socialv2-wake-slang-api | 5 |
+| socialv2-send-api | 15 |
+| **合计** | **76**（另有 2 个 favicon 路由不算端点） |
+
+**验证方式**：
+
+- 只读端点：直接请求断言 200；
+- 发送类端点：**只测参数缺失的 400**，绝不真的往群里发消息；
+- 全量回归：29 个端点全 200、`test-daily` 6 项全过、`test-console` 13 项全过、白名单完好。
+
+**最后的两个坑**：
+
+1. 依赖清单里的 `allow` 是误报（真实来源是 `cfg.allow` 字段），传进模块后变成 ReferenceError，
+   而且因为 handler 在最前面，**所有请求都 500**（不只是匹配的那个端点）。
+   → 教训：**handler 链最前面的模块一旦初始化失败，整站都挂**，抽取后必须先测一个无关端点。
+2. `slang` 同样是误报（bridge 里没有这个符号），`cfg` 则被分析器漏掉。
+
+### 唯一没做的：Step 2 剩余的定时器注入
+
+`scheduleWakeV2` / `sendWakePromptV2` / `buildWake*` 仍留在 bridge（13% 的行数），
+原因是它们需要先注入 `setTimer/clearTimer` 才能单测，属于「先改设计再搬」，不是搬位置。
+这一块不影响可读性（已经是有名字、有注释的函数），优先级低于已经完成的部分。
