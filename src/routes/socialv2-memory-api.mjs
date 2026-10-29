@@ -99,6 +99,16 @@ export async function handleSocialV2MemoryApi({
             }
           }
           let profile = memoryStore.readProfile();
+          // 留痕：记录这次档案写入来自哪个会话（群友诱导出来的假事实事后可查）。
+          if (!Array.isArray(profile.audit)) profile.audit = [];
+          profile.audit.push({
+            at: Date.now(), kind,
+            name: redactKnownTokensOnly(String(body.name ?? '').trim()),
+            text: redactKnownTokensOnly(String(body.content ?? '')).slice(0, 60),
+            sourceKey: key,
+            hasEvidence: Boolean(String(body.evidence ?? '').trim()),
+          });
+          profile.audit = profile.audit.slice(-200);
           let okFlag = false;
           let correctResult = null;
           if (kind === 'person') {

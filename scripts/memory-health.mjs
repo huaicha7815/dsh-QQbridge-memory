@@ -10,11 +10,35 @@ import { collectMetrics, compareMetrics, formatCompare, readBaseline } from './m
 import { PROFILE_LIMITS, auditProfile, buildMemoryGraph } from '../src/core/memory-lib.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const store = createMemoryStore({ dir: path.join(root, 'state', 'memory'), config: {} });
+const memDir = path.join(root, 'state', 'memory');
+
+// 先确认目录真的可读。否则「读不到」会被下面的 stats() 折叠成「0 条事件」，
+// 报告看起来像「库是空的而且很健康」——审查时被指出过这个坑。
+let readable = true;
+try {
+  fs.readdirSync(memDir);
+} catch (error) {
+  readable = false;
+  console.error(`❌ 无法读取记忆目录：${memDir}`);
+  console.error(`   ${error?.message ?? error}`);
+  console.error('   这不是「库是空的」，是权限或路径问题——先修好再看下面的数字。');
+  process.exit(2);
+}
+if (!fs.existsSync(path.join(memDir, 'events')) && !fs.existsSync(path.join(memDir, 'profile.json'))) {
+  console.warn('⚠️ 记忆目录存在但还没有 events/ 与 profile.json：这可能是一个全新的库。');
+}
+
+const store = createMemoryStore({ dir: memDir, config: {} });
 const now = Date.now();
 const st = store.stats({ now });
 const profile = store.readProfile();
 const recalls = store.readRecallLog({ limit: 1000 });
+
+// 统计口径提示：stats() 只算活动日文件，归档月文件不计入。
+// 库活得久了之后「事件总数」会低估历史规模，这里显式说明，避免误读。
+const archiveMonths = (() => {
+  try { return fs.readdirSync(path.join(memDir, 'events-archive')).filter((f) => f.endsWith('.jsonl')).length; } catch { return 0; }
+})();
 
 const lines = [];
 const say = (s = '') => lines.push(s);
@@ -27,6 +51,7 @@ say('');
 // ── 1. 规模 ───────────────────────────────────────────────
 say('【规模】');
 say(`  事件：${st.events} 条 / 覆盖 ${st.eventDays} 天（${st.firstDay || '-'} ~ ${st.lastDay || '-'}）`);
+say(`  （注：以上只算活动日文件；另有 ${archiveMonths} 个月归档文件未计入，历史规模更大）`);
 say(`  体积：事件 ${(st.eventBytes / 1024).toFixed(0)} KB · S3 档案 ${(st.salient.bytes / 1024).toFixed(1)} KB`);
 say(`  压缩层：日摘要 ${st.summaryFiles} / 周要点 ${st.weekFiles} / 月要点 ${st.monthFiles}`);
 say(`  归档：${store.listArchiveMonths().length} 个月`);

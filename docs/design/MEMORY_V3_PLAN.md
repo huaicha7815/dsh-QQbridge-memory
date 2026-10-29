@@ -1347,3 +1347,59 @@ bridge.js:  11955 → 11537 行（-418）
 
 `npm run routes:doc` → `docs/ROUTES.md`：扫描 `bridge.js` + `src/routes/*.mjs`（自动发现，
 新增模块不用改脚本），输出 132 个路由按域分组、带源码位置；`--check` 可进 CI。
+
+---
+
+## 25. 外部审查（Codex）发现的问题与处理（2026-10-29）
+
+另一个 agent 独立审查后报了一批问题。逐条核实：**阻断项基本全部属实**，已修。
+
+### 阻断项
+
+| # | 问题 | 处理 |
+| --- | --- | --- |
+| 1 | send-api 漏 `currentMode`（11 处）→ `send-*` 全 500 | 修（getter 注入） |
+| 2 | control-api reset 漏 12 个依赖；`sessionEpoch` 值传递导致 `++` 无效 | 修（补引用 + `bumpSessionEpoch()` 回调） |
+| 3 | wake-slang 漏 `currentMode` / `ACTIVE_WAIT_LEASE_MS` | 修 |
+| 4 | 记忆检索无会话隔离，群会话能读到私聊内容 | **保持现状**（用户决策）+ 让她自己判断场合（见下） |
+| 5 | 日摘要「存在即跳过」，当天新消息永不更新；只在启动时调用 | 修（按事件文件 size+mtime 指纹重算 + 每小时定时刷新） |
+| 6 | 写入失败静默吞掉；损坏 profile 被当空档案覆盖 | 修（失败告警 + 损坏先备份 `.corrupt-*`） |
+| 7 | tools-api 漏 `TOOL_LOG_FILE` / `FEEDBACK_FILE`；send-api 漏 4 个常量 | 修 |
+
+### 建议项
+
+| # | 问题 | 处理 |
+| --- | --- | --- |
+| 1 | `diary`/`memoryRefine` 优先级为 0，会被概率唤醒吞掉 | 修（95/94 + 加入时间型集合 + 单测守护） |
+| 2 | 所有私聊硬编码叫「爸爸」 | 修（`cfg.socialV2.privateCall.{name,enabled}`，默认仍是「爸爸」以兼容现有部署） |
+| 3 | 记忆注入的 XML 边界可被历史消息闭合 | 修（`</memory-context>` 一律中和成 `[记忆边界]`） |
+| 4 | 档案写入无来源绑定 | 修（`profile.audit` 记录 sourceKey / kind / hasEvidence，保留最近 200 条） |
+| 5 | 归档非事务性，重跑会重复 append | 修（写入时打 `srcDay`，重跑先读已有标记跳过） |
+| 6 | `eventRetentionDays` 不裁剪归档月文件 | 修（新增 `pruneArchive()`） |
+| 7 | `send-burst` catch 引用 try 内变量 | 修（提到 try 外） |
+| 8 | `lastForcedAgentStickerSync` 值传递 → 节流失效 | 修（getter + setter） |
+| 9 | 健康检查无法区分「没有数据」和「读取失败」 | 修（先试读目录，失败 `exit 2` 并明确报错；另标注归档未计入统计） |
+
+### 阻断 4 的处理：把判断交给她自己
+
+用户明确选择**保持跨会话记忆**（她是一个人，记得所有事）。
+但「想得起」不等于「该说」，所以在唤醒提示词里加了一段【场合】判断：
+
+- 私聊里：你们之间的事可以放开说，提到第三个人的私事仍要想一句「当着他说合不合适」；
+- 群里：明确指出「你想得起的事包括和别人的私聊」，要求判断当事人会不会难堪，
+  具体细节/隐私/只有两人知道的事模糊掉或干脆不提，拿不准就绕开。
+
+这是**软约束**（交给模型判断），不是硬隔离。
+
+### 为什么我自己的检查没发现这 15 个漏注入
+
+两个原因：
+
+1. **静态扫描只查函数调用**（`foo(` 形式），漏掉了 `currentMode`、`TOOL_LOG_FILE` 这类**变量/常量引用**；
+2. **HTTP 测试只测了「缺参数」的错误路径**——`send-burst` 缺 key 会在早期就 400 返回，
+   根本走不到读 `currentMode` 那一行。**参数齐全的正常路径才是漏注入的高发区**。
+
+已补两道防线：
+
+- `scripts/test-routes-inject.mjs`：mock 依赖后调用 39 个端点 handler，断言不抛 `ReferenceError`（已进每日自检）；
+- `verify-claims.cjs`：逐符号核对 bridge 调用点是否真的传了参数。

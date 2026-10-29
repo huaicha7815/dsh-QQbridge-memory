@@ -113,6 +113,12 @@ export function createWakePromptBuilder({
       : '';
     // 注意：黑话表不在这里注入，deliverPromptNow 的 withSlangContext 会统一注入，
     // 避免唤醒 prompt 出现两份黑话表。
+    // 场合判断：她的记忆跨所有会话（包括私聊），但「想得起」不等于「该说」。
+    // 不硬隔离（用户明确选择保持现状），而是把判断依据交给她自己。
+    const isPrivateNow = String(key).startsWith('private:');
+    const boundaryLine = isPrivateNow
+      ? '【场合】你在和一个人私聊。你们之间的事可以放开说；但如果提到第三个人的私事，先想一句「这话当着他说合不合适」。\n\n'
+      : '【场合】你在群里说话，旁边有很多人。你想得起的事来自所有会话，包括和别人的私聊——想得起不等于该说。提到别人的私事之前先判断：这话在这个场合说出来，当事人会不会难堪？具体细节、对方的隐私、只有你们两个人知道的事，模糊掉或者干脆不提；只保留对当前话题有用的那部分。拿不准就绕开，别为了显得记得多就把别人的事抖出来。\n\n';
     const participationText = formatParticipationV2(st);
     const participationLine = participationText ? `${participationText}\n\n` : '';
     const antiAiLine = '【反AI味】你不是客服：不用有求必应，可以装傻、已读乱回、拒绝推荐；少用“一绝/真管用/保证/绝对”这类词。\n\n';
@@ -146,8 +152,15 @@ export function createWakePromptBuilder({
     if (wcTr.anyMessage) wcTriggers.push('任意消息');
     if (Number(wcTr.probability) > 0) wcTriggers.push(`概率${wcTr.probability}`);
     const wakeLine = `【当前唤醒】${wcMode}，${wcTime}${wcTriggers.length ? `；触发：${wcTriggers.join('/')}` : ''}\n\n`;
-    const privateCallLine = String(key).startsWith('private:') ? '【称呼】回他的第一条消息，开头带上「爸爸」。\n\n' : '';
-    const base = roleLine + tokenLine + privateCallLine + antiAiLine + proactiveLine + stickerLine + replyLine + statusLine + wakeLine + memoryLine + memoryGuidanceLine + participationLine + preSleepLine;
+    // 称呼：默认仍是「爸爸」（兼容现有部署），但可以按会话配置。
+    // 多私聊场景下硬编码「爸爸」会把别的私聊对象也叫成爸爸。
+    const callCfg = cfg.socialV2?.privateCall ?? {};
+    const callName = String(callCfg.name ?? '爸爸').trim();
+    const callEnabled = callCfg.enabled !== false && callName;
+    const privateCallLine = (String(key).startsWith('private:') && callEnabled)
+      ? `【称呼】回他的第一条消息，开头带上「${callName}」。\n\n`
+      : '';
+    const base = roleLine + tokenLine + privateCallLine + boundaryLine + antiAiLine + proactiveLine + stickerLine + replyLine + statusLine + wakeLine + memoryLine + memoryGuidanceLine + participationLine + preSleepLine;
     if (reason === 'bootstrap') {
       return `${base}【引导唤醒】你已接入 QQ 会话 ${key}。\n当前是二代仿真模式：你的文本输出不会自动发送到 QQ，所有发言必须通过工具完成。\n请先调用 qq_get_prompt 查看角色、推荐值、可用工具和状态；有待回应的消息先按首回复节奏处理，最后才用 qq_set_wake_config 设置你希望如何被唤醒。`;
     }

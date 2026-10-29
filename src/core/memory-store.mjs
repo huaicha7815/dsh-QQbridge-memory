@@ -358,24 +358,43 @@ export function createMemoryStore(options = {}) {
     }
     let moved = 0;
     for (const [month, days] of byMonth) {
-      let content = '';
-      for (const day of days.sort()) {
+      // 去重：归档是「先写月文件、再删日文件」，中间失败/进程中断后重跑会把
+      // 同一批事件再 append 一次。写入时给每行打 srcDay 标记，重跑时先读出
+      // 月文件里已有的 srcDay，跳过这些天。
+      const alreadyArchived = (() => {
+        const set = new Set();
         try {
-          content += fs.readFileSync(path.join(eventsDir, `${day}.jsonl`), 'utf8');
+          for (const line of fs.readFileSync(path.join(archiveDir, `${month}.jsonl`), 'utf8').split('\n')) {
+            if (!line.trim()) continue;
+            try { const row = JSON.parse(line); if (row && row.srcDay) set.add(String(row.srcDay)); } catch { /* 旧格式行没有 srcDay */ }
+          }
+        } catch { /* 还没有归档文件 */ }
+        return set;
+      })();
+      const pending = days.sort().filter((d) => !alreadyArchived.has(d));
+      if (!pending.length) continue;
+      let content = '';
+      for (const day of pending) {
+        try {
+          const raw = fs.readFileSync(path.join(eventsDir, `${day}.jsonl`), 'utf8');
+          for (const line of raw.split('\n')) {
+            if (!line.trim()) continue;
+            content += JSON.stringify({ ...JSON.parse(line), srcDay: day }) + '\n';
+          }
         } catch {}
       }
       if (!content) continue;
       try {
         fs.mkdirSync(archiveDir, { recursive: true });
         fs.appendFileSync(path.join(archiveDir, `${month}.jsonl`), content, 'utf8');
-        for (const day of days) {
+        for (const day of pending) {
           const f = path.join(eventsDir, `${day}.jsonl`);
           try {
             fs.unlinkSync(f);
           } catch {}
           cache.delete(f);
         }
-        moved += days.length;
+        moved += pending.length;
       } catch {
         // 归档失败就留着日文件，不影响检索
       }
@@ -983,11 +1002,41 @@ export function createMemoryStore(options = {}) {
   }
 
   /** 按保留天数裁掉旧事件文件（默认 0 = 永久保留，不裁）。 */
+  /** 按 srcDay 裁剪归档月文件里过旧的事件（没有 srcDay 的旧行保持原样）。 */
+  function pruneArchive({ cutoff }) {
+    let removed = 0;
+    let files = [];
+    try { files = fs.readdirSync(archiveDir).filter((f) => f.endsWith('.jsonl')); } catch { return 0; }
+    for (const name of files) {
+      const full = path.join(archiveDir, name);
+      let lines = [];
+      try { lines = fs.readFileSync(full, 'utf8').split('\n').filter(Boolean); } catch { continue; }
+      const keepLines = lines.filter((line) => {
+        try {
+          const row = JSON.parse(line);
+          const day = row && row.srcDay ? String(row.srcDay) : null;
+          if (!day) return true; // 旧格式：没有标记就不动
+          if (day < cutoff) { removed += 1; return false; }
+          return true;
+        } catch { return true; }
+      });
+      if (keepLines.length === lines.length) continue;
+      try {
+        if (!keepLines.length) fs.unlinkSync(full);
+        else fs.writeFileSync(full, keepLines.join('\n') + '\n', 'utf8');
+      } catch { /* 写失败就留着 */ }
+    }
+    return removed;
+  }
+
   function pruneEvents({ retentionDays, now = Date.now() } = {}) {
     const keep = Number(retentionDays ?? cfg.eventRetentionDays) || 0;
     if (keep <= 0) return 0;
     const cutoff = shiftDay(dayString(now), -keep);
     let removed = 0;
+    // 归档月文件也必须受 retentionDays 约束：只裁活动日文件的话，
+    // 配置「保留 10 天」时归档里的事件仍能保留多年——既是存储膨胀，也不符合隐私删除。
+    removed += pruneArchive({ cutoff });
     for (const day of listEventDays()) {
       if (day >= cutoff) continue;
       try {
