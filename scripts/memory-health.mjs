@@ -18,11 +18,17 @@ let readable = true;
 try {
   fs.readdirSync(memDir);
 } catch (error) {
-  readable = false;
-  console.error(`❌ 无法读取记忆目录：${memDir}`);
-  console.error(`   ${error?.message ?? error}`);
-  console.error('   这不是「库是空的」，是权限或路径问题——先修好再看下面的数字。');
-  process.exit(2);
+  // 目录不存在 = 全新库，不算错误（自检脚本要能在空库上跑通）。
+  // 其余错误（EPERM 等）才是真的「读不到」。
+  if (error?.code === 'ENOENT') {
+    console.warn('ℹ️ 记忆目录还不存在（全新库）：' + memDir);
+  } else {
+    readable = false;
+    console.error(`❌ 无法读取记忆目录：${memDir}`);
+    console.error(`   ${error?.message ?? error}`);
+    console.error('   这不是「库是空的」，是权限或路径问题——先修好再看下面的数字。');
+    process.exit(2);
+  }
 }
 if (!fs.existsSync(path.join(memDir, 'events')) && !fs.existsSync(path.join(memDir, 'profile.json'))) {
   console.warn('⚠️ 记忆目录存在但还没有 events/ 与 profile.json：这可能是一个全新的库。');

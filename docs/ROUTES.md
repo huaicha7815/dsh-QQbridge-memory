@@ -49,13 +49,13 @@
 | ANY | `/api/socialV2/*` | 模式隔离：带 agent token 的 v2 接口只允许在 reserved2 模式下使用 | src/bridge.js:3111 |
 | ANY | `/api/socialV2/feedback` | — | src/bridge.js:3117 |
 | ANY | `/api/socialV2/*` | — | src/bridge.js:3131 |
-| GET | `/api/socialV2/config` | — | src/routes/socialv2-control-api.mjs:25 |
-| POST | `/api/socialV2/config` | — | src/routes/socialv2-control-api.mjs:29 |
-| GET | `/api/socialV2/activity` | — | src/routes/socialv2-control-api.mjs:195 |
-| POST | `/api/socialV2/activity` | — | src/routes/socialv2-control-api.mjs:199 |
-| POST | `/api/socialV2/reset` | — | src/routes/socialv2-control-api.mjs:217 |
-| POST | `/api/socialV2/mark-read` | — | src/routes/socialv2-control-api.mjs:259 |
-| POST | `/api/socialV2/wake-config` | — | src/routes/socialv2-control-api.mjs:298 |
+| GET | `/api/socialV2/config` | — | src/routes/socialv2-control-api.mjs:27 |
+| POST | `/api/socialV2/config` | — | src/routes/socialv2-control-api.mjs:31 |
+| GET | `/api/socialV2/activity` | — | src/routes/socialv2-control-api.mjs:197 |
+| POST | `/api/socialV2/activity` | — | src/routes/socialv2-control-api.mjs:201 |
+| POST | `/api/socialV2/reset` | — | src/routes/socialv2-control-api.mjs:219 |
+| POST | `/api/socialV2/mark-read` | — | src/routes/socialv2-control-api.mjs:261 |
+| POST | `/api/socialV2/wake-config` | — | src/routes/socialv2-control-api.mjs:300 |
 | POST | `/api/socialV2/memory-append` | — | src/routes/socialv2-memory-api.mjs:16 |
 | GET | `/api/socialV2/memory-search` | 检索是纯本地 BM25，零 token；只有 AI 主动调用时才产生这两个工具调用的成本 | src/routes/socialv2-memory-api.mjs:44 |
 | GET | `/api/socialV2/memory-stats` | — | src/routes/socialv2-memory-api.mjs:62 |
@@ -66,37 +66,37 @@
 | GET | `/api/socialV2/memory` | — | src/routes/socialv2-memory-api.mjs:246 |
 | POST | `/api/socialV2/memory-remove` | — | src/routes/socialv2-memory-api.mjs:272 |
 | POST | `/api/socialV2/memory-clear` | — | src/routes/socialv2-memory-api.mjs:298 |
-| POST | `/api/socialV2/send-burst` | — | src/routes/socialv2-send-api.mjs:19 |
-| POST | `/api/socialV2/send-message` | — | src/routes/socialv2-send-api.mjs:144 |
-| POST | `/api/socialV2/send-poke` | — | src/routes/socialv2-send-api.mjs:293 |
-| POST | `/api/socialV2/qzone-send` | ── QQ 空间：发说说（仅管理员私聊；默认好友可见） ───────────────────── | src/routes/socialv2-send-api.mjs:390 |
-| POST | `/api/socialV2/qzone-list` | ── QQ 空间：看自己发过的说说（她回看自己的时间线） ────────────── | src/routes/socialv2-send-api.mjs:436 |
-| GET | `/api/socialV2/sticker-image` | — | src/routes/socialv2-send-api.mjs:477 |
-| GET | `/api/socialV2/self-image` | — | src/routes/socialv2-send-api.mjs:512 |
-| POST | `/api/socialV2/sticker-note` | — | src/routes/socialv2-send-api.mjs:529 |
-| POST | `/api/socialV2/sticker-remark` | — | src/routes/socialv2-send-api.mjs:547 |
-| POST | `/api/socialV2/send-voice` | ── 语音发送（AI 通道：reserved2 + agent token，只能发自己那个会话） ──── | src/routes/socialv2-send-api.mjs:682 |
-| POST | `/api/socialV2/send-sticker` | — | src/routes/socialv2-send-api.mjs:747 |
-| POST | `/api/socialV2/collect-sticker` | — | src/routes/socialv2-send-api.mjs:853 |
-| ANY | `/api/socialV2/voices` | 返回一律只有文件名/大小/时长，**不含绝对路径**（AI 侧防路径外泄，控制台侧由试发接口解析） | src/routes/socialv2-send-api.mjs:901 |
-| GET | `/api/socialV2/sticker-list` | — | src/routes/socialv2-send-api.mjs:946 |
-| POST | `/api/socialV2/sticker-list` | — | src/routes/socialv2-send-api.mjs:969 |
+| POST | `/api/socialV2/send-burst` | — | src/routes/socialv2-send-api.mjs:21 |
+| POST | `/api/socialV2/send-message` | — | src/routes/socialv2-send-api.mjs:148 |
+| POST | `/api/socialV2/send-poke` | — | src/routes/socialv2-send-api.mjs:297 |
+| POST | `/api/socialV2/qzone-send` | ── QQ 空间：发说说（仅管理员私聊；默认好友可见） ───────────────────── | src/routes/socialv2-send-api.mjs:394 |
+| POST | `/api/socialV2/qzone-list` | ── QQ 空间：看自己发过的说说（她回看自己的时间线） ────────────── | src/routes/socialv2-send-api.mjs:440 |
+| GET | `/api/socialV2/sticker-image` | — | src/routes/socialv2-send-api.mjs:481 |
+| GET | `/api/socialV2/self-image` | — | src/routes/socialv2-send-api.mjs:516 |
+| POST | `/api/socialV2/sticker-note` | — | src/routes/socialv2-send-api.mjs:533 |
+| POST | `/api/socialV2/sticker-remark` | — | src/routes/socialv2-send-api.mjs:551 |
+| POST | `/api/socialV2/send-voice` | ── 语音发送（AI 通道：reserved2 + agent token，只能发自己那个会话） ──── | src/routes/socialv2-send-api.mjs:686 |
+| POST | `/api/socialV2/send-sticker` | — | src/routes/socialv2-send-api.mjs:751 |
+| POST | `/api/socialV2/collect-sticker` | — | src/routes/socialv2-send-api.mjs:857 |
+| ANY | `/api/socialV2/voices` | 返回一律只有文件名/大小/时长，**不含绝对路径**（AI 侧防路径外泄，控制台侧由试发接口解析） | src/routes/socialv2-send-api.mjs:905 |
+| GET | `/api/socialV2/sticker-list` | — | src/routes/socialv2-send-api.mjs:950 |
+| POST | `/api/socialV2/sticker-list` | — | src/routes/socialv2-send-api.mjs:973 |
 | GET | `/api/socialV2/state` | — | src/routes/socialv2-state-api.mjs:17 |
 | GET | `/api/socialV2/prompt` | — | src/routes/socialv2-state-api.mjs:36 |
 | GET | `/api/socialV2/unread` | — | src/routes/socialv2-state-api.mjs:130 |
 | GET | `/api/socialV2/recent` | — | src/routes/socialv2-state-api.mjs:152 |
 | GET | `/api/socialV2/states` | — | src/routes/socialv2-state-api.mjs:169 |
-| GET | `/api/socialV2/tool-log` | ── 工具调用日志 ────────────────────────────────────────────────── | src/routes/socialv2-tools-api.mjs:16 |
-| POST | `/api/socialV2/tool-log/clear` | — | src/routes/socialv2-tools-api.mjs:21 |
-| GET | `/api/socialV2/feedback` | ── 反馈 / 自己消息 / 消息详情 / 活跃成员 ──────────────────────────── | src/routes/socialv2-tools-api.mjs:29 |
-| POST | `/api/socialV2/feedback-clear` | — | src/routes/socialv2-tools-api.mjs:33 |
-| POST | `/api/socialV2/feedback` | — | src/routes/socialv2-tools-api.mjs:40 |
-| GET | `/api/socialV2/my-recent` | — | src/routes/socialv2-tools-api.mjs:71 |
-| POST | `/api/socialV2/record-sent` | — | src/routes/socialv2-tools-api.mjs:83 |
-| GET | `/api/socialV2/message-detail` | — | src/routes/socialv2-tools-api.mjs:88 |
-| GET | `/api/socialV2/forward-message` | ── 合并转发消息查询端点（MCP qq_get_forward_msg 走这里） ──────────── | src/routes/socialv2-tools-api.mjs:139 |
-| POST | `/api/socialV2/forward-media` | — | src/routes/socialv2-tools-api.mjs:231 |
-| GET | `/api/socialV2/active-members` | — | src/routes/socialv2-tools-api.mjs:250 |
+| GET | `/api/socialV2/tool-log` | ── 工具调用日志 ────────────────────────────────────────────────── | src/routes/socialv2-tools-api.mjs:17 |
+| POST | `/api/socialV2/tool-log/clear` | — | src/routes/socialv2-tools-api.mjs:22 |
+| GET | `/api/socialV2/feedback` | ── 反馈 / 自己消息 / 消息详情 / 活跃成员 ──────────────────────────── | src/routes/socialv2-tools-api.mjs:30 |
+| POST | `/api/socialV2/feedback-clear` | — | src/routes/socialv2-tools-api.mjs:34 |
+| POST | `/api/socialV2/feedback` | — | src/routes/socialv2-tools-api.mjs:41 |
+| GET | `/api/socialV2/my-recent` | — | src/routes/socialv2-tools-api.mjs:72 |
+| POST | `/api/socialV2/record-sent` | — | src/routes/socialv2-tools-api.mjs:84 |
+| GET | `/api/socialV2/message-detail` | — | src/routes/socialv2-tools-api.mjs:89 |
+| GET | `/api/socialV2/forward-message` | ── 合并转发消息查询端点（MCP qq_get_forward_msg 走这里） ──────────── | src/routes/socialv2-tools-api.mjs:140 |
+| POST | `/api/socialV2/forward-media` | — | src/routes/socialv2-tools-api.mjs:232 |
+| GET | `/api/socialV2/active-members` | — | src/routes/socialv2-tools-api.mjs:251 |
 | POST | `/api/socialV2/wake` | — | src/routes/socialv2-wake-slang-api.mjs:14 |
 | POST | `/api/socialV2/wait` | — | src/routes/socialv2-wake-slang-api.mjs:45 |
 | POST | `/api/socialV2/check-send` | — | src/routes/socialv2-wake-slang-api.mjs:239 |
@@ -155,10 +155,10 @@
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
 | ANY | `/api/send/*` | — | src/bridge.js:3132 |
-| ANY | `/api/send/group` | ── 统一发送端点（MCP 旧发送工具也走这里） ─────────────────────────── | src/bridge.js:4132 |
-| ANY | `/api/send/private` | — | src/bridge.js:4135 |
-| ANY | `/api/send/reply` | — | src/bridge.js:4136 |
-| ANY | `/api/send/voice` | 避免 AI 借用操作者通道绕过「只能发自己会话」的限制 | src/routes/socialv2-send-api.mjs:579 |
+| ANY | `/api/send/group` | ── 统一发送端点（MCP 旧发送工具也走这里） ─────────────────────────── | src/bridge.js:4133 |
+| ANY | `/api/send/private` | — | src/bridge.js:4136 |
+| ANY | `/api/send/reply` | — | src/bridge.js:4137 |
+| ANY | `/api/send/voice` | 避免 AI 借用操作者通道绕过「只能发自己会话」的限制 | src/routes/socialv2-send-api.mjs:583 |
 
 ## api/preset
 
@@ -206,14 +206,14 @@
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
 | ANY | `/api/images/*` | — | src/bridge.js:3133 |
-| GET | `/api/images/message` | ── 图片/表情查询端点（MCP qq_get_message_images 走这里） ──────────── | src/bridge.js:4083 |
+| GET | `/api/images/message` | ── 图片/表情查询端点（MCP qq_get_message_images 走这里） ──────────── | src/bridge.js:4084 |
 
 ## api/authorize
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
 | ANY | `/api/authorize/read` | — | src/bridge.js:3134 |
-| POST | `/api/authorize/read` | ── 二代黑话学习（reserved2）：AI 查询/提交黑话候选 ───────────────── | src/bridge.js:4060 |
+| POST | `/api/authorize/read` | ── 二代黑话学习（reserved2）：AI 查询/提交黑话候选 ───────────────── | src/bridge.js:4061 |
 
 ## api/whitelist
 
@@ -290,19 +290,19 @@
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| POST | `/api/session/reset` | ── 清除上下文 / 清空工作区 ────────────────────────────────────────── | src/bridge.js:4239 |
+| POST | `/api/session/reset` | ── 清除上下文 / 清空工作区 ────────────────────────────────────────── | src/bridge.js:4240 |
 
 ## api/workspace
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| POST | `/api/workspace/reset` | — | src/bridge.js:4297 |
+| POST | `/api/workspace/reset` | — | src/bridge.js:4298 |
 
 ## api/restart
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| POST | `/api/restart` | ── 重启桥接（守护模式下 5 秒后自动拉起） ────────────────────────────── | src/bridge.js:4364 |
+| POST | `/api/restart` | ── 重启桥接（守护模式下 5 秒后自动拉起） ────────────────────────────── | src/bridge.js:4365 |
 
 ## api/role
 
@@ -320,4 +320,4 @@
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| ANY | `/api/voice/send` | 所以不套「会话/模式」闸门，但白名单 + 语音限流 + 文件名审计一个都不少 | src/routes/socialv2-send-api.mjs:569 |
+| ANY | `/api/voice/send` | 所以不套「会话/模式」闸门，但白名单 + 语音限流 + 文件名审计一个都不少 | src/routes/socialv2-send-api.mjs:573 |

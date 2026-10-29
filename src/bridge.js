@@ -6760,8 +6760,13 @@ async function main() {
       for (const line of lines) {
         let o;
         try { o = JSON.parse(line); } catch { continue; }
-        const who = o.isOwner ? '爸爸' : (o.sender || '人');
-        const label = String(o.key || '').startsWith('group:') ? '群聊' : '私聊';
+        // 称呼用配置（多私聊时不再一律叫「爸爸」）
+        const ownerCall = String(cfg.socialV2?.privateCall?.name ?? '爸爸').trim() || '爸爸';
+        const who = o.isOwner ? ownerCall : (o.sender || '人');
+        // 按真实会话分组：以前把所有群塞一个「群聊」桶、所有私聊塞一个「私聊」桶，
+        // 多群多私聊时模型会把 A 的记录写进 B 的叙事里。
+        const rawKey = String(o.key || '');
+        const label = rawKey || '未知会话';
         if (!byKey.has(label)) byKey.set(label, []);
         byKey.get(label).push(`${who}：${String(o.text || '').slice(0, 120)}`);
       }
@@ -6770,7 +6775,17 @@ async function main() {
       return parts.join('\n\n').slice(0, 4500);
     } catch { return ''; }
   }
-  let diaryLastFiredDay = null;
+  // 持久化「今天已经发过日记」的标记：以前是进程内变量，桥接在 22:30 窗口内重启就会再发一次。
+  const DIARY_STATE_FILE = path.join(STATE_DIR, 'diary-state.json');
+  function readDiaryState() {
+    try { return JSON.parse(fs.readFileSync(DIARY_STATE_FILE, 'utf8')) || {}; } catch { return {}; }
+  }
+  function writeDiaryState(patch) {
+    try {
+      const cur = readDiaryState();
+      fs.writeFileSync(DIARY_STATE_FILE, JSON.stringify({ ...cur, ...patch }), 'utf8');
+    } catch (error) { log('[diary] 写状态失败:', error?.message ?? error); }
+  }
   // 他一打开项目就打个招呼：早安/午安/夜班，按时间判断；5 小时内不重复（防调试重启刷屏）。
   async function maybeSendGreeting() {
     try {
@@ -6806,8 +6821,9 @@ async function main() {
       const now = new Date();
       if (now.getHours() !== hh || now.getMinutes() !== mm) return;
       const day = localDayString(now);
-      if (diaryLastFiredDay === day) return;
-      diaryLastFiredDay = day;
+      // 用持久化标记判断：重启后同一窗口内不会重复发日记
+          if (readDiaryState().lastFiredDay === day) return;
+          writeDiaryState({ lastFiredDay: day });
       const ownerKey = cfg.ownerQQ ? `private:${String(cfg.ownerQQ)}` : null;
       if (!ownerKey || !readRoleState().role) { log('[diary] 跳过：没有 owner 或没有启用角色'); return; }
       log(`[diary] 触发 ${day} 的日记写作`);
