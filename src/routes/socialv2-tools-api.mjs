@@ -7,6 +7,8 @@
 export async function handleSocialV2ToolsApi({
   agentTokenOk, api, appendActivity, appendFeedbackEntry, atomicWriteJson, bot, feedbackTimes, fetchMediaData, formatForwardResponse, getSocialV2State, log, modeAllowed, readBody, readFeedbackEntries, readThroughSeqV2, readToolLog, resolveReplyInfo, seenForwardIds, sendJson, truncateText, v2SessionAllowed, v2ToolEnabled,
   req, url,
+  currentMode: getCurrentMode,
+  cfg,
 }) {
         // ── 工具调用日志 ─────────────────────────────────────────────────────
         if (req.method === 'GET' && url.pathname === '/api/socialV2/tool-log') {
@@ -139,7 +141,7 @@ export async function handleSocialV2ToolsApi({
           const keyMatch = /^(group|private):(\d+)$/.exec(key);
           if (!keyMatch) { sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400); return true; }
           if (!id) { sendJson({ ok: false, error: 'id 不能为空' }, 400); return true; }
-          if (currentMode !== 'reserved2') {
+          if (getCurrentMode() !== 'reserved2') {
             sendJson({ ok: false, error: '合并转发查看仅 reserved2 模式可用' }, 403);
             return true;
           }
@@ -153,7 +155,7 @@ export async function handleSocialV2ToolsApi({
           }
           const kind = keyMatch[1];
           const num = Number(keyMatch[2]);
-          if (!Number.isFinite(num) || num <= 0 || !modeAllowed(key, kind, num, cfg, currentMode)) {
+          if (!Number.isFinite(num) || num <= 0 || !modeAllowed(key, kind, num, cfg, getCurrentMode())) {
             sendJson({ ok: false, error: '当前模式不允许读取该会话' }, 403);
             return true;
           }
@@ -232,7 +234,7 @@ export async function handleSocialV2ToolsApi({
           if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return true; }
           if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return true; }
           if (req.headers['x-agent-token'] && !v2ToolEnabled('getForwardMsg')) { sendJson({ ok: false, error: '工具未启用：qq_get_forward_msg' }, 403); return true; }
-          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '转发媒体读取仅 reserved2 模式可用' }, 403); return true; }
+          if (getCurrentMode() !== 'reserved2') { sendJson({ ok: false, error: '转发媒体读取仅 reserved2 模式可用' }, 403); return true; }
           if (!media.length) { sendJson({ ok: true, key, media: [], images: [] }); return true; }
           try {
             const images = await fetchMediaData(media);

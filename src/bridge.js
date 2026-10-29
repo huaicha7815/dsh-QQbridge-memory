@@ -4012,6 +4012,8 @@ async function main() {
         if (await handleSocialV2ToolsApi({
           agentTokenOk, api, appendActivity, appendFeedbackEntry, atomicWriteJson, bot, feedbackTimes, fetchMediaData, formatForwardResponse, getSocialV2State, log, modeAllowed, readBody, readFeedbackEntries, readThroughSeqV2, readToolLog, resolveReplyInfo, seenForwardIds, sendJson, truncateText, v2SessionAllowed, v2ToolEnabled,
           req, url,
+          currentMode: () => currentMode,
+          cfg,
         })) return;
         // 记忆库只读端点已拆到 src/routes/memory-api.mjs（返回 true 表示已处理）
         if (handleMemoryApiRequest({
@@ -6602,10 +6604,34 @@ async function main() {
         }
       }
       const sender = raw.sender?.card || raw.sender?.nickname || String(raw.sender?.user_id ?? raw.user_id ?? '未知');
-      const text = await segmentsToText(raw.message ?? [], {
+      let text = await segmentsToText(raw.message ?? [], {
         resolveAtName: kind === 'group' ? (qq) => resolveGroupMemberName(convId, qq) : null,
         includeReply: false
       });
+      // 被引用的是合并转发时补一段摘要。
+      // 否则 AI 只看到「[转发消息 id=xxx]」——不知道引用的是什么内容，会答成
+      // 「你引一句我没印象」（用户实际反馈过）。转发正文通常不在 reply 段里，
+      // 必须再查一次 get_forward_msg；结果会被 replyInfoCache 缓存，不会反复打。
+      const quotedForwardIds = extractForwardIds(raw.message ?? []);
+      if (quotedForwardIds.length) {
+        const fid = quotedForwardIds[0];
+        try {
+          const fwdData = await bot.raw('get_forward_msg', { id: fid });
+          const fmt = formatForwardResponse(fwdData, { maxMessages: 2, maxCharsPerMessage: 60 });
+          const title = String(fwdData?.prompt ?? fwdData?.summary ?? fwdData?.title ?? '').trim();
+          const preview = (fmt.messages || [])
+            .map((m) => m.sender + '：' + m.text)
+            .join(' / ')
+            .slice(0, 180);
+          if (preview) {
+            text = title ? ('转发「' + title + '」：' + preview) : ('转发内容：' + preview);
+          } else if (fmt.total) {
+            text = '转发消息（共 ' + fmt.total + ' 条，可查 qq_get_forward_msg）';
+          }
+        } catch (error) {
+          log('引用转发摘要失败:', error?.message ?? error);
+        }
+      }
       const senderUserId = raw.sender?.user_id ?? raw.user_id ?? null;
       const info = {
         sender: String(sender ?? ''),
