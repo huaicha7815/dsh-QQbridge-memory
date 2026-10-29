@@ -242,5 +242,5 @@ export function createWakePromptBuilder({
     const preSleepMs = Math.max(0, Number(cfg.socialV2?.wake?.preSleepWaitMs) || 300000);
     return `${roleLine}${keyLine}${tokenLine}【提醒】你还没有完成回合收尾。请调用 qq_set_wake_config 设置下一次唤醒条件（例如继续潜水多久、@/名字/关键词/提问/概率/指定成员等），或者调用 qq_mark_read 表示你看过且决定不接。这是为了防止你忘记收尾后进入“永眠”。注意：设置潜水前先用 qq_wait_for_messages(timeoutMs=${preSleepMs}) 完成沉睡前观察；等待期间有人说话时查看 newMessages，判断不需要你参与即可收尾。`;
   }
-  return { buildWakeSnapshot, buildWakePrompt, buildWakeReminderPrompt, replyTimingV2 };
+  return { buildWakeSnapshot, buildWakePrompt, buildWakeReminderPrompt, replyTimingV2, refreshDiaryPrevNotes };
 }

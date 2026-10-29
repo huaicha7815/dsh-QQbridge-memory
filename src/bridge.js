@@ -6835,6 +6835,15 @@ async function main() {
           log('[diary] 唤醒失败，稍后重试:', error?.message ?? error);
           // 失败就清掉标记，让下一个 30 秒窗口还能重试
           writeDiaryState({ lastFiredDay: null });
+          // 兜底提醒：不依赖 AI，直接用 bot 发一条私聊。
+          // 否则桥接/唤醒坏了没人知道，只会表现为「她今天没说话」。
+          try {
+            const ownerQq = Number(cfg.ownerQQ);
+            if (Number.isFinite(ownerQq) && ownerQq > 0) {
+              Promise.resolve(bot.sendPrivateMsg(ownerQq, `[系统] 今天的日记没写成：${String(error?.message ?? error).slice(0, 120)}。桥接会自动重试，如果一直失败请检查 state/logs。`))
+                .catch(() => {});
+            }
+          } catch { /* bot 不可用就算了，至少 log 里有 */ }
         });
     }, 30000);
     timer.unref?.();
@@ -7239,7 +7248,12 @@ async function main() {
     st.wakeConfig.wakeCount = (st.wakeConfig.wakeCount || 0) + 1;
     st.lastWakeReason = reason;
     saveSocialV2State();
-    if (reason === 'diary') await refreshDiaryPrevNotes();
+    // 重构后 refreshDiaryPrevNotes 搬进了 core/socialv2-prompt.mjs（builder 内部作用域），
+    // 这里必须经 builder 调用。直接裸调用会 ReferenceError，整次日记唤醒当场失败
+    // （2026-10-29 23:00:14 日志：refreshDiaryPrevNotes is not defined）。
+    if (reason === 'diary' && typeof wakePromptBuilder.refreshDiaryPrevNotes === 'function') {
+      await wakePromptBuilder.refreshDiaryPrevNotes();
+    }
     const promptText = buildWakePromptV2(key, reason);
     log(`[reserved2] 唤醒 ${key}（${reason}）`);
     const rollbackWakeTime = () => {

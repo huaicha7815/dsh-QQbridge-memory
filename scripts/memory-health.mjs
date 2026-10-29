@@ -47,8 +47,15 @@ if (argv.includes('--replay')) {
     let bridgeRunning = false;
     try {
       const lockFile = path.join(root, 'state', 'bridge.lock');
-      const lock = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
-      if (lock && lock.pid) { process.kill(Number(lock.pid), 0); bridgeRunning = true; }
+      const raw = fs.readFileSync(lockFile, 'utf8').trim();
+      // 桥接写的是纯 PID 字符串（不是 JSON）。以前这里 JSON.parse 失败，
+      // 导致「桥接正在跑」的警告永远不出现。两种格式都要认。
+      let pid = null;
+      try {
+        const parsed = JSON.parse(raw);
+        pid = Number(parsed && typeof parsed === 'object' ? parsed.pid : parsed);
+      } catch { pid = Number(raw); }
+      if (Number.isFinite(pid) && pid > 0) { process.kill(pid, 0); bridgeRunning = true; }
     } catch { /* 锁不存在或进程不在，视为没在跑 */ }
     if (bridgeRunning) {
       console.warn('⚠️ 桥接似乎正在运行：建议先停桥接再 --apply，避免恢复期间它继续写失败清单。');

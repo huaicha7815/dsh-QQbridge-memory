@@ -1219,9 +1219,21 @@ export function createMemoryStore(options = {}) {
       }
     }
     try {
-      const lines = readFailureLines();
-      if (!lines.length) return { replayed: 0, skipped: 0, failed: 0, quarantined: 0, dryRun };
-      const originalSet = new Set(lines);
+      // 快照：把清单原子 rename 走，之后桥接的 append 会写进新的 write-failures.jsonl。
+      // 不这么做的话，「重新读取 → rename 覆盖」之间新增的行仍会被吞掉（审查复现过）。
+      const processingFile = writeFailFile + '.processing';
+      if (!dryRun) {
+        try { fs.renameSync(writeFailFile, processingFile); } catch { /* 清单不存在 */ }
+      }
+      const lines = (() => {
+        try {
+          return fs.readFileSync(dryRun ? writeFailFile : processingFile, 'utf8').split('\n').filter(Boolean);
+        } catch { return []; }
+      })();
+      if (!lines.length) {
+        if (!dryRun) { try { fs.unlinkSync(processingFile); } catch {} }
+        return { replayed: 0, skipped: 0, failed: 0, quarantined: 0, dryRun };
+      }
       let replayed = 0;
       let skipped = 0;
       let quarantined = 0;
@@ -1278,23 +1290,20 @@ export function createMemoryStore(options = {}) {
       if (typeof onBeforeCommit === 'function') onBeforeCommit();
       if (!dryRun) {
         try {
-          // 提交时重新读一遍清单：只移除「这一轮确实处理过」的行，
-          // 期间桥接 append 的新行原样保留（它们在 originalSet 里没有）。
-          const current = readFailureLines();
-          const kept = current.filter((l) => !originalSet.has(l));
-          const merged = [...kept, ...remaining];
-          if (merged.length) {
-            const tmp = writeFailFile + '.tmp';
-            fs.writeFileSync(tmp, merged.join('\n') + '\n', 'utf8');
-            fs.renameSync(tmp, writeFailFile);
-          } else if (fs.existsSync(writeFailFile)) {
-            fs.unlinkSync(writeFailFile);
+          // 处理失败/隔离的行追加回主清单（桥接期间写的新行已经在主清单里了，不动它们）。
+          // 只回填「处理失败」的行；坏行走 quarantine，避免下次又 parse 失败死循环。
+          const backfill = remaining;
+          if (backfill.length) {
+            fs.appendFileSync(writeFailFile, backfill.join('\n') + '\n', 'utf8');
           }
+          // 坏行（JSON 损坏 / 缺 id）隔离：留在主清单会导致下次又 parse 失败，无限循环。
+          if (bad.length) {
+            try { fs.appendFileSync(writeFailFile + '.quarantine', bad.join('\n') + '\n', 'utf8'); } catch {}
+          }
+          // 快照文件处理完就删；即使删失败，下次启动会把它当普通清单再处理一遍（幂等保证不重复写）。
+          try { fs.unlinkSync(processingFile); } catch {}
         } catch {
-          // 清单替换失败：下次再扫一遍，幂等检查保证不会重复写
-        }
-        if (bad.length) {
-          try { fs.appendFileSync(writeFailFile + '.quarantine', bad.join('\n') + '\n', 'utf8'); } catch {}
+          // 回填失败：.processing 还在，下次会再处理（幂等检查保证不会重复写 L1）
         }
         writeFailureCount = Math.max(0, readFailureLines().length);
       }
