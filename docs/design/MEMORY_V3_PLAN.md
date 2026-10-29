@@ -1226,7 +1226,7 @@ HTTP 路由           126 个 url.pathname === 判断（无路由表）
 | 拆 bridge.js 成 4 个域 | **暂不做** | 单人维护，拆分收益主要是多人并行；`cfg/state/socialV2/memoryStore` 全是闭包共享，机械拆会引入 ESM 循环依赖；且记忆库这块正在密集改动 |
 | 只抽 HTTP 路由表 | **值得做**（暂缓） | 126 个 if 链变一张表 + dispatch，成本约 1 天、风险低，新增端点不必往 12000 行中间插 |
 | 锁换 flock / pid+Mutex | **换修法** | Windows 上 Node 没有真正的 flock；真正的洞是「锁文件被误删后新实例直接抢锁」，应让**端口占用成为权威判据** |
-| 测试挂 pre-commit / 定时 | **先隔离再自动化** | `test-console.mjs` 会往**真实** `config.json` 白名单插测试群（真实踩过：丢了群白名单）。直接自动化等于把改坏配置也自动化 |
+| 测试挂 pre-commit / 定时 | **已做**（见 24.4） | 先给 `test-console.mjs` 加配置隔离与 finally 恢复，再提供只跑安全子集的每日自检 |
 
 ### 24.3 本轮实际做的三项
 
@@ -1270,3 +1270,42 @@ HTTP 路由           126 个 url.pathname === 判断（无路由表）
 - 拆 bridge.js（4 个域）：等记忆库这波稳定、改动 push 之后再看
 - 路由表化：值得做，但属于下一次
 - `test-console` 的配置隔离：是「测试自动化」的前置条件，目前仍靠人工注意（跑完必须核对 allow.groups）
+
+### 24.4 测试隔离与每日自检（本轮下半场）
+
+**① `test-console.mjs` 的配置隔离**
+
+以前它会改真实 `config.json` 的白名单（加测试群 → 再恢复），中间任何一步中断，
+白名单就停在「已加测试群」的状态——真实踩过一次：丢了 `869652089` 群。
+
+现在的安全措施：
+
+1. 开跑前把 `config.json` 备份成 `config.json.testbak`；
+2. 主流程包在 `try/finally` 里——断言失败、抛异常、Ctrl+C 都会走到 finally；
+3. finally 里先按 API 恢复，**再校验磁盘上的配置**；对不上就直接用备份文件覆盖；
+4. 上次异常退出留下的 `.testbak` 会在下次启动时被检测到并自动恢复；
+5. 真实发送默认关闭（加 `--allow-send` 才发），避免打扰群里的人、也不依赖 SnowLuma 在线。
+
+**② `scripts/test-daily.mjs`：只跑不会弄坏机器的部分**
+
+49 个测试里有一半需要环境（在线网关、playwright、voice-tool），直接全量定时跑只会制造误报。
+每日自检只跑四项，全部隔离或只读：
+
+```
+test-memory-lib     纯函数单测（临时目录）
+test-memory-e2e     记忆库端到端（自带隔离 harness）
+memory-health       只读体检
+memory-baseline     只读基线对比
+```
+
+结果追加到 `state/test-daily.log`（保留最近 2000 行），退出码可直接给计划任务用。
+实测一轮约 1.5 秒。
+
+**③ 建议的挂法**（不替用户创建计划任务，命令给出来自己决定）：
+
+```bat
+schtasks /create /tn "qq-bridge 记忆库自检" /sc daily /st 09:00 ^
+  /tr "cmd /c cd /d C:\path\to\qq-bridge && node scripts\test-daily.mjs --quiet"
+```
+
+为什么是每天上午 9 点：日终归纳（23:10）跑完之后隔一晚，正好能看出它有没有把档案写坏。

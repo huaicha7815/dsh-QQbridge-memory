@@ -144,7 +144,8 @@ export function formatCompare(baseline, rows, now = Date.now()) {
   const pad = (s, n) => String(s).padEnd(n, ' ');
   lines.push(`  ${pad('指标', 12)}${pad('上次', 10)}${pad('当前', 10)}变化`);
   for (const r of rows) {
-    if (!r.delta && r.level === 'ok') continue; // 没变化的不占行
+    // 只显示「有意义的」变化：没动、或者抖动 <1 个点的都不占行
+    if (r.level === 'ok' && Math.abs(r.delta) < 1) continue;
     const sign = r.delta > 0 ? '+' : '';
     const mark = r.level === 'bad' ? '  ⚠' : r.level === 'warn' ? '  ·' : '';
     lines.push(`  ${pad(r.label, 12)}${pad(r.prev, 10)}${pad(r.cur, 10)}${sign}${r.delta}${mark}`);
