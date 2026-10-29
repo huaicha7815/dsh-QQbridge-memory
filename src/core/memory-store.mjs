@@ -149,7 +149,14 @@ export function createMemoryStore(options = {}) {
     } catch { return []; }
   }
   const initialFailLines = readFailureLines();
-  let writeFailureCount = initialFailLines.length;
+  const overflowFile = writeFailFile + '.overflow';
+  function readOverflowCount() {
+    try { return Number(fs.readFileSync(overflowFile, 'utf8').trim()) || 0; } catch { return 0; }
+  }
+  function bumpOverflowCount() {
+    try { fs.writeFileSync(overflowFile, String(readOverflowCount() + 1), 'utf8'); } catch { /* 写不进去只能靠内存计数 */ }
+  }
+  let writeFailureCount = initialFailLines.length + readOverflowCount();
   let lastWriteFailure = (() => {
     // 重启后也要能说清「最近一次失败是什么」：从清单最后一行还原。
     const last = initialFailLines[initialFailLines.length - 1];
@@ -290,23 +297,24 @@ export function createMemoryStore(options = {}) {
    * phase=salient 表示主事件已成功、只有 S3 副本没写（replay 只补副本）。
    */
   function recordWriteFailure(phase, row, error) {
-    console.warn(`[memory] 事件写入失败(${phase}):`, error?.message ?? error);
+    // 只在前几次和到上限时打日志：故障风暴下逐条 warn 会把事件循环拖慢。
     writeFailureCount += 1;
+    if (writeFailureCount <= 5 || writeFailureCount === MAX_FAILURE_ENTRIES + 1) {
+      console.warn(`[memory] 事件写入失败(${phase}):`, error?.message ?? error);
+    }
     lastWriteFailure = { at: Date.now(), error: String(error?.message ?? error), phase };
     // 背压：清单超过上限后只累加计数、不再写明细，避免故障期间无限增长。
+    // 注意：不能截断 row.text —— 失败清单是唯一还保存着「这条消息原文」的地方，
+    // 截断会让 replay 恢复出残缺内容（审查复现过：300 字恢复成 200 字）。
     if (writeFailureCount > MAX_FAILURE_ENTRIES) {
-      if (writeFailureCount === MAX_FAILURE_ENTRIES + 1) {
-        console.warn(`[memory] 失败清单已达 ${MAX_FAILURE_ENTRIES} 条上限，后续失败只计数不记录明细。`);
-      }
+      // 溢出计数必须持久化：只放在内存里，重启后从清单行数重新初始化，
+      // 用户就再也看不到「其实还丢了多少条」。
+      bumpOverflowCount();
       return;
     }
     try {
-      // 文本截断：失败行不该把整段长消息都塞进清单。
-      const compactRow = row && typeof row === 'object'
-        ? { ...row, text: String(row.text ?? '').slice(0, MAX_FAILURE_TEXT) }
-        : row;
       fs.appendFileSync(writeFailFile, JSON.stringify({
-        at: Date.now(), phase, id: row?.id, row: compactRow,
+        at: Date.now(), phase, id: row?.id, row,
         error: String(error?.message ?? error),
       }) + '\n', 'utf8');
     } catch {
@@ -1375,14 +1383,28 @@ export function createMemoryStore(options = {}) {
     return out;
   }
 
-  /** 待恢复记录总数 = 主清单 + 所有遗留快照（健康检查用）。 */
-  function pendingFailureCount() {
-    let n = 0;
-    try { n += fs.readFileSync(writeFailFile, 'utf8').split('\n').filter(Boolean).length; } catch { /* 主清单不存在 */ }
+  /**
+   * 待恢复统计 = 主清单 + 所有遗留快照。
+   * 读不出来的快照要单独计数：它不是「没有数据」，而是「有一份我们看不清的数据」，
+   * 健康页必须能提示，否则用户会以为一切正常。
+   */
+  function pendingFailureStats() {
+    let records = 0;
+    let unreadable = 0;
+    try { records += fs.readFileSync(writeFailFile, 'utf8').split('\n').filter(Boolean).length; } catch { /* 主清单不存在 */ }
     for (const file of listPendingSnapshots()) {
-      try { n += fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).length; } catch { /* 单个快照读不到 */ }
+      try {
+        records += fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).length;
+      } catch {
+        unreadable += 1;
+      }
     }
-    return n;
+    return { records, unreadable };
+  }
+
+  /** 兼容旧调用点：只取记录数。 */
+  function pendingFailureCount() {
+    return pendingFailureStats().records;
   }
 
   function l1HasId(day, id) {
@@ -1459,7 +1481,9 @@ export function createMemoryStore(options = {}) {
       // 写入失败：>0 说明有事件没落进 L1（聊天看起来正常，但记忆已经缺了）
       // 计数要包含遗留快照：否则上一次 replay 崩溃后，健康页会显示「没有失败」，
       // 而实际上还有一批记录躺在 .processing-* 里没恢复。
-      writeFailures: Math.max(writeFailureCount, pendingFailureCount()),
+      writeFailures: Math.max(writeFailureCount, pendingFailureStats().records),
+      // 读不出来的快照数量：health 要单独提示，不能显示 0 就当成没事
+      unreadableSnapshots: pendingFailureStats().unreadable,
       lastWriteFailure,
       // 坏行（无法解析 / 缺 id）被隔离后的数量：这些也是「没恢复的数据」，
       // 不进 writeFailures 会让人误以为处理完了。

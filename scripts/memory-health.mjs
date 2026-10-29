@@ -95,6 +95,10 @@ if (st.writeFailures > 0) {
   say(`  ⚠️ 事件写入失败 ${st.writeFailures} 条（最近一次：${st.lastWriteFailure?.error ?? "未知"}）`);
   say('     这些消息没进 L1，可以用 store.replayWriteFailures() 重新写回；先修好 events/ 目录权限或磁盘空间。');
 }
+if (st.unreadableSnapshots > 0) {
+  say(`  ⚠️ 有 ${st.unreadableSnapshots} 个待恢复快照读不出来（权限问题或目录冒充文件）`);
+  say('     这些快照里可能有还没恢复的事件；health 看不到内容，不等于没有数据。');
+}
 if (st.quarantined > 0) {
   say(`  ⚠️ 失败清单里有 ${st.quarantined} 条坏行（已隔离到 write-failures.jsonl.quarantine）`);
   say('     这些行是 JSON 损坏或缺少 id，无法自动恢复，需要人工查看；它们不计入上面的 writeFailures。');

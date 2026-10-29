@@ -367,3 +367,44 @@ test('故障风暴下失败清单有上限，不会无限增长', () => {
   assert.equal(store.stats().writeFailures, 10500, '计数仍然准确（只是不记明细）');
   cleanup(dir);
 });
+
+test('长消息恢复后内容完整（不能截断）', () => {
+  const { dir, store } = freshStore();
+  fs.rmSync(path.join(dir, 'events'), { recursive: true, force: true });
+  fs.writeFileSync(path.join(dir, 'events'), 'blocked');
+  const longText = '长'.repeat(300);
+  store.appendEvent({ t: Date.now(), k: 'g:1', kind: 'msg', text: longText, s: 2 });
+  fs.unlinkSync(path.join(dir, 'events'));
+  const r = store.replayWriteFailures();
+  assert.equal(r.replayed, 1);
+  const evFile = path.join(dir, 'events', `${day()}.jsonl`);
+  const row = JSON.parse(fs.readFileSync(evFile, 'utf8').trim().split('\n')[0]);
+  assert.equal(row.text.length, 300, '恢复的必须是原文，200 字截断会丢内容');
+  assert.equal(row.text, longText);
+  cleanup(dir);
+});
+
+test('溢出计数会持久化：新 store 仍知道丢了多少条', () => {
+  const { dir, store } = freshStore();
+  // 主清单 2 条 + 溢出计数 5 → 总数应为 7
+  fs.writeFileSync(
+    path.join(dir, 'write-failures.jsonl'),
+    '{}\n{}\n',
+    'utf8',
+  );
+  fs.writeFileSync(path.join(dir, 'write-failures.jsonl.overflow'), '5', 'utf8');
+  void store;
+  // 直接用顶部 import 的 createMemoryStore 重建实例（触发计数初始化）
+  const s2 = createMemoryStore({ dir });
+  assert.equal(s2.stats().writeFailures, 7, '2 条明细 + 5 条溢出');
+  cleanup(dir);
+});
+
+test('不可读快照会出现在 stats.unreadableSnapshots 里', () => {
+  const { dir, store } = freshStore();
+  // 用目录冒充不可读快照
+  fs.mkdirSync(path.join(dir, 'write-failures.jsonl.processing-broken'), { recursive: true });
+  const st = store.stats();
+  assert.equal(st.unreadableSnapshots, 1, 'health 必须能提示「有一份看不清的待恢复数据」');
+  cleanup(dir);
+});
