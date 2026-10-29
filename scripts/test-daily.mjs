@@ -36,6 +36,11 @@ const suite = [
     expect: 0,
   },
   {
+    name: 'socialV2 状态层',
+    args: ['--test', 'scripts/test-socialv2-store.mjs'],
+    expect: 0,
+  },
+  {
     name: '记忆库端到端',
     args: ['--test', 'scripts/test-memory-e2e.mjs'],
     expect: 0,

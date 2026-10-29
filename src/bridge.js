@@ -59,6 +59,7 @@ import {
   markStickerUsed
 } from './sticker-lib.js';
 import { createMemoryStore } from './core/memory-store.mjs';
+import { canonicalV2Key, createConversationStateV2, defaultWakeConfigV2, hydrateConversationStateV2, normalizeSpeakerIdsV2, serializeSocialV2 } from './core/socialv2-store.mjs';
 import { auditProfile, buildInjection, buildMemoryGraph, buildMemoryUniverse, groupSelfNotes, mergePersonFact, mergeSelfNote, mergeThread, profileDigestForRefine, threadClosureHints, verifyMemoryClaim } from './core/memory-lib.mjs';
 import { handleMemoryApiRequest } from './routes/memory-api.mjs';
 import { handleRoleApiRequest } from './routes/roles-api.mjs';
@@ -1280,13 +1281,8 @@ function allowed(kind, id, cfg) {
 }
 
 // 二代会话 key 规范化：只接受 group:正整数 / private:正整数，并去掉前导零，避免同一会话出现多个别名。
-function canonicalV2Key(key) {
-  const m = /^(group|private):(\d+)$/.exec(String(key ?? '').trim());
-  if (!m) return null;
-  const id = Number(m[2]);
-  if (!Number.isSafeInteger(id) || id <= 0) return null;
-  return `${m[1]}:${id}`;
-}
+// canonicalV2Key / normalizeSpeakerIdsV2 / defaultWakeConfigV2 / 状态结构
+// 已抽到 src/core/socialv2-store.mjs（纯数据层，可单独单测）。
 
 const APPROVE_WORDS = new Set(['通过', '同意', '允许', '批准', 'yes', 'y', 'approve', 'ok']);
 const REJECT_WORDS = new Set(['拒绝', '不同意', '不允许', '驳回', 'no', 'n', 'reject', 'deny']);
@@ -7686,62 +7682,14 @@ async function main() {
   // - 只保留正整数 QQ 号（字符串形式），拒绝 null/对象/“null”/非法字符等脏数据；
   // - 去重并限制最多 20 个，避免唤醒名单无限膨胀/被恶意塞入异常值；
   // - undefined/null 都视为“不启用”（空数组）。
-  function normalizeSpeakerIdsV2(value) {
-    if (value === undefined || value === null) return [];
-    const rawList = Array.isArray(value) ? value : String(value).split(/[,，\s]+/);
-    const seen = new Set();
-    const clean = [];
-    for (const v of rawList) {
-      const s = String(v ?? '').trim();
-      if (!/^[1-9]\d*$/.test(s)) continue;
-      if (seen.has(s)) continue;
-      seen.add(s);
-      clean.push(s);
-      if (clean.length >= 20) break;
-    }
-    return clean;
-  }
 
-  function defaultWakeConfigV2() {
-    const w = cfg.socialV2?.wake ?? {};
-    const defaultMode = w.defaultMode === 'active' ? 'active' : 'diving';
-    const defaultInfinite = w.recommendedDefaultInfinite !== false;
-    const recMin = Number(w.recommendedSleepMinMs) || 300000;
-    const recMax = Number(w.recommendedSleepMaxMs) || 7200000;
-    let finiteMs = recMin + Math.random() * Math.max(0, recMax - recMin);
-    const hardMin = Math.max(0, Number(w.sleepMinMs) || 0);
-    const hardMax = Number(w.sleepMaxMs) || 0;
-    if (hardMin > 0 && finiteMs < hardMin) finiteMs = hardMin;
-    if (hardMax > 0 && finiteMs > hardMax) finiteMs = hardMax;
-    return {
-      mode: defaultMode,
-      infinite: defaultInfinite,
-      sleepUntil: defaultInfinite ? null : new Date(Date.now() + Math.round(finiteMs)).toISOString(),
-      triggers: {
-        atMention: w.recommendedAtMention !== false,
-        nameMention: w.recommendedNameMention !== false,
-        speakerIds: [],
-        keywords: Array.isArray(w.recommendedKeywords) ? w.recommendedKeywords.map(String) : [],
-        question: w.recommendedQuestion !== false,
-        poke: w.recommendedPoke !== false,
-        anyMessage: defaultMode === 'active',
-        probability: Math.min(1, Math.max(0, Number(w.recommendedProbability) || 0))
-      },
-      batchWindowMs: Math.max(1000, Number(w.batchWindowMs) || 8000),
-      lastWakeAt: 0,
-      wakeCount: 0,
-      noActionCount: 0,
-      confirmedAt: 0,
-      confirmedBy: 'default'
-    };
-  }
 
   // 把“仍使用默认唤醒配置”的会话刷新为当前推荐/默认参数。
   // 只有 confirmedBy === 'default' 的会话才会被刷新；AI 或管理员显式设置过的（set_wake_config / mark_read）不会被覆盖。
   function refreshDefaultWakeConfigV2(st) {
     if (!st || !st.wakeConfig) return false;
     if (st.wakeConfig.confirmedBy !== 'default') return false;
-    const def = defaultWakeConfigV2();
+    const def = defaultWakeConfigV2(cfg.socialV2?.wake);
     const old = st.wakeConfig;
     st.wakeConfig = {
       ...def,
@@ -7832,7 +7780,7 @@ async function main() {
         clearTimeout(st.sleepTimer);
         st.sleepTimer = null;
       }
-      st.wakeConfig = defaultWakeConfigV2();
+      st.wakeConfig = defaultWakeConfigV2(cfg.socialV2?.wake);
       if (!opts.skipSave) saveSocialV2State();
       if (key) setupSleepTimerV2(key);
       log(`[reserved2] 唤醒配置无任何触发条件，已重置为默认配置，避免永眠`);
@@ -7850,33 +7798,10 @@ async function main() {
     key = canonical;
     let st = socialV2.conversations.get(key);
     if (!st) {
-      st = {
-        wakeConfig: defaultWakeConfigV2(),
-        recentMessages: [],
-        unread: [],
-        lastWakeReason: '',
-        lastAiReplyAt: 0,
-        lastActionAt: 0,
-        agentToken: crypto.randomBytes(16).toString('hex'),
-        bootstrapSent: false,
-        wakeTimes: [],
-        sendTimes: [],
-        stickerCollectTimes: [],
-        pendingWakeTimer: null,
-        sleepTimer: null,
-        replyCheckTimer: null,
-        proactiveTimer: null,
-        lastIncomingAt: 0,
-        preSleepWaitSatisfiedAt: 0,
-        preSleepWaitObservedAt: 0,
-        preSleepWaitAccumMs: 0,
-        lastUnreadSeq: 0,
-        lastReadThroughSeq: 0,
-        modelSeenSeqs: new Set(),
-        activeTopics: [],
-        pendingThoughts: [],
-        memberImpressions: {}
-      };
+      st = createConversationStateV2({
+        cfg: cfg.socialV2?.wake,
+        token: crypto.randomBytes(16).toString('hex'),
+      });
       rememberAgentToken(key, st.agentToken);
       socialV2.conversations.set(key, st);
       scheduleProactiveCheckV2(key);
@@ -7907,52 +7832,17 @@ async function main() {
         for (const [key, val] of Object.entries(raw.conversations)) {
           if (!val || typeof val !== 'object') continue;
           if (!/^(group|private):\d+$/.test(key)) continue;
-          const defaultWc = defaultWakeConfigV2();
+          const defaultWc = defaultWakeConfigV2(cfg.socialV2?.wake);
           let agentToken = String(val.agentToken || crypto.randomBytes(16).toString('hex'));
           if (!agentToken || seenTokens.has(agentToken)) {
             agentToken = crypto.randomBytes(16).toString('hex');
           }
           seenTokens.add(agentToken);
-          const st = {
-            wakeConfig: {
-              ...defaultWc,
-              ...(val.wakeConfig ?? {}),
-              triggers: { ...defaultWc.triggers, ...((val.wakeConfig?.triggers) ?? {}) }
-            },
-            recentMessages: Array.isArray(val.recentMessages) ? val.recentMessages : [],
-            unread: Array.isArray(val.unread) ? val.unread : [],
-            lastWakeReason: String(val.lastWakeReason ?? ''),
-            lastAiReplyAt: Number(val.lastAiReplyAt) || 0,
-            lastActionAt: Number(val.lastActionAt) || 0,
-            agentToken,
-            bootstrapSent: !!val.bootstrapSent,
-            wakeTimes: Array.isArray(val.wakeTimes) ? val.wakeTimes : [],
-            sendTimes: Array.isArray(val.sendTimes) ? val.sendTimes : [],
-            stickerCollectTimes: Array.isArray(val.stickerCollectTimes) ? val.stickerCollectTimes : [],
-            pendingWakeTimer: null,
-            sleepTimer: null,
-            replyCheckTimer: null,
-            proactiveTimer: null,
-            lastIncomingAt: Number(val.lastIncomingAt) || 0,
-            preSleepWaitSatisfiedAt: Number(val.preSleepWaitSatisfiedAt) || 0,
-            preSleepWaitObservedAt: Number(val.preSleepWaitObservedAt) || 0,
-            preSleepWaitAccumMs: Number(val.preSleepWaitAccumMs) || 0,
-            lastUnreadSeq: Number(val.lastUnreadSeq) || 0,
-            lastReadThroughSeq: Number.isSafeInteger(val.lastReadThroughSeq) && val.lastReadThroughSeq >= 0
-              ? Math.min(val.lastReadThroughSeq, Number(val.lastUnreadSeq) || 0) : 0,
-            modelSeenSeqs: new Set(),
-            activeTopics: Array.isArray(val.activeTopics) ? val.activeTopics : [],
-            pendingThoughts: Array.isArray(val.pendingThoughts) ? val.pendingThoughts : [],
-            memberImpressions: (() => {
-              const rawImp = (val.memberImpressions && typeof val.memberImpressions === 'object') ? val.memberImpressions : {};
-              const clean = {};
-              for (const [k, v] of Object.entries(rawImp)) {
-                if (['__proto__', 'constructor', 'prototype'].includes(k)) continue;
-                clean[k] = v;
-              }
-              return clean;
-            })()
-          };
+          const st = hydrateConversationStateV2({
+            key, val,
+            cfg: cfg.socialV2?.wake,
+            token: agentToken,
+          });
           // 旧状态/异常状态里的指定成员名单也统一归一化，防止“null”/非法值污染。
           if (st.wakeConfig?.triggers && typeof st.wakeConfig.triggers === 'object') {
             st.wakeConfig.triggers.speakerIds = normalizeSpeakerIdsV2(st.wakeConfig.triggers.speakerIds);
@@ -8008,32 +7898,11 @@ async function main() {
 
   function saveSocialV2State() {
     try {
-      const obj = { paused: socialV2.paused, conversations: Object.create(null) };
-      for (const [key, st] of socialV2.conversations) {
-        obj.conversations[key] = {
-          wakeConfig: st.wakeConfig,
-          recentMessages: st.recentMessages.slice(-200),
-          unread: st.unread.slice(-100),
-          lastWakeReason: st.lastWakeReason,
-          lastAiReplyAt: st.lastAiReplyAt,
-          lastActionAt: st.lastActionAt,
-          agentToken: st.agentToken,
-          bootstrapSent: st.bootstrapSent,
-          wakeTimes: st.wakeTimes.slice(-200),
-          sendTimes: st.sendTimes.slice(-500),
-          stickerCollectTimes: Array.isArray(st.stickerCollectTimes) ? st.stickerCollectTimes.slice(-500) : [],
-          lastIncomingAt: st.lastIncomingAt || 0,
-          preSleepWaitSatisfiedAt: st.preSleepWaitSatisfiedAt || 0,
-          preSleepWaitObservedAt: st.preSleepWaitObservedAt || 0,
-          preSleepWaitAccumMs: st.preSleepWaitAccumMs || 0,
-          lastUnreadSeq: st.lastUnreadSeq || 0,
-          lastReadThroughSeq: st.lastReadThroughSeq || 0,
-          activeTopics: Array.isArray(st.activeTopics) ? st.activeTopics.slice(-50) : [],
-          pendingThoughts: Array.isArray(st.pendingThoughts) ? st.pendingThoughts.slice(-50) : [],
-          memberImpressions: st.memberImpressions && typeof st.memberImpressions === 'object' ? st.memberImpressions : {},
-          seenForwardIds: Array.from(seenForwardIds.get(key) || []).slice(-1000)
-        };
-      }
+      const obj = serializeSocialV2({
+        paused: socialV2.paused,
+        conversations: socialV2.conversations,
+        seenForwardIds,
+      });
       atomicWriteJson(SOCIAL_V2_FILE, obj);
     } catch (error) {
       log('保存 socialV2 状态失败:', error?.message ?? error);
@@ -11005,7 +10874,7 @@ async function main() {
                   const limit = Number(cfg.socialV2?.wake?.noActionLimit) || 3;
                   if (st.wakeConfig.noActionCount >= limit) {
                     log(`[reserved2] ${key} 连续 ${st.wakeConfig.noActionCount} 次唤醒无行动，重置唤醒配置`);
-                    st.wakeConfig = defaultWakeConfigV2();
+                    st.wakeConfig = defaultWakeConfigV2(cfg.socialV2?.wake);
                     st.bootstrapSent = true;
                     st.wakeConfig.noActionCount = 0;
                   }
@@ -11063,7 +10932,7 @@ async function main() {
                     log(`[reserved2] ${key} 未设置唤醒条件，发送提醒 (${currentMiss}/${maxReminders})`);
                   } else {
                     const st = getSocialV2State(key);
-                    st.wakeConfig = defaultWakeConfigV2();
+                    st.wakeConfig = defaultWakeConfigV2(cfg.socialV2?.wake);
                     saveSocialV2State();
                     log(`[reserved2] ${key} 连续未设置唤醒条件，已重置为默认唤醒配置`);
                   }
