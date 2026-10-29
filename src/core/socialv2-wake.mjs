@@ -152,3 +152,47 @@ export function evaluateWakeTriggerV2({
   if (Number(tr.probability) > 0 && random() < Number(tr.probability)) return 'probability';
   return null;
 }
+
+// ── 睡眠与「聊两句就潜水」的判定（原来内嵌在 bridge 里，全是纯逻辑）──
+
+/** 对方明确说了结束语（晚安/拜拜/去忙…）。 */
+export const EXPLICIT_END_RE = /(?:不聊了|不说了|晚安|睡了|先睡了|下了|先下了|拜拜|再见|走了|先走|撤了|去忙|忙了|下次再聊|下次聊|散了吧|结束|就到这|先这样|就这样吧|886|88|睡觉了|下班了|去洗澡|去吃饭了)/i;
+
+export function hasExplicitEnd(st) {
+  const recent = Array.isArray(st?.recentMessages) ? st.recentMessages : [];
+  const last = [...recent].reverse().find((m) => m && !m.isSelf);
+  if (!last) return false;
+  return EXPLICIT_END_RE.test(String(last.tail || last.plain || last.text || ''));
+}
+
+/** diving 且不是 anyMessage 都视为「沉睡/潜水」，需要先观察才能再睡。 */
+export function isSleepingConfig(wc) {
+  if (!wc) return false;
+  if (wc.mode === 'active' || wc.triggers?.anyMessage) return false;
+  return true;
+}
+
+/**
+ * 沉睡前强制观察窗口：防止 AI 聊两句就立刻潜水。
+ *
+ * 规则（与原实现一致）：
+ * 1. 对方说了结束语 → 不再拦；
+ * 2. 已经连续安静满观察窗口 → 放行；
+ * 3. 已经完整等过窗口且之后没有新消息 → 放行；
+ * 4. 已经做过一次观察（可能等到了新消息并已返回给 AI），之后 AI 没参与、也没有更新消息 → 放行；
+ * 5. 其余情况拦下。
+ */
+export function preSleepWaitBlocked(st, wakeCfg, now = Date.now()) {
+  if (!st) return false;
+  const w = wakeCfg ?? {};
+  if (w.preSleepWaitEnabled === false) return false;
+  if (hasExplicitEnd(st)) return false;
+  const waitMs = Math.max(0, Number(w.preSleepWaitMs) || 300000);
+  // 已经连续安静满观察窗口：可以直接设置潜水。
+  if ((st.lastIncomingAt || 0) && now - st.lastIncomingAt >= waitMs) return false;
+  // 已经完整等过观察窗口且之后没有新消息：放行。
+  if (st.preSleepWaitSatisfiedAt && (!st.lastIncomingAt || st.lastIncomingAt <= st.preSleepWaitSatisfiedAt)) return false;
+  // 已经做过一次沉睡前观察，只要 AI 之后没有参与、也没有更新的消息，就允许直接沉睡。
+  if (st.preSleepWaitObservedAt && (!st.lastIncomingAt || st.lastIncomingAt <= st.preSleepWaitObservedAt)) return false;
+  return true;
+}

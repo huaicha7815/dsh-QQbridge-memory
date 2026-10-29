@@ -208,3 +208,24 @@ export const PERSISTED_FIELDS = Object.freeze([
 export const RUNTIME_ONLY_FIELDS = Object.freeze([
   'pendingWakeTimer', 'sleepTimer', 'replyCheckTimer', 'proactiveTimer', 'modelSeenSeqs',
 ]);
+
+/**
+ * 刷新「仍在使用默认唤醒配置」的会话（confirmedBy === 'default'）。
+ * AI 或管理员显式设置过的不会被覆盖——这是原实现的语义，别改。
+ * 返回 true 表示确实改了。
+ */
+export function refreshDefaultWakeConfig(st, cfg, random = Math.random) {
+  if (!st || !st.wakeConfig) return false;
+  if (st.wakeConfig.confirmedBy !== 'default') return false;
+  const def = defaultWakeConfigV2(cfg, random);
+  const old = st.wakeConfig;
+  st.wakeConfig = {
+    ...def,
+    lastWakeAt: old.lastWakeAt || 0,
+    wakeCount: old.wakeCount || 0,
+    noActionCount: old.noActionCount || 0,
+    confirmedAt: old.confirmedAt || 0,
+    confirmedBy: 'default',
+  };
+  return true;
+}

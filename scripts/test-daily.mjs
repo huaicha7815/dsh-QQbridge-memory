@@ -51,6 +51,16 @@ const suite = [
     expect: 0,
   },
   {
+    name: 'socialV2 睡眠判定',
+    args: ['--test', 'scripts/test-socialv2-sleep.mjs'],
+    expect: 0,
+  },
+  {
+    name: 'socialV2 提示词组装',
+    args: ['--test', 'scripts/test-socialv2-prompt.mjs'],
+    expect: 0,
+  },
+  {
     name: '记忆库端到端',
     args: ['--test', 'scripts/test-memory-e2e.mjs'],
     expect: 0,

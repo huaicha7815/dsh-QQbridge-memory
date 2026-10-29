@@ -3,7 +3,7 @@
 > 目标：把「什么时候该叫醒她、什么时候该睡」这套定时器逻辑从 `bridge.js` 里拆出来，
 > 让它能用**假时钟**单测，同时合并两处已经重复的看门狗逻辑。
 >
-> 状态：**Step A 已实施（2026-10-29）**。Step B/C 见文末「实施记录」。
+> 状态：**Step A / B / C 全部实施（2026-10-29）**。详见文末「实施记录」。
 >
 > 前置：Step 1（状态层）、Step 2 纯函数部分（唤醒判定）、Step 3（54 个端点）已完成。
 > 本文覆盖的是 Step 2 剩下的那部分——**有副作用的调度逻辑**。
@@ -298,3 +298,49 @@ createScheduler({ getState, save, cfg, isAllowed, isPaused, isBusy,
   它们依赖人格注入、记忆检索、工具清单，属于「组装」不是「调度」，
   与本次目标（定时器可测）关系不大，优先级低。
 - **Step C**（`ensureWakeableV2` / `refreshDefaultWakeConfigV2` 并入状态层）：小改动，待做。
+
+### Step B 提示词组装 —— 完成（2026-10-29）
+
+新增 `src/core/socialv2-prompt.mjs`（228 行）：
+
+```js
+createWakePromptBuilder({ getState, cfg, formatMemoryInjectionV3, formatParticipationV2,
+                          readThroughSeqV2, suggestQuietMsV2, v2ToolEnabled, wakeRoleLineV2,
+                          buildStickerContext, buildStickerStrategyHint, compactModelMessage,
+                          looksLikeUnfinished, buildDiaryDigestV2, profileDigestForRefine,
+                          threadClosureHints, stickerEntries, memoryStore })
+  → { buildWakeSnapshot, buildWakePrompt, buildWakeReminderPrompt, replyTimingV2 }
+```
+
+搬出：`buildWakeSnapshotV2`（81 行）+ `buildWakePromptV2`（123 行）+ `buildWakeReminderPromptV2`（10 行）+ `replyTimingV2`。
+
+**提示词内容一个字都没改**——只改位置，字符串顺序/标点/换行全部保持原样。
+
+单测 4 项：提醒提示词必须带 key/令牌/收尾工具/观察窗口；提示词必须注入角色行与未读消息；
+工具全关时快照返回 null；快照结构字段完整。
+
+**这一批踩的坑（最有教育意义的一批）**：
+
+1. `replyTimingV2` 是**模块内局部函数**，但我先把它当成外部依赖注入 → 参数重复；
+   移出工厂后它又依赖工厂注入的 `cfg`/`suggestQuietMsV2` → 顶层不可用。
+   最终方案：留在工厂内、由工厂 return 暴露，bridge 用薄包装转出去给 state-api 用。
+   → 教训：**「这个函数是自己人还是外部依赖」在抽取前必须确认**，不能靠名字猜。
+2. `stickerEntries` 是 `let`（同步后整体替换）→ 必须 getter；
+3. `memoryStore` 是 main 内的 const → 同一批里只补到第二次才全。
+
+### Step C 睡眠判定 —— 完成（2026-10-29）
+
+并入 core：`hasExplicitEnd` / `isSleepingConfig` / `preSleepWaitBlocked` 进 `socialv2-wake.mjs`，
+`refreshDefaultWakeConfig` 进 `socialv2-store.mjs`。bridge 保留薄包装。
+
+单测 6 项：结束语识别、沉睡配置判定、观察窗口三条放行规则、结束语豁免、开关可关、
+默认配置只覆盖 `confirmedBy === "default"` 的会话（AI/管理员设过的不覆盖）。
+
+### 最终结果
+
+```
+bridge.js      11955 → 8561 行（-3394，-28%）
+core 模块       8 个（新增 scheduler / prompt）
+routes 模块     10 个 / 78 个端点
+每日自检        9 个套件（新增 12+6+4 项 socialV2 单测）
+```
