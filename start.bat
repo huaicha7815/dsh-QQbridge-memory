@@ -12,10 +12,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "C:\dsh work\tts-runtime\sta
 node src/bridge.js
 set code=%errorlevel%
 if "%code%"=="2" (
+    rem 已经有一个实例在跑：显示原因，等几秒让双击启动的人看清，然后退出。
+    rem 这里不能用 pause —— 守护脚本会停在按键提示上，桥接死了也不会自动重启。
     echo [%date% %time%] bridge already running in another window. Exiting.
-    pause
+    ping -n 9 127.0.0.1 >nul
     exit /b 2
 )
 echo [%date% %time%] bridge exited (code %code%), restarting in 5 seconds...
-timeout /t 5 /nobreak >nul
+ping -n 6 127.0.0.1 >nul
 goto loop

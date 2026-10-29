@@ -1035,7 +1035,17 @@ function acquireLock() {
       throw error;
     }
   };
-  if (tryCreate()) return;
+  if (tryCreate()) {
+    // 「刚建的锁」不代表「没有别的实例」：锁文件可能被人误删/被清理工具带走，
+    // 而控制台端口的占用才是「真的有一个桥接在跑」的权威证据。
+    // 不加这一道，锁一丢就会起出第二个实例，两个同时读写 state（真实事故过）。
+    if (consolePortInUse()) {
+      try { fs.unlinkSync(LOCK_FILE); } catch {}
+      console.error('[bridge] 控制台端口已被占用：已有实例在跑（锁文件缺失或被删）。不启动第二个，避免双实例同时读写 state。');
+      process.exit(2);
+    }
+    return;
+  }
   // 锁文件已存在：检查 PID 是否仍存活；内容为空视为过期锁（仅兼容旧版本遗留），删除后重试一次。
   let stale = false;
   try {

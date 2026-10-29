@@ -6,7 +6,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createMemoryStore } from '../src/core/memory-store.mjs';
-import { PROFILE_LIMITS, auditProfile } from '../src/core/memory-lib.mjs';
+import { collectMetrics, compareMetrics, formatCompare, readBaseline } from './memory-baseline.mjs';
+import { PROFILE_LIMITS, auditProfile, buildMemoryGraph } from '../src/core/memory-lib.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const store = createMemoryStore({ dir: path.join(root, 'state', 'memory'), config: {} });
@@ -69,7 +70,7 @@ const open = profile.threads.filter((t) => t.state === 'open');
 const done = profile.threads.filter((t) => t.state === 'done');
 say(`  线：未完结 ${open.length} / 已了结 ${done.length} / 上限 ${PROFILE_LIMITS.maxThreads}`);
 for (const t of open.slice(0, 5)) say(`    [open] ${t.text.slice(0, 50)}`);
-say(`  心事（self）：${profile.self.length} / 上限 ${PROFILE_LIMITS.maxSelfNotes}`);
+say(`  她自己（self）：${profile.self.length} / 上限 ${PROFILE_LIMITS.maxSelfNotes}`);
 say('');
 
 // ── 4.5 档案自检（一致性长歪了没有）────────────────────────
@@ -88,6 +89,34 @@ if (!problems) {
 }
 say('');
 
+// ── 4.55 事件归属：这条记忆是谁的 ─────────────────────────
+// 星图第一次跑就靠「悬空的点」暴露了归档层的缺陷（私聊发送者被写死成「私聊」）。
+// 这里把那次的发现固化成可自动跑的指标：谁说的记全了没有、结构上悬空多少。
+say('【事件归属】（最近 7 天）');
+const recent7 = store.readEvents({ days: 7 });
+const whoTag = /^(私聊|群聊|群友|管理员|系统)$/;
+const owners = { claimed: 0, tag: 0, empty: 0, other: 0 };
+const strangerNames = new Map();
+const peopleNames = new Set(people.map(([n]) => n));
+for (const e of recent7) {
+  const who = String(e?.who ?? '').trim();
+  if (!who) owners.empty += 1;
+  else if (whoTag.test(who)) owners.tag += 1;
+  else if (peopleNames.has(who)) owners.claimed += 1;
+  else { owners.other += 1; strangerNames.set(who, (strangerNames.get(who) || 0) + 1); }
+}
+const total7 = recent7.length || 1;
+say(`  总事件 ${recent7.length} 条：认领 ${owners.claimed}（${pct(owners.claimed, total7)}）· 会话标签 ${owners.tag}（${pct(owners.tag, total7)}）· 无发送者 ${owners.empty} · 未建档群友 ${owners.other}`);
+if (owners.tag > total7 * 0.01) say('  ⚠ 有事件把「私聊/群聊」当成了发送者：这些记忆接不到任何人，检索里「谁跟谁」的信号会丢。');
+const topStrangers = [...strangerNames.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
+if (topStrangers.length) say(`  未建档但活跃：${topStrangers.map(([n, ct]) => `${n}(${ct})`).join('、')}`);
+// 结构悬空率：用和星图同一套构图（S2/S3 为主），看记忆之间有没有钩子
+const graph = buildMemoryGraph(profile, recent7, { now, maxEvents: 60 });
+const isoRate = graph.stats.nodes ? graph.stats.isolated.length / graph.stats.nodes : 0;
+say(`  结构：${graph.stats.nodes} 点 / ${graph.stats.edges} 连 / 悬空 ${graph.stats.isolated.length}（${pct(graph.stats.isolated.length, graph.stats.nodes)}）· 最大枢纽 ${graph.stats.hubs[0] ? `${graph.stats.hubs[0].label}(${graph.stats.hubs[0].degree})` : '—'}`);
+if (isoRate > 0.4) say('  ⚠ 悬空点超过 40%：这些记忆没跟任何人物/事件挂钩，等于「记下来了但没人认领」。');
+say('');
+
 // ── 4.6 日终归纳（V3.7）是否在跑 ────────────────────────────
 // 每天一次独立调用，最容易「悄悄没跑」：时间配错、记忆库关着、owner 没设。
 // 这里只报告事实，不猜原因。
@@ -103,8 +132,24 @@ try {
 }
 say('');
 
+// ── 4.7 基线对比：跟上一版比，哪里在慢慢变坏 ─────────────────
+// 单看一次 health 看不出漂移；跟基线比，「悬空率悄悄爬到 40%」这种才藏不住。
+const baseline = readBaseline();
+let baseBad = [];
+if (baseline) {
+  const current = collectMetrics(store, profile, now);
+  const rows = compareMetrics(baseline.metrics, current);
+  for (const line of formatCompare(baseline, rows, now)) say(line);
+  baseBad = rows.filter((r) => r.level === 'bad');
+  say('');
+} else {
+  say('【基线对比】还没有基线。记一次：node scripts/memory-baseline.mjs --save');
+  say('');
+}
+
 // ── 5. 建议 ───────────────────────────────────────────────
 const advice = [];
+if (baseBad.length) advice.push(`基线变坏：${baseBad.map((r) => r.label).join('、')}（对比上一版；先看上面数值，再查归档/档案）。`);
 if (problems) advice.push(`档案有 ${problems} 处一致性问题（同人分裂/重复线/已了结还挂着），用 node scripts/repair-memory-profile.mjs --apply 修掉。`);
 const shard = st.events ? tiers[0] / st.events : 0;
 if (st.eventDays >= 3 && st.events < 50) advice.push('事件量偏少：桥接可能没在跑，或最近很安静。');
@@ -120,6 +165,8 @@ const overdue = open.filter((t) => now - (t.lastMentionAt || t.createdAt) > 30 *
 if (overdue.length) advice.push(`有 ${overdue.length} 条线超过 30 天没被提起，可以考虑用 qq_memory_remember(kind="threadDone") 收尾。`);
 const superseded = people.reduce((s, [, v]) => s + (v.facts || []).filter((f) => f.previous).length, 0);
 if (superseded) advice.push(`档案里有 ${superseded} 条事实被纠正过（保留在 previous 里），可以用 qq_memory_inspect 复查。`);
+if (owners.tag > total7 * 0.03) advice.push(`会话标签事件占 ${Math.round((owners.tag / total7) * 100)}%：归档层可能没记真实发送者（V4.4 前的私聊缺陷），用 node scripts/backfill-private-who.mjs 预览回填。`);
+if (isoRate > 0.4) advice.push(`星图悬空 ${Math.round(isoRate * 100)}%：先看上面【事件归属】里未建档的群友，或用 qq_memory_remember(kind="person") 把常说话的人建档。`);
 
 say('【建议】');
 if (advice.length) for (const a of advice) say(`  · ${a}`);
