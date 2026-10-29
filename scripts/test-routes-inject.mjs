@@ -15,7 +15,10 @@ import { handleSocialV2ControlApi } from '../src/routes/socialv2-control-api.mjs
 import { handleSocialV2StateApi } from '../src/routes/socialv2-state-api.mjs';
 import { handleSocialV2MemoryApi } from '../src/routes/socialv2-memory-api.mjs';
 
-const ROUTES = 'C:/Users/1/.dsh/qq-bridge/src/routes';
+import { fileURLToPath } from 'node:url';
+
+// 相对路径：CI / 其他用户机器上也能跑（原来写死了绝对路径）
+const ROUTES = fileURLToPath(new URL('../src/routes', import.meta.url));
 
 /** 可调用的万能 mock（任何属性访问继续返回自己） */
 function anyMock() {

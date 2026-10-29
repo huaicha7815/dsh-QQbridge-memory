@@ -66,6 +66,11 @@ const suite = [
     expect: 0,
   },
   {
+    name: '路由调用点比对',
+    args: ['--test', 'scripts/test-route-callsites.mjs'],
+    expect: 0,
+  },
+  {
     name: '记忆库端到端',
     args: ['--test', 'scripts/test-memory-e2e.mjs'],
     expect: 0,

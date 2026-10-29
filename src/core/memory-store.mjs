@@ -20,6 +20,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import {
   consolidateMonth,
   consolidateWeek,
@@ -142,8 +143,17 @@ export function createMemoryStore(options = {}) {
       return fs.readFileSync(writeFailFile, 'utf8').split('\n').filter(Boolean);
     } catch { return []; }
   }
-  let writeFailureCount = readFailureLines().length;
-  let lastWriteFailure = null;
+  const initialFailLines = readFailureLines();
+  let writeFailureCount = initialFailLines.length;
+  let lastWriteFailure = (() => {
+    // 重启后也要能说清「最近一次失败是什么」：从清单最后一行还原。
+    const last = initialFailLines[initialFailLines.length - 1];
+    if (!last) return null;
+    try {
+      const item = JSON.parse(last);
+      return { at: Number(item.at) || 0, error: String(item.error ?? ''), phase: String(item.phase ?? '') };
+    } catch { return null; }
+  })();
   let cfg = normalizeMemoryConfig(options.config);
 
   // 文件解析缓存：key=绝对路径，value={size, mtimeMs, rows}
@@ -248,6 +258,43 @@ export function createMemoryStore(options = {}) {
     return salientIndex;
   }
 
+  /** 把一行写进当天 L1 事件文件。 */
+  function writeEventRow(row) {
+    const day = dayString(Number(row.t) || Date.now());
+    const file = path.join(eventsDir, `${day}.jsonl`);
+    fs.appendFileSync(file, JSON.stringify(row) + '\n', 'utf8');
+    cache.delete(file);
+  }
+
+  /** 写 S3 独立副本（只对 tier>=3 且配置开启时）。 */
+  function writeSalientRow(row, day, tier) {
+    if (!cfg.salientFile || Number(tier) < 3) return;
+    const index = loadSalientIndex();
+    const key = salientKey(row);
+    if (index.has(key)) return;
+    fs.appendFileSync(salientFile, JSON.stringify({ ...row, srcDay: day }) + '\n', 'utf8');
+    index.add(key);
+  }
+
+  /**
+   * 记录一次写入失败。
+   * phase=event 表示主事件没进 L1（需要 replay 补写）；
+   * phase=salient 表示主事件已成功、只有 S3 副本没写（replay 只补副本）。
+   */
+  function recordWriteFailure(phase, row, error) {
+    console.warn(`[memory] 事件写入失败(${phase}):`, error?.message ?? error);
+    writeFailureCount += 1;
+    lastWriteFailure = { at: Date.now(), error: String(error?.message ?? error), phase };
+    try {
+      fs.appendFileSync(writeFailFile, JSON.stringify({
+        at: Date.now(), phase, id: row?.id, row,
+        error: String(error?.message ?? error),
+      }) + '\n', 'utf8');
+    } catch {
+      // 连清单都写不进去，只能靠 console.warn
+    }
+  }
+
   /**
    * 追加一条事件。
    * 重要度在写入时就算好（`s` 字段），之后检索/摘要都直接用它，不必反复判。
@@ -258,7 +305,9 @@ export function createMemoryStore(options = {}) {
     const ts = Number(entry.t) || Date.now();
     const day = dayString(ts);
     const tier = Number.isInteger(entry.s) ? entry.s : salience(entry);
-    const row = { ...entry, t: ts, s: tier };
+    // 稳定 id：replay 靠它判重，避免「写了但清单没清掉」导致重复入 L1。
+    const id = String(entry.id ?? '').trim() || `${ts.toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
+    const row = { ...entry, t: ts, s: tier, id };
     delete row.day;
     // 回音标记：她把自己记得的事又当新消息说了一遍。
     // 不阻止归档（那还是她真实说过的话），只是让它在检索里降权，
@@ -270,39 +319,24 @@ export function createMemoryStore(options = {}) {
         // 回音判断失败不影响归档
       }
     }
+    // 主事件与 S3 副本分开写、分开记失败。
+    // 以前一个 try 包住两段：S3 写失败时主事件其实已经落盘了，
+    // 但整条仍被记进失败清单 → replay 再写一次主事件 → L1 出现重复。
     try {
       ensureDirs();
-      const file = path.join(eventsDir, `${day}.jsonl`);
-      const line = JSON.stringify(row);
-      if (typeof line !== 'string' || !line.trim()) return false;
-      fs.appendFileSync(file, `${line}\n`, 'utf8');
-      cache.delete(file); // 下次读取重新解析，保证 size/mtime 一致
-
-      if (cfg.salientFile && tier >= 3) {
-        const index = loadSalientIndex();
-        const key = salientKey(row);
-        if (!index.has(key)) {
-          fs.appendFileSync(salientFile, `${JSON.stringify({ ...row, srcDay: day })}\n`, 'utf8');
-          index.add(key);
-        }
-      }
-      return true;
+      writeEventRow(row);
     } catch (error) {
-      // 写失败不能静默，而且要留「可恢复」的痕迹：以前只 return false，
-      // 调用方不检查，结果是「聊天一切正常，但 L1 事件已经丢了」也没人发现。
-      // 现在三件事：打日志、把丢失的行写进 write-failures.jsonl、累加计数（健康检查会报）。
-      console.warn('[memory] 事件写入失败:', error?.message ?? error);
-      writeFailureCount += 1;
-      lastWriteFailure = { at: Date.now(), error: String(error?.message ?? error) };
-      try {
-        // 注意：这里不能用 ensureDirs()——它可能正是失败原因（目录被占/只读）。
-        // root 目录通常已存在，直接追加即可。
-        fs.appendFileSync(writeFailFile, JSON.stringify({ at: Date.now(), error: String(error?.message ?? error), row }) + '\n', 'utf8');
-      } catch {
-        // 连失败清单都写不进去，就只能靠上面的 console.warn 了
-      }
+      recordWriteFailure('event', row, error);
       return false;
     }
+    try {
+      writeSalientRow(row, day, tier);
+    } catch (error) {
+      // 主事件已经在 L1 里了，这里只是 S3 副本没写成功：记成 salient 阶段，
+      // replay 时只补副本，不会重复写主事件。
+      recordWriteFailure('salient', row, error);
+    }
+    return true;
   }
 
   /** 列出有事件文件的所有日期（升序）。 */
@@ -1081,38 +1115,77 @@ export function createMemoryStore(options = {}) {
 
   /** 存储概况（给控制台/工具看，不进 prompt）。 */
   /**
-   * 重放 write-failures.jsonl 里没写进 L1 的事件。
-   * 「留痕」不等于「恢复」：失败的那条消息还在文件里，可以补写回去。
-   * 返回 { replayed, failed }。
+   * 重放失败清单。
+   *
+   * 三条正确性要求（对应审查指出的问题）：
+   * 1. 幂等：按事件稳定 id 判重，L1 里已有的不再写（崩溃重跑也不会重复）；
+   * 2. 分阶段：phase=salient 的只补 S3 副本，不重写主事件；
+   * 3. 原子：清单用「写临时文件 + rename」替换，中途崩不会留下半截清单。
+   *
+   * @param {{dryRun?: boolean}} [options] dryRun=true 只统计不落地（运维先预览）
    */
-  function replayWriteFailures() {
+  function replayWriteFailures({ dryRun = false } = {}) {
     const lines = readFailureLines();
-    if (!lines.length) return { replayed: 0, failed: 0 };
+    if (!lines.length) return { replayed: 0, skipped: 0, failed: 0, quarantined: 0, dryRun };
     let replayed = 0;
+    let skipped = 0;
+    let quarantined = 0;
     const remaining = [];
+    const bad = [];
     for (const line of lines) {
       let item;
-      try { item = JSON.parse(line); } catch { continue; } // 坏行直接丢
+      try { item = JSON.parse(line); } catch { bad.push(line); quarantined += 1; continue; }
       const row = item && item.row;
-      if (!row || typeof row !== 'object') continue;
-      // 直接写文件，绕过 appendEvent 的错误处理，避免再次记录失败
+      const id = String((item && item.id) ?? (row && row.id) ?? '');
+      if (!row || !id) { bad.push(line); quarantined += 1; continue; }
+      const phase = item.phase === 'salient' ? 'salient' : 'event';
+      const day = dayString(Number(row.t) || Date.now());
+      // 幂等：L1 里已有这个 id 就不再写
+      if (phase === 'event' && l1HasId(day, id)) { skipped += 1; continue; }
+      if (dryRun) { replayed += 1; continue; }
       try {
         ensureDirs();
-        const day = dayString(Number(row.t) || Date.now());
-        fs.appendFileSync(path.join(eventsDir, `${day}.jsonl`), JSON.stringify(row) + '\n', 'utf8');
+        if (phase === 'salient') {
+          writeSalientRow(row, day, Number(row.s) || 0);
+        } else {
+          writeEventRow(row);
+          try { writeSalientRow(row, day, Number(row.s) || 0); } catch (e) { lastWriteFailure = { at: Date.now(), error: String(e?.message ?? e), phase: 'salient' }; }
+        }
         replayed += 1;
       } catch (error) {
         remaining.push(line);
-        lastWriteFailure = { at: Date.now(), error: String(error?.message ?? error) };
+        lastWriteFailure = { at: Date.now(), error: String(error?.message ?? error), phase };
       }
     }
-    try {
-      if (remaining.length) fs.writeFileSync(writeFailFile, remaining.join('\n') + '\n', 'utf8');
-      else fs.unlinkSync(writeFailFile);
-    } catch {}
-    writeFailureCount = remaining.length;
-    return { replayed, failed: remaining.length };
+    if (!dryRun) {
+      try {
+        if (remaining.length) {
+          const tmp = writeFailFile + '.tmp';
+          fs.writeFileSync(tmp, remaining.join('\n') + '\n', 'utf8');
+          fs.renameSync(tmp, writeFailFile);
+        } else if (fs.existsSync(writeFailFile)) {
+          fs.unlinkSync(writeFailFile);
+        }
+      } catch {
+        // 清单替换失败：下次会再扫一遍，幂等检查保证不会重复写
+      }
+      if (bad.length) {
+        // 坏行隔离，不直接丢掉（它们是最需要人工看的部分）
+        try { fs.appendFileSync(writeFailFile + '.quarantine', bad.join('\n') + '\n', 'utf8'); } catch {}
+      }
+      writeFailureCount = remaining.length;
+    }
+    return { replayed, skipped, failed: remaining.length, quarantined, dryRun };
   }
+
+  /** 某天的 L1 里是否已有这个事件 id（replay 幂等判断）。 */
+  function l1HasId(day, id) {
+    try {
+      const content = fs.readFileSync(path.join(eventsDir, `${day}.jsonl`), 'utf8');
+      return content.includes('"id":' + JSON.stringify(id));
+    } catch { return false; }
+  }
+
   function stats({ now = Date.now() } = {}) {
     // 写入失败计数：健康检查据此判断「L1 是否悄悄缺数据」
     const days = listEventDays();

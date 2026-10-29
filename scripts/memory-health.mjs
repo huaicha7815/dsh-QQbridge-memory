@@ -35,6 +35,19 @@ if (!fs.existsSync(path.join(memDir, 'events')) && !fs.existsSync(path.join(memD
 }
 
 const store = createMemoryStore({ dir: memDir, config: {} });
+
+// 恢复入口：以前只打印「可以用 replayWriteFailures()」但没有任何可执行入口，
+// 用户修好权限后还得自己写 Node 脚本。这里给一个真能用的一行命令。
+const argv = process.argv.slice(2);
+if (argv.includes('--replay')) {
+  const apply = argv.includes('--apply');
+  const result = store.replayWriteFailures({ dryRun: !apply });
+  console.log(JSON.stringify(result, null, 2));
+  if (!apply) {
+    console.log('（上面是预览。确认无误后加 --apply 真正写回）');
+  }
+  process.exit(0);
+}
 const now = Date.now();
 const st = store.stats({ now });
 const profile = store.readProfile();
