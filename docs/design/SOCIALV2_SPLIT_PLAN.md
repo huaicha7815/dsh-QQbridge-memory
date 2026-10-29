@@ -382,3 +382,58 @@ memory-inspect / memory-profile / memory-update / memory-remove / memory-clear
 | 黑话 | 2 | 中 | slang/query 与 slang/submit 依赖 slangEntries（let + 4 张 Map/Set） |
 
 建议顺序：状态与配置 → 工具侧 → 唤醒与等待 → 黑话 → 发送与媒体。
+
+### Step 3 第二批：状态只读端点（2026-10-29）
+
+新增 `src/routes/socialv2-state-api.mjs`（5 个），全部只读：
+
+```
+GET /api/socialV2/state    GET /api/socialV2/prompt
+GET /api/socialV2/unread   GET /api/socialV2/recent
+GET /api/socialV2/states
+```
+
+**会改状态的 5 个端点故意留着**：config / activity / reset / mark-read / wake-config。
+它们直接操作唤醒配置和读水位，属于状态机核心，不跟只读端点混在一起搬。
+
+`bridge.js` 11056 → 10896 行。
+
+**顺手修了一个既有 bug**：
+
+`/api/socialV2/prompt` 原本调用不存在的 `currentRoleHintV2()`，导致该接口**一直是 500**。
+真实实现是 `roleHintForMode('v2'|'v1', roleName)`（bridge 里本来就有），已改正。
+这次拆分把它暴露了出来——因为拆分后我第一次真正去测这个端点。
+
+**这一批踩的坑（比上一批多，值得记）**：
+
+1. 参数重复：`sendJson` / `readBody` 既在依赖清单里又手写了一遍 → 语法错。
+2. `let` 变量必须用 getter：`currentMode` / `slangEntries` / `stickerEntries` 都会被整体替换，
+   传快照会拿到旧值。这一批补了 3 个 getter。
+3. **多行 import 漏检**：`computeWakeSafetyV2` / `buildSlangContext` / `buildStickerContext` /
+   `buildStickerStrategyHint` 都在 bridge 顶部的多行 `import { … }` 里，
+   依赖扫描只看以 `import` 开头的行，于是全部漏掉。
+   → 教训：**依赖清单要按「import 块」扫描，不能只看首行**。
+
+### 当前进度
+
+| 模块 | 端点数 |
+| --- | --- |
+| `memory-api.mjs` | 4 |
+| `roles-api.mjs` | 9 |
+| `tokens-api.mjs` | 6 |
+| `stickers-api.mjs` | 5 |
+| `socialv2-memory-api.mjs` | 10 |
+| `socialv2-state-api.mjs` | 5 |
+| **合计** | **39** |
+
+`bridge.js`：11955 → 10896 行（-1059）。
+
+### 剩余（按建议顺序）
+
+| 组 | 端点数 | 风险 |
+| --- | --- | --- |
+| 状态写操作 | 5 | 中（config/activity/reset/mark-read/wake-config） |
+| 工具侧 | 10 | 中 |
+| 唤醒与等待 | 3 | 中 |
+| 黑话 | 2 | 中 |
+| 发送与媒体 | 15 | 高 |
