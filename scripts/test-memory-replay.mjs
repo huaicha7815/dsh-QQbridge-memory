@@ -208,3 +208,46 @@ test('L1 已有 id 但 S3 副本缺失 → 补副本而不是 skip', () => {
   assert.equal(countLines(path.join(dir, 'events', `${day(t)}.jsonl`)), 1, '主事件不能重复');
   cleanup(dir);
 });
+
+test('replay 运行期间桥接新增的失败行不能被吞掉', () => {
+  const { dir, store } = freshStore();
+  // 造一条待恢复记录（主事件写失败）
+  fs.rmSync(path.join(dir, 'events'), { recursive: true, force: true });
+  fs.writeFileSync(path.join(dir, 'events'), 'blocked');
+  store.appendEvent({ t: Date.now(), k: 'g:1', kind: 'msg', text: '旧失败', s: 1 });
+  fs.unlinkSync(path.join(dir, 'events'));
+
+  // 模拟桥接在 replay「读清单之后、提交之前」又追加了一条失败记录
+  const r = store.replayWriteFailures({
+    onBeforeCommit: () => {
+      const newRow = { id: `late-${Date.now()}`, t: Date.now(), k: 'g:1', kind: 'msg', text: '期间新增', s: 1 };
+      fs.appendFileSync(
+        path.join(dir, 'write-failures.jsonl'),
+        JSON.stringify({ at: Date.now(), phase: 'event', id: newRow.id, row: newRow, error: 'late' }) + '\n',
+        'utf8',
+      );
+    },
+  });
+  assert.equal(r.replayed, 1, '旧记录应被恢复');
+  const failFile = path.join(dir, 'write-failures.jsonl');
+  assert.ok(fs.existsSync(failFile), '清单不能整个被删——期间新增的行还在');
+  const rest = fs.readFileSync(failFile, 'utf8').trim().split('\n').filter(Boolean);
+  assert.equal(rest.length, 1, '应该只剩期间新增的那 1 条');
+  const kept = JSON.parse(rest[0]);
+  assert.match(kept.row.text, /期间新增/, '保留的必须是新行，不是旧行');
+  cleanup(dir);
+});
+
+test('锁文件损坏不会被当成活锁卡死', () => {
+  const { dir, store } = freshStore();
+  fs.rmSync(path.join(dir, 'events'), { recursive: true, force: true });
+  fs.writeFileSync(path.join(dir, 'events'), 'blocked');
+  store.appendEvent({ t: Date.now(), k: 'g:1', kind: 'msg', text: 'x', s: 1 });
+  fs.unlinkSync(path.join(dir, 'events'));
+  // 坏 JSON 的锁文件（模拟续租时被另一个进程读到坏内容）
+  fs.writeFileSync(path.join(dir, 'write-failures.jsonl.lock'), '{ broken', 'utf8');
+  const r = store.replayWriteFailures();
+  assert.equal(r.locked, undefined, '坏锁应视为过期，可以接管');
+  assert.equal(r.replayed, 1, '应能正常恢复');
+  cleanup(dir);
+});

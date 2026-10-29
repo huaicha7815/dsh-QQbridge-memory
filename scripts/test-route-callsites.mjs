@@ -84,9 +84,19 @@ test('bridge 调用点传齐了所有 routes 模块声明的参数', () => {
     const missing = info.params.filter((p) => !passed.has(p) && !OPTIONAL.has(p));
     if (missing.length) problems.push(`${file}: bridge 漏传 → ${missing.join(', ')}`);
     // 值也不能是 undefined/null：键在但值是空的，等同漏传。
+    // 值必须是「能用的东西」：标识符 / 函数表达式 / 对象或数组字面量。
+    // 之前只认字面量 undefined|null，`void 0`、`false`、字符串字面量都能溜过去。
+    const isBadValue = (raw) => {
+      const t = String(raw).trim();
+      if (!t) return true;
+      if (/^(undefined|null|false|true|0)$/.test(t)) return true;
+      if (/^void\s/.test(t)) return true;
+      if (/^[\d'"`]/.test(t)) return true; // 数字 / 字符串字面量
+      return false;
+    };
     const badValues = [...passed.entries()]
-      .filter(([, v]) => /^(undefined|null)$/.test(String(v).trim()))
-      .map(([k]) => k);
+      .filter(([, v]) => isBadValue(v))
+      .map(([k, v]) => `${k}=${String(v).slice(0, 20)}`);
     if (badValues.length) problems.push(`${file}: 传了空值 → ${badValues.join(', ')}`);
   }
   assert.deepEqual(problems, [], `调用点与模块声明不一致:\n${problems.join('\n')}`);

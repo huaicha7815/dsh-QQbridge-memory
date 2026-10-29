@@ -1173,12 +1173,17 @@ export function createMemoryStore(options = {}) {
 
   /** 长任务续租：更新锁文件的 at，避免跑超过 5 分钟被误判为过期。 */
   function renewReplayLock(lockFile, owner) {
+    // 原子续租：先写唯一临时文件再 rename，避免另一个进程在「截断-重写」之间，
+    // 读到坏 JSON 就当成过期锁接管掉。续租前仍要确认 owner 是自己。
+    const tmp = `${lockFile}.renew-${process.pid}-${crypto.randomUUID().slice(0, 6)}`;
     try {
       const info = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
-      if (info && info.owner === owner) {
-        fs.writeFileSync(lockFile, JSON.stringify({ ...info, at: Date.now() }), 'utf8');
-      }
-    } catch { /* 续租失败不影响本轮，只是可能被别人误判过期 */ }
+      if (!info || info.owner !== owner) return;
+      fs.writeFileSync(tmp, JSON.stringify({ ...info, at: Date.now() }), 'utf8');
+      fs.renameSync(tmp, lockFile);
+    } catch {
+      try { fs.unlinkSync(tmp); } catch {}
+    }
   }
 
   /** S3 独立副本里是否已有该 id（判断「是否还缺副本」）。 */
@@ -1200,10 +1205,10 @@ export function createMemoryStore(options = {}) {
    *
    * @param {{dryRun?: boolean}} [options] dryRun=true 只统计不落地（运维先预览）
    */
-  function replayWriteFailures({ dryRun = false } = {}) {
-    const lines = readFailureLines();
-    if (!lines.length) return { replayed: 0, skipped: 0, failed: 0, quarantined: 0, dryRun };
-
+  function replayWriteFailures({ dryRun = false, onBeforeCommit } = {}) {
+    // 关键：清单必须在拿到锁之后再读。
+    // 桥接进程是另一个写者，它会在 replay 运行期间继续 append 失败记录；
+    // 如果锁外读取、最后又整体覆盖清单，那期间新增的记录会被静默吞掉（数据丢失）。
     const lockFile = writeFailFile + '.lock';
     const owner = `${process.pid}-${crypto.randomUUID().slice(0, 8)}`;
     let lockHeld = false;
@@ -1214,15 +1219,21 @@ export function createMemoryStore(options = {}) {
       }
     }
     try {
+      const lines = readFailureLines();
+      if (!lines.length) return { replayed: 0, skipped: 0, failed: 0, quarantined: 0, dryRun };
+      const originalSet = new Set(lines);
       let replayed = 0;
       let skipped = 0;
       let quarantined = 0;
       const remaining = [];
       const bad = [];
-      let processed = 0;
+      let lastRenew = Date.now();
       for (const line of lines) {
-        processed += 1;
-        if (lockHeld && processed % 200 === 0) renewReplayLock(lockFile, owner);
+        // 按时间续租（不是按行数）：单行 IO 慢时也能及时告诉别人「我还活着」。
+        if (lockHeld && Date.now() - lastRenew > 60_000) {
+          renewReplayLock(lockFile, owner);
+          lastRenew = Date.now();
+        }
         let item;
         try { item = JSON.parse(line); } catch { bad.push(line); quarantined += 1; continue; }
         const row = item && item.row;
@@ -1264,11 +1275,17 @@ export function createMemoryStore(options = {}) {
           lastWriteFailure = { at: Date.now(), error: String(error?.message ?? error), phase };
         }
       }
+      if (typeof onBeforeCommit === 'function') onBeforeCommit();
       if (!dryRun) {
         try {
-          if (remaining.length) {
+          // 提交时重新读一遍清单：只移除「这一轮确实处理过」的行，
+          // 期间桥接 append 的新行原样保留（它们在 originalSet 里没有）。
+          const current = readFailureLines();
+          const kept = current.filter((l) => !originalSet.has(l));
+          const merged = [...kept, ...remaining];
+          if (merged.length) {
             const tmp = writeFailFile + '.tmp';
-            fs.writeFileSync(tmp, remaining.join('\n') + '\n', 'utf8');
+            fs.writeFileSync(tmp, merged.join('\n') + '\n', 'utf8');
             fs.renameSync(tmp, writeFailFile);
           } else if (fs.existsSync(writeFailFile)) {
             fs.unlinkSync(writeFailFile);
@@ -1279,7 +1296,7 @@ export function createMemoryStore(options = {}) {
         if (bad.length) {
           try { fs.appendFileSync(writeFailFile + '.quarantine', bad.join('\n') + '\n', 'utf8'); } catch {}
         }
-        writeFailureCount = remaining.length;
+        writeFailureCount = Math.max(0, readFailureLines().length);
       }
       return { replayed, skipped, failed: remaining.length, quarantined, dryRun };
     } finally {

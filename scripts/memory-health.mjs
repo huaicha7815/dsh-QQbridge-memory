@@ -41,6 +41,20 @@ const store = createMemoryStore({ dir: memDir, config: {} });
 const argv = process.argv.slice(2);
 if (argv.includes('--replay')) {
   const apply = argv.includes('--apply');
+  // 桥接本身也是失败清单的写者：它在跑的时候 replay 可能和它抢同一份清单。
+  // （清单提交已改成「只删处理过的行」，不会吞新行，但停写窗口仍然更安全。）
+  if (apply) {
+    let bridgeRunning = false;
+    try {
+      const lockFile = path.join(root, 'state', 'bridge.lock');
+      const lock = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
+      if (lock && lock.pid) { process.kill(Number(lock.pid), 0); bridgeRunning = true; }
+    } catch { /* 锁不存在或进程不在，视为没在跑 */ }
+    if (bridgeRunning) {
+      console.warn('⚠️ 桥接似乎正在运行：建议先停桥接再 --apply，避免恢复期间它继续写失败清单。');
+      console.warn('   （不强制阻止：清单提交只删本轮处理过的行，不会吞新行，但停写窗口更稳。）');
+    }
+  }
   const result = store.replayWriteFailures({ dryRun: !apply });
   console.log(JSON.stringify(result, null, 2));
   if (!apply) {
