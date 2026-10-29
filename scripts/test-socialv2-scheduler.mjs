@@ -81,6 +81,7 @@ function makeEnv(over = {}) {
   env.setBusy = (v) => { busy = v; };
   env.scheduler = createScheduler({
     getState,
+    peekState: (key) => states.get(key),
     save: () => {},
     cfg,
     isAllowed: () => true,
@@ -241,4 +242,14 @@ test('所有定时器都 unref（不阻止进程退出）', () => {
   for (const timer of env.clock.live()) {
     assert.equal(timer.hasRef(), false, '定时器必须 unref，否则进程退不出');
   }
+});
+
+test('取消不存在的会话：不创建状态（避免凭空造出空会话）', () => {
+  const env = makeEnv();
+  const before = env.states.size;
+  env.scheduler.cancelTimers('group:never-existed');
+  env.scheduler.cancelReply('group:never-existed');
+  assert.equal(env.states.size, before, 'peekState 不应创建会话');
+  assert.equal(env.scheduler.pendingInfo('group:never-existed'), null);
+  assert.equal(env.states.size, before, 'pendingInfo 也不该创建');
 });

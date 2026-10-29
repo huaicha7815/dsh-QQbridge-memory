@@ -26,7 +26,8 @@ const defaultClearTimer = (timer) => clearTimeout(timer);
 
 /**
  * @param {object} deps
- * @param {(key: string) => object} deps.getState  取会话状态（自动建缺省）
+ * @param {(key: string) => object} deps.getState  取会话状态（不存在时创建缺省）
+ * @param {(key: string) => object|undefined} [deps.peekState] 只读查询（不存在时返回 undefined，**不创建**）
  * @param {() => void} deps.save                   落盘
  * @param {object} deps.cfg                        配置对象（引用，属性会变）
  * @param {(key: string) => boolean} deps.isAllowed 当前模式是否允许该会话
@@ -42,6 +43,7 @@ const defaultClearTimer = (timer) => clearTimeout(timer);
  */
 export function createScheduler({
   getState,
+  peekState,
   save,
   cfg,
   isAllowed = () => true,
@@ -55,6 +57,10 @@ export function createScheduler({
   setTimer = defaultSetTimer,
   clearTimer = defaultClearTimer,
 } = {}) {
+  // 取消/查询类操作不能创建会话状态：否则一次「取消一个不存在的会话」
+  // 就会凭空造出一条空会话并落盘。默认回退到 getState 只为兼容，调用方应传 peekState。
+  const peek = peekState || getState;
+
   // ── 公共：把「会话繁忙时的唤醒」暂存起来，并挂一次看门狗 ──
   function stashBusyWake(key, reason, st = getState(key)) {
     if (!Array.isArray(st.pendingWakeReasons)) st.pendingWakeReasons = [];
@@ -189,7 +195,7 @@ export function createScheduler({
   }
 
   function cancelReply(key) {
-    const st = getState(key);
+    const st = peek(key);
     if (!st || !st.replyCheckTimer) return;
     clearTimer(st.replyCheckTimer);
     st.replyCheckTimer = null;
@@ -198,7 +204,8 @@ export function createScheduler({
   /** 统一取消该会话的全部定时器（唤醒/睡眠/回复检查/看门狗）。 */
   function cancelTimers(key) {
     let st;
-    try { st = getState(key); } catch { return; }
+    try { st = peek(key); } catch { return; }
+    if (!st) return;
     for (const field of ['pendingWakeTimer', 'sleepTimer', 'replyCheckTimer', 'pendingWakeWatchdog']) {
       if (st[field]) {
         clearTimer(st[field]);
@@ -210,7 +217,8 @@ export function createScheduler({
   /** 给控制台/诊断用：当前有哪些待触发。 */
   function pendingInfo(key) {
     let st;
-    try { st = getState(key); } catch { return null; }
+    try { st = peek(key); } catch { return null; }
+    if (!st) return null;
     return {
       wake: Boolean(st.pendingWakeTimer),
       sleep: Boolean(st.sleepTimer),

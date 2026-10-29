@@ -344,3 +344,53 @@ core 模块       8 个（新增 scheduler / prompt）
 routes 模块     10 个 / 78 个端点
 每日自检        9 个套件（新增 12+6+4 项 socialV2 单测）
 ```
+
+---
+
+## 12. 全面体检（2026-10-29）
+
+拆分完成后做了一次系统性检查，**发现并修复了 2 个自己引入的真 bug**，外加若干清理。
+
+### 修掉的真 bug
+
+**bug 1：取消定时器会凭空创建会话状态**
+
+旧 `cancelReplyCheckV2` 用 `socialV2.conversations.get(key)`（不存在就返回 undefined）；
+新调度器的 `cancelReply` 用了 `getState(key)`，而它会**创建缺省会话**。
+结果：对任何不存在的 key 取消定时器，都会造出一条空会话并落盘。
+
+修法：调度器加 `peekState`（只读、不创建），取消/查询类操作改用它；
+并补了一条单测：「取消不存在的会话不应创建状态」。
+
+**bug 2：初始化顺序导致的 TDZ 崩溃（两处）**
+
+`sendWakePromptV2` 在启动流程第 6740 行被 `await`（greeting 打招呼），
+但它依赖的 `scheduler`（原在 7189）和 `wakePromptBuilder`（原在 7100）在这之后才初始化。
+那天没崩只是因为「距上次打招呼不到 5 小时」被跳过了——**一旦真到需要打招呼的时刻就会 ReferenceError**。
+
+修法：把 `scheduler` 前移到 `saveSocialV2State` 之后（5474），
+`wakePromptBuilder` 前移到 `memoryStore` 之后（5555），都早于第一次调用。
+
+### 检查过但没问题的项
+
+| 检查 | 方法 | 结果 |
+| --- | --- | --- |
+| 路由模块依赖注入 | 逐模块对比声明参数 vs bridge 传入 | 10 个模块全部一致 |
+| 58 个端点的安全校验 | 与拆分前逐端点对比 agentTokenOk / v2SessionAllowed / v2ToolEnabled / 状态码数量 | 49 个 socialV2 端点仅 2 处切块误报 |
+| 提示词内容 | 与拆分前逐条比对字符串字面量 | 103 条**完全一致**（一个字没改） |
+| 重复函数定义 | 扫描同名 function | 无 |
+| 同步 TDZ | 检查 main 内 93 个 const 的初始化表达式 | 无 |
+| 数据完好 | 4 个会话字段数 / 定时器泄漏 / 档案 / 事件流 | 21 字段、无定时器泄漏、档案与 2618 条事件正常 |
+| 运行时 | 13 个端点 + 日志 300 行 | 全 200；日志只有 SnowLuma 启动瞬间的重连（正常） |
+
+### 顺手清理
+
+- 4 个死 import（`wakePriorityV2` / `TIME_BASED_WAKE_V2` / `formatDuration` / `hasExplicitEnd`）
+- 1 个死包装（`hasExplicitEndV2`，搬完后没人调用）
+- `docs/ROUTES.md` 重新生成（之前已过期）
+
+### 一个方法论收获
+
+「搬家式重构」最危险的 bug 不是逻辑写错，而是**搬家引入的时序与副作用差异**：
+取状态变成了创建状态、初始化顺序倒置。**这两类问题单测都测不出来**，
+只有「对比旧实现」和「静态检查顺序」才能发现。

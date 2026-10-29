@@ -27,7 +27,7 @@ import { SENSITIVE_RE } from './sensitive.js';
 import { looksLikeUnfinished } from './v2-wait.js';
 import { compactModelMessage } from './qq-model-view.js';
 import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
-import { AUDIO_EXTS, cleanupTemp, describeAudio, formatBytes, formatDuration, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
+import { AUDIO_EXTS, cleanupTemp, describeAudio, formatBytes, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
 import { hardenDir, manualDirCommand } from './state-acl.mjs';
 import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardResponse } from './forward.js';
@@ -64,8 +64,8 @@ import { createScheduler } from './core/socialv2-scheduler.mjs';
 import { createWakePromptBuilder } from './core/socialv2-prompt.mjs';
 import {
   computeWakeSafetyV2, evaluateWakeTriggerV2 as evaluateWakeTriggerV2Core,
-  hasExplicitEnd, isSleepingConfig, preSleepWaitBlocked,
-  isDirectedAtAi, isTimeBasedWakeV2, isWakeableV2, wakePriorityV2, WAKE_PRIORITY, TIME_BASED_WAKE_V2,
+  isSleepingConfig, preSleepWaitBlocked,
+  isDirectedAtAi, isTimeBasedWakeV2, isWakeableV2, WAKE_PRIORITY,
 } from './core/socialv2-wake.mjs';
 import { auditProfile, buildInjection, buildMemoryGraph, buildMemoryUniverse, groupSelfNotes, mergePersonFact, mergeSelfNote, mergeThread, profileDigestForRefine, threadClosureHints, verifyMemoryClaim } from './core/memory-lib.mjs';
 import { handleMemoryApiRequest } from './routes/memory-api.mjs';
@@ -5299,7 +5299,6 @@ async function main() {
   // 只有 confirmedBy === 'default' 的会话才会被刷新；AI 或管理员显式设置过的（set_wake_config / mark_read）不会被覆盖。
   // 睡眠/默认配置判定已并入 core（socialv2-wake / socialv2-store），这里只做薄包装。
   const refreshDefaultWakeConfigV2 = (st) => refreshDefaultWakeConfig(st, cfg.socialV2?.wake);
-  const hasExplicitEndV2 = (st) => hasExplicitEnd(st);
   const isSleepingConfigV2 = (wc) => isSleepingConfig(wc);
   const preSleepWaitBlockedV2 = (st) => preSleepWaitBlocked(st, cfg.socialV2?.wake, Date.now());
 
@@ -5469,6 +5468,29 @@ async function main() {
     }
   }
 
+  // ── 定时器调度（已抽到 src/core/socialv2-scheduler.mjs）─────────────────
+  // 时钟与定时器全部可注入：测试推进假时钟就能验证「5 分钟后看门狗解卡」。
+  // 调度策略保持原值（合并窗口、看门狗阈值、回复检查规则都没动）。
+  const scheduler = createScheduler({
+    getState: (key) => getSocialV2State(key),
+    save: () => saveSocialV2State(),
+    cfg,
+    isAllowed: (key) => isSessionAllowedInCurrentMode(key),
+    isPaused: () => socialV2.paused,
+    isBusy: (key, st) => isConversationBusyV2(key, st),
+    onWake: (key, reason) => sendWakePromptV2(key, reason),
+    onUnstick: (key) => {
+      // 看门狗判定会话被卡住时清掉泄漏的 busy 标志（原逻辑在调度器里，动作留在这里）
+      const stuckSid = state.sessions[key];
+      if (stuckSid) { v2TurnStartAt.delete(stuckSid); collectors.delete(stuckSid); }
+      const stuckQ = promptQueues.get(key);
+      if (stuckQ) { stuckQ.running = false; if (Array.isArray(stuckQ.queue)) stuckQ.queue.length = 0; }
+      pendingWakeKeys.delete(key);
+    },
+    appendActivity,
+    log,
+  });
+
   function formatParticipationV2(st) {
     if (!st) return '';
     const now = Date.now();
@@ -5528,6 +5550,25 @@ async function main() {
   // 历史全量落盘、只按当下检索，注入有硬字符预算。
   // ---------------------------------------------------------------------------
   const memoryStore = createMemoryStore({ dir: MEMORY_DIR, config: cfg.socialV2?.memory ?? {} });
+
+  // 提示词组装已抽到 core/socialv2-prompt.mjs（纯读 + 拼字符串，可单测）
+  const wakePromptBuilder = createWakePromptBuilder({
+    getState: (key) => getSocialV2State(key),
+    // 只读查询用：不存在的会话不创建（否则取消定时器会凭空造出空会话）
+    peekState: (key) => socialV2.conversations.get(key),
+    cfg,
+    formatMemoryInjectionV3, formatParticipationV2, readThroughSeqV2,
+    suggestQuietMsV2, v2ToolEnabled, wakeRoleLineV2,
+    buildStickerContext, buildStickerStrategyHint, compactModelMessage, looksLikeUnfinished,
+    buildDiaryDigestV2, profileDigestForRefine, threadClosureHints,
+    stickerEntries: () => stickerEntries,
+    memoryStore,
+  });
+  function replyTimingV2(st) { return wakePromptBuilder.replyTimingV2(st); }
+  function buildWakeSnapshotV2(key) { return wakePromptBuilder.buildWakeSnapshot(key); }
+  function buildWakePromptV2(key, reason) { return wakePromptBuilder.buildWakePrompt(key, reason); }
+  function buildWakeReminderPromptV2(key) { return wakePromptBuilder.buildWakeReminderPrompt(key); }
+
 
   /** 把一条事实追加进事件流。永不注入，只供检索；失败不影响主流程。 */
   function archiveMemoryEventV3(entry) {
@@ -7075,22 +7116,6 @@ async function main() {
     return before - st.unread.length;
   }
 
-  // 提示词组装已抽到 core/socialv2-prompt.mjs（纯读 + 拼字符串，可单测）
-  const wakePromptBuilder = createWakePromptBuilder({
-    getState: (key) => getSocialV2State(key),
-    cfg,
-    formatMemoryInjectionV3, formatParticipationV2, readThroughSeqV2,
-    suggestQuietMsV2, v2ToolEnabled, wakeRoleLineV2,
-    buildStickerContext, buildStickerStrategyHint, compactModelMessage, looksLikeUnfinished,
-    buildDiaryDigestV2, profileDigestForRefine, threadClosureHints,
-    stickerEntries: () => stickerEntries,
-    memoryStore,
-  });
-  function replyTimingV2(st) { return wakePromptBuilder.replyTimingV2(st); }
-  function buildWakeSnapshotV2(key) { return wakePromptBuilder.buildWakeSnapshot(key); }
-  function buildWakePromptV2(key, reason) { return wakePromptBuilder.buildWakePrompt(key, reason); }
-  function buildWakeReminderPromptV2(key) { return wakePromptBuilder.buildWakeReminderPrompt(key); }
-
   async function sendWakePromptV2(key, reason) {
     if (cfg.socialV2?.enabled === false) return;
     if (currentMode !== 'reserved2' || socialV2.paused) return;
@@ -7185,28 +7210,6 @@ async function main() {
     }
   }
 
-  // ── 定时器调度（已抽到 src/core/socialv2-scheduler.mjs）─────────────────
-  // 时钟与定时器全部可注入：测试推进假时钟就能验证「5 分钟后看门狗解卡」。
-  // 调度策略保持原值（合并窗口、看门狗阈值、回复检查规则都没动）。
-  const scheduler = createScheduler({
-    getState: (key) => getSocialV2State(key),
-    save: () => saveSocialV2State(),
-    cfg,
-    isAllowed: (key) => isSessionAllowedInCurrentMode(key),
-    isPaused: () => socialV2.paused,
-    isBusy: (key, st) => isConversationBusyV2(key, st),
-    onWake: (key, reason) => sendWakePromptV2(key, reason),
-    onUnstick: (key) => {
-      // 看门狗判定会话被卡住时清掉泄漏的 busy 标志（原逻辑在调度器里，动作留在这里）
-      const stuckSid = state.sessions[key];
-      if (stuckSid) { v2TurnStartAt.delete(stuckSid); collectors.delete(stuckSid); }
-      const stuckQ = promptQueues.get(key);
-      if (stuckQ) { stuckQ.running = false; if (Array.isArray(stuckQ.queue)) stuckQ.queue.length = 0; }
-      pendingWakeKeys.delete(key);
-    },
-    appendActivity,
-    log,
-  });
   function scheduleWakeV2(key, reason) { return scheduler.scheduleWake(key, reason); }
   function setupSleepTimerV2(key) { return scheduler.setupSleepTimer(key); }
   function scheduleReplyCheckV2(key) {

@@ -44,11 +44,11 @@
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| ANY | `/api/socialV2/*` | 暂停二代 AI 时，所有带 agent token 的 v2 工具调用一律拒绝 | src/bridge.js:3099 |
-| ANY | `/api/socialV2/*` | 二代模式总开关：关闭后 agent token 调用的 v2 工具全部拒绝（控制台仍可管理） | src/bridge.js:3104 |
-| ANY | `/api/socialV2/*` | 模式隔离：带 agent token 的 v2 接口只允许在 reserved2 模式下使用 | src/bridge.js:3109 |
-| ANY | `/api/socialV2/feedback` | — | src/bridge.js:3115 |
-| ANY | `/api/socialV2/*` | — | src/bridge.js:3129 |
+| ANY | `/api/socialV2/*` | 暂停二代 AI 时，所有带 agent token 的 v2 工具调用一律拒绝 | src/bridge.js:3101 |
+| ANY | `/api/socialV2/*` | 二代模式总开关：关闭后 agent token 调用的 v2 工具全部拒绝（控制台仍可管理） | src/bridge.js:3106 |
+| ANY | `/api/socialV2/*` | 模式隔离：带 agent token 的 v2 接口只允许在 reserved2 模式下使用 | src/bridge.js:3111 |
+| ANY | `/api/socialV2/feedback` | — | src/bridge.js:3117 |
+| ANY | `/api/socialV2/*` | — | src/bridge.js:3131 |
 | GET | `/api/socialV2/config` | — | src/routes/socialv2-control-api.mjs:12 |
 | POST | `/api/socialV2/config` | — | src/routes/socialv2-control-api.mjs:16 |
 | GET | `/api/socialV2/activity` | — | src/routes/socialv2-control-api.mjs:182 |
@@ -107,15 +107,15 @@
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| GET | `/api/slang` | ── 黑话库管理 ─────────────────────────────────────────────────── | src/bridge.js:3332 |
-| POST | `/api/slang` | — | src/bridge.js:3338 |
-| POST | `/api/slang/clear` | — | src/bridge.js:3360 |
-| POST | `/api/slang/batch-delete` | — | src/bridge.js:3385 |
-| POST | `/api/slang/batch-confirm` | — | src/bridge.js:3412 |
-| POST | `/api/slang/batch-reject` | — | src/bridge.js:3434 |
-| POST | `/api/slang/extract` | — | src/bridge.js:3523 |
-| POST | `/api/slang/research` | — | src/bridge.js:3538 |
-| POST | `/api/slang/config` | — | src/bridge.js:3550 |
+| GET | `/api/slang` | ── 黑话库管理 ─────────────────────────────────────────────────── | src/bridge.js:3334 |
+| POST | `/api/slang` | — | src/bridge.js:3340 |
+| POST | `/api/slang/clear` | — | src/bridge.js:3362 |
+| POST | `/api/slang/batch-delete` | — | src/bridge.js:3387 |
+| POST | `/api/slang/batch-confirm` | — | src/bridge.js:3414 |
+| POST | `/api/slang/batch-reject` | — | src/bridge.js:3436 |
+| POST | `/api/slang/extract` | — | src/bridge.js:3525 |
+| POST | `/api/slang/research` | — | src/bridge.js:3540 |
+| POST | `/api/slang/config` | — | src/bridge.js:3552 |
 
 ## api/roles
 
@@ -144,7 +144,7 @@
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| ANY | `/api/stickers` | 表情库管理接口只允许控制台（带 agent token 的 v2 工具一律拒绝，防止越权改库） | src/bridge.js:3120 |
+| ANY | `/api/stickers` | 表情库管理接口只允许控制台（带 agent token 的 v2 工具一律拒绝，防止越权改库） | src/bridge.js:3122 |
 | GET | `/api/stickers` | 管理端表情库接口（控制台） | src/routes/stickers-api.mjs:15 |
 | POST | `/api/stickers/sync` | — | src/routes/stickers-api.mjs:29 |
 | POST | `/api/stickers/note` | — | src/routes/stickers-api.mjs:38 |
@@ -154,29 +154,29 @@
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| ANY | `/api/send/*` | — | src/bridge.js:3130 |
-| ANY | `/api/send/group` | ── 统一发送端点（MCP 旧发送工具也走这里） ─────────────────────────── | src/bridge.js:4103 |
-| ANY | `/api/send/private` | — | src/bridge.js:4106 |
-| ANY | `/api/send/reply` | — | src/bridge.js:4107 |
+| ANY | `/api/send/*` | — | src/bridge.js:3132 |
+| ANY | `/api/send/group` | ── 统一发送端点（MCP 旧发送工具也走这里） ─────────────────────────── | src/bridge.js:4105 |
+| ANY | `/api/send/private` | — | src/bridge.js:4108 |
+| ANY | `/api/send/reply` | — | src/bridge.js:4109 |
 | ANY | `/api/send/voice` | 避免 AI 借用操作者通道绕过「只能发自己会话」的限制 | src/routes/socialv2-send-api.mjs:571 |
 
 ## api/preset
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| GET | `/api/preset/sim-prompt` | ── 仿真提示词（一代 / 二代各自的预设内置提示词）────────────────────── | src/bridge.js:3223 |
-| POST | `/api/preset/sim-prompt` | — | src/bridge.js:3241 |
-| GET | `/api/preset/sim-prompt/backups` | — | src/bridge.js:3290 |
-| POST | `/api/preset/sim-prompt/restore` | — | src/bridge.js:3298 |
+| GET | `/api/preset/sim-prompt` | ── 仿真提示词（一代 / 二代各自的预设内置提示词）────────────────────── | src/bridge.js:3225 |
+| POST | `/api/preset/sim-prompt` | — | src/bridge.js:3243 |
+| GET | `/api/preset/sim-prompt/backups` | — | src/bridge.js:3292 |
+| POST | `/api/preset/sim-prompt/restore` | — | src/bridge.js:3300 |
 
 ## api/social
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| POST | `/api/social/state` | — | src/bridge.js:3812 |
-| GET | `/api/social` | ── 仿真群友模式（社交引擎）配置 ────────────────────────────────────── | src/bridge.js:3832 |
-| POST | `/api/social` | — | src/bridge.js:3844 |
-| POST | `/api/social/flush` | — | src/bridge.js:3890 |
+| POST | `/api/social/state` | — | src/bridge.js:3814 |
+| GET | `/api/social` | ── 仿真群友模式（社交引擎）配置 ────────────────────────────────────── | src/bridge.js:3834 |
+| POST | `/api/social` | — | src/bridge.js:3846 |
+| POST | `/api/social/flush` | — | src/bridge.js:3892 |
 
 ## api/memory
 
@@ -191,57 +191,57 @@
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| GET | `/` | — | src/bridge.js:3048 |
-| GET | `/` | — | src/bridge.js:3138 |
+| GET | `/` | — | src/bridge.js:3050 |
+| GET | `/` | — | src/bridge.js:3140 |
 
 ## api/status
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| ANY | `/api/status` | — | src/bridge.js:3128 |
-| GET | `/api/status` | — | src/bridge.js:3147 |
+| ANY | `/api/status` | — | src/bridge.js:3130 |
+| GET | `/api/status` | — | src/bridge.js:3149 |
 
 ## api/images
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| ANY | `/api/images/*` | — | src/bridge.js:3131 |
-| GET | `/api/images/message` | ── 图片/表情查询端点（MCP qq_get_message_images 走这里） ──────────── | src/bridge.js:4054 |
+| ANY | `/api/images/*` | — | src/bridge.js:3133 |
+| GET | `/api/images/message` | ── 图片/表情查询端点（MCP qq_get_message_images 走这里） ──────────── | src/bridge.js:4056 |
 
 ## api/authorize
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| ANY | `/api/authorize/read` | — | src/bridge.js:3132 |
-| POST | `/api/authorize/read` | ── 二代黑话学习（reserved2）：AI 查询/提交黑话候选 ───────────────── | src/bridge.js:4031 |
+| ANY | `/api/authorize/read` | — | src/bridge.js:3134 |
+| POST | `/api/authorize/read` | ── 二代黑话学习（reserved2）：AI 查询/提交黑话候选 ───────────────── | src/bridge.js:4033 |
 
 ## api/whitelist
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| GET | `/api/whitelist` | ── 白名单可视化编辑（写 config.json + 热更新内存） ─────────────────── | src/bridge.js:3611 |
-| POST | `/api/whitelist` | — | src/bridge.js:3615 |
+| GET | `/api/whitelist` | ── 白名单可视化编辑（写 config.json + 热更新内存） ─────────────────── | src/bridge.js:3613 |
+| POST | `/api/whitelist` | — | src/bridge.js:3617 |
 
 ## api/dsh
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| GET | `/api/dsh/model` | ── DSH 模型与思考强度 ───────────────────────────────────────────── | src/bridge.js:3653 |
-| POST | `/api/dsh/effort` | — | src/bridge.js:3700 |
+| GET | `/api/dsh/model` | ── DSH 模型与思考强度 ───────────────────────────────────────────── | src/bridge.js:3655 |
+| POST | `/api/dsh/effort` | — | src/bridge.js:3702 |
 
 ## api/security
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| GET | `/api/security` | ── 安全拦截通知设置 ──────────────────────────────────────────────── | src/bridge.js:3719 |
-| POST | `/api/security` | — | src/bridge.js:3736 |
+| GET | `/api/security` | ── 安全拦截通知设置 ──────────────────────────────────────────────── | src/bridge.js:3721 |
+| POST | `/api/security` | — | src/bridge.js:3738 |
 
 ## api/console
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| POST | `/api/console/token` | ── 控制台访问令牌（可手动修改/生成随机） ───────────────────────────── | src/bridge.js:3758 |
-| POST | `/api/console/notify-ai` | ── 后台控制端引导：向指定会话的 DSH agent 投递提醒 ────────────────── | src/bridge.js:3897 |
+| POST | `/api/console/token` | ── 控制台访问令牌（可手动修改/生成随机） ───────────────────────────── | src/bridge.js:3760 |
+| POST | `/api/console/notify-ai` | ── 后台控制端引导：向指定会话的 DSH agent 投递提醒 ────────────────── | src/bridge.js:3899 |
 
 ## api/role-map
 
@@ -254,55 +254,55 @@
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| ANY | `/favicon.ico` | 真实服务端此前与自己的 fixture 行为不一致）。这里在任何鉴权之前直接 204 收掉 | src/bridge.js:3017 |
+| ANY | `/favicon.ico` | 真实服务端此前与自己的 fixture 行为不一致）。这里在任何鉴权之前直接 204 收掉 | src/bridge.js:3019 |
 
 ## api/presets
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| GET | `/api/presets` | — | src/bridge.js:3181 |
+| GET | `/api/presets` | — | src/bridge.js:3183 |
 
 ## api/mode
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| POST | `/api/mode` | — | src/bridge.js:3190 |
+| POST | `/api/mode` | — | src/bridge.js:3192 |
 
 ## api/sessions
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| GET | `/api/sessions` | ── 会话查看 ──────────────────────────────────────────────────── | src/bridge.js:3587 |
+| GET | `/api/sessions` | ── 会话查看 ──────────────────────────────────────────────────── | src/bridge.js:3589 |
 
 ## api/pending
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| GET | `/api/pending` | ── 挂起审批 / 提问 ─────────────────────────────────────────────── | src/bridge.js:3596 |
+| GET | `/api/pending` | ── 挂起审批 / 提问 ─────────────────────────────────────────────── | src/bridge.js:3598 |
 
 ## api/test-send
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| POST | `/api/test-send` | ── 测试发送消息（强制走白名单校验） ─────────────────────────────────── | src/bridge.js:3790 |
+| POST | `/api/test-send` | ── 测试发送消息（强制走白名单校验） ─────────────────────────────────── | src/bridge.js:3792 |
 
 ## api/session
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| POST | `/api/session/reset` | ── 清除上下文 / 清空工作区 ────────────────────────────────────────── | src/bridge.js:4210 |
+| POST | `/api/session/reset` | ── 清除上下文 / 清空工作区 ────────────────────────────────────────── | src/bridge.js:4212 |
 
 ## api/workspace
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| POST | `/api/workspace/reset` | — | src/bridge.js:4268 |
+| POST | `/api/workspace/reset` | — | src/bridge.js:4270 |
 
 ## api/restart
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| POST | `/api/restart` | ── 重启桥接（守护模式下 5 秒后自动拉起） ────────────────────────────── | src/bridge.js:4335 |
+| POST | `/api/restart` | ── 重启桥接（守护模式下 5 秒后自动拉起） ────────────────────────────── | src/bridge.js:4337 |
 
 ## api/role
 
