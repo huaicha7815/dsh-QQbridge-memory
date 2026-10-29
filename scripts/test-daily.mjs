@@ -46,6 +46,11 @@ const suite = [
     expect: 0,
   },
   {
+    name: 'socialV2 调度器（假时钟）',
+    args: ['--test', 'scripts/test-socialv2-scheduler.mjs'],
+    expect: 0,
+  },
+  {
     name: '记忆库端到端',
     args: ['--test', 'scripts/test-memory-e2e.mjs'],
     expect: 0,

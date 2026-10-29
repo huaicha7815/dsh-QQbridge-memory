@@ -60,6 +60,7 @@ import {
 } from './sticker-lib.js';
 import { createMemoryStore } from './core/memory-store.mjs';
 import { canonicalV2Key, createConversationStateV2, defaultWakeConfigV2, hydrateConversationStateV2, normalizeSpeakerIdsV2, serializeSocialV2 } from './core/socialv2-store.mjs';
+import { createScheduler } from './core/socialv2-scheduler.mjs';
 import {
   computeWakeSafetyV2, evaluateWakeTriggerV2 as evaluateWakeTriggerV2Core,
   isDirectedAtAi, isTimeBasedWakeV2, isWakeableV2, wakePriorityV2, WAKE_PRIORITY, TIME_BASED_WAKE_V2,
@@ -7335,43 +7336,8 @@ async function main() {
     // 防重入：如果该会话已经有一个 DSH turn 在进行中（AI 正在思考/调用工具），
     // 或已有排队/在途 prompt，则不再投递新的候选唤醒，避免“思维链进行中又塞入一个 question 唤醒”。
     if (isConversationBusyV2(key, st)) {
-      if (!Array.isArray(st.pendingWakeReasons)) st.pendingWakeReasons = [];
-      const seq = st.lastUnreadSeq || 0;
-      if (!st.pendingWakeReasons.some((r) => r && r.reason === reason && r.seq === seq)) {
-        st.pendingWakeReasons.push({ reason, seq });
-        // 有界队列：最多保留 20 条，防止消息洪峰下无限增长。
-        if (st.pendingWakeReasons.length > 20) st.pendingWakeReasons.splice(0, st.pendingWakeReasons.length - 20);
-      }
-      // 看门狗：暂存的唤醒只在「下一个回合结束」时才会被处理。若那个回合根本不存在
-      // （busy 标志被残留下来 —— 2026-10-06 17:50 那次的根因），队列就永远等不到人来清，
-      // 群会静默哑掉。这里挂一次兜底：5 分钟后队列还在、且 unread 里确实还有对应消息，
-      // 就认定会话卡住，强制清掉那些泄漏的 busy 标志并补发一次唤醒。
-      if (!st.pendingWakeWatchdog) {
-        const watchdogMs = 5 * 60 * 1000;
-        st.pendingWakeWatchdog = setTimeout(() => {
-          st.pendingWakeWatchdog = null;
-          const pend = Array.isArray(st.pendingWakeReasons) ? st.pendingWakeReasons : [];
-          if (!pend.length) return;
-          const oldest = pend[0] && typeof pend[0] === 'object' ? pend[0] : null;
-          if (!oldest) { st.pendingWakeReasons = []; saveSocialV2State(); return; }
-          const stillRelevant = isTimeBasedWakeV2(oldest.reason)
-            || (Array.isArray(st.unread) && st.unread.some((m) => m && Number(m.seq) >= Number(oldest.seq)));
-          if (!stillRelevant) { st.pendingWakeReasons = []; saveSocialV2State(); return; }
-          log(`⚠️ ${key} 暂存唤醒积压 5 分钟仍未处理（${oldest.reason}@seq${oldest.seq}），判定会话被卡住：强制清 busy 标志并补发`);
-          appendActivity(`${key} 暂存唤醒积压超时，强制解卡并补发`);
-          const stuckSid = state.sessions[key];
-          if (stuckSid) { v2TurnStartAt.delete(stuckSid); collectors.delete(stuckSid); }
-          const stuckQ = promptQueues.get(key);
-          if (stuckQ) { stuckQ.running = false; if (Array.isArray(stuckQ.queue)) stuckQ.queue.length = 0; }
-          pendingWakeKeys.delete(key);
-          st.pendingWakeReasons = [];
-          saveSocialV2State();
-          scheduleWakeV2(key, oldest.reason);
-        }, watchdogMs);
-        st.pendingWakeWatchdog.unref?.();
-        void watchdogMs;
-      }
-      log(`[reserved2] 会话繁忙，暂存唤醒原因 ${key}（${reason}@seq${seq}）`);
+      // 暂存 + 5 分钟看门狗统一由调度器处理（以前这里复制了一份）
+      scheduler.stashBusyWake(key, reason, st);
       return;
     }
     // 唤醒频率硬限制：超限则跳过本次唤醒，避免成本失控
@@ -7451,32 +7417,37 @@ async function main() {
     }
   }
 
-  function cancelReplyCheckV2(key) {
-    const st = socialV2.conversations.get(key);
-    if (!st || !st.replyCheckTimer) return;
-    clearTimeout(st.replyCheckTimer);
-    st.replyCheckTimer = null;
-  }
-
+  // ── 定时器调度（已抽到 src/core/socialv2-scheduler.mjs）─────────────────
+  // 时钟与定时器全部可注入：测试推进假时钟就能验证「5 分钟后看门狗解卡」。
+  // 调度策略保持原值（合并窗口、看门狗阈值、回复检查规则都没动）。
+  const scheduler = createScheduler({
+    getState: (key) => getSocialV2State(key),
+    save: () => saveSocialV2State(),
+    cfg,
+    isAllowed: (key) => isSessionAllowedInCurrentMode(key),
+    isPaused: () => socialV2.paused,
+    isBusy: (key, st) => isConversationBusyV2(key, st),
+    onWake: (key, reason) => sendWakePromptV2(key, reason),
+    onUnstick: (key) => {
+      // 看门狗判定会话被卡住时清掉泄漏的 busy 标志（原逻辑在调度器里，动作留在这里）
+      const stuckSid = state.sessions[key];
+      if (stuckSid) { v2TurnStartAt.delete(stuckSid); collectors.delete(stuckSid); }
+      const stuckQ = promptQueues.get(key);
+      if (stuckQ) { stuckQ.running = false; if (Array.isArray(stuckQ.queue)) stuckQ.queue.length = 0; }
+      pendingWakeKeys.delete(key);
+    },
+    appendActivity,
+    log,
+  });
+  function scheduleWakeV2(key, reason) { return scheduler.scheduleWake(key, reason); }
+  function setupSleepTimerV2(key) { return scheduler.setupSleepTimer(key); }
   function scheduleReplyCheckV2(key) {
-    if (cfg.socialV2?.enabled === false) return;
-    if (socialV2.paused || currentMode !== 'reserved2') return;
-    const st = getSocialV2State(key);
-    // 已有真实唤醒/有限睡眠/回复检查在排队时不再重复安排，避免 AI 被连环唤醒。
-    if (st.pendingWakeTimer || st.sleepTimer || st.replyCheckTimer) return;
-    let delay = Math.max(1000, Number(cfg.socialV2?.autoReplyCheckMs) || 30000);
-    const recent = Array.isArray(st.recentMessages) ? st.recentMessages : [];
-    const recentSelf = recent.filter((m) => m && m.isSelf && Date.now() - Number(m.time || 0) < 15000);
-    const askedQuestion = recentSelf.some((m) => /[?？吗呢怎么有没有能不能]/.test(String(m.text || m.plain || '')));
-    if (askedQuestion) delay = Math.round(delay * 1.5);
-    if (recentSelf.length >= 3) delay = Math.round(delay * 1.3);
-    st.replyCheckTimer = setTimeout(() => {
-      st.replyCheckTimer = null;
-      void sendWakePromptV2(key, 'replyCheck').catch((error) => log(`[reserved2] replyCheck 唤醒异常 ${key}:`, error?.message ?? error));
-    }, delay);
-    st.replyCheckTimer.unref?.();
-    log(`[reserved2] 已安排回复检查唤醒 ${key}，${Math.round(delay / 1000)}s 后检查`);
+    // 回复检查只在二代仿真模式跑（与拆分前一致）
+    if (currentMode !== 'reserved2') return;
+    return scheduler.scheduleReplyCheck(key);
   }
+  function cancelReplyCheckV2(key) { return scheduler.cancelReply(key); }
+
 
   function isConversationBusyV2(key, st) {
     if (st && st.pendingWakeTimer) return true;
@@ -7499,118 +7470,7 @@ async function main() {
   // 把消息读完并 mark_read，unread 里就没有更大的 seq 了，补发判定「已处理」直接跳过
   // —— 当天的日记和晚安一起消失，而且不会有任何报错。
 
-  function scheduleWakeV2(key, reason) {
-    if (cfg.socialV2?.enabled === false) return;
-    if (socialV2.paused) return;
-    if (!isSessionAllowedInCurrentMode(key)) {
-      log(`[reserved2] 跳过计划唤醒 ${key}（${reason}）：会话已不在当前模式允许范围内`);
-      return;
-    }
-    const st = getSocialV2State(key);
-    if (st.pendingWakeTimer) {
-      // 合并窗口内已有待发送唤醒：按优先级升级最终原因，避免先概率后 @ 却仍按概率唤醒。
-      const cur = st.pendingWakeReason || reason;
-      if (wakePriorityV2(reason) > wakePriorityV2(cur)) {
-        st.pendingWakeReason = reason;
-        log(`[reserved2] 合并窗口内升级唤醒原因 ${key}: ${cur} -> ${reason}`);
-      }
-      return;
-    }
-    if (isConversationBusyV2(key, st)) {
-      if (!Array.isArray(st.pendingWakeReasons)) st.pendingWakeReasons = [];
-      const seq = st.lastUnreadSeq || 0;
-      if (!st.pendingWakeReasons.some((r) => r && r.reason === reason && r.seq === seq)) {
-        st.pendingWakeReasons.push({ reason, seq });
-        // 有界队列：最多保留 20 条，防止消息洪峰下无限增长。
-        if (st.pendingWakeReasons.length > 20) st.pendingWakeReasons.splice(0, st.pendingWakeReasons.length - 20);
-      }
-      // 看门狗：暂存的唤醒只在「下一个回合结束」时才会被处理。若那个回合根本不存在
-      // （busy 标志被残留下来 —— 2026-10-06 17:50 那次的根因），队列就永远等不到人来清，
-      // 群会静默哑掉。这里挂一次兜底：5 分钟后队列还在、且 unread 里确实还有对应消息，
-      // 就认定会话卡住，强制清掉那些泄漏的 busy 标志并补发一次唤醒。
-      if (!st.pendingWakeWatchdog) {
-        const watchdogMs = 5 * 60 * 1000;
-        st.pendingWakeWatchdog = setTimeout(() => {
-          st.pendingWakeWatchdog = null;
-          const pend = Array.isArray(st.pendingWakeReasons) ? st.pendingWakeReasons : [];
-          if (!pend.length) return;
-          const oldest = pend[0] && typeof pend[0] === 'object' ? pend[0] : null;
-          if (!oldest) { st.pendingWakeReasons = []; saveSocialV2State(); return; }
-          const stillRelevant = isTimeBasedWakeV2(oldest.reason)
-            || (Array.isArray(st.unread) && st.unread.some((m) => m && Number(m.seq) >= Number(oldest.seq)));
-          if (!stillRelevant) { st.pendingWakeReasons = []; saveSocialV2State(); return; }
-          log(`⚠️ ${key} 暂存唤醒积压 5 分钟仍未处理（${oldest.reason}@seq${oldest.seq}），判定会话被卡住：强制清 busy 标志并补发`);
-          appendActivity(`${key} 暂存唤醒积压超时，强制解卡并补发`);
-          const stuckSid = state.sessions[key];
-          if (stuckSid) { v2TurnStartAt.delete(stuckSid); collectors.delete(stuckSid); }
-          const stuckQ = promptQueues.get(key);
-          if (stuckQ) { stuckQ.running = false; if (Array.isArray(stuckQ.queue)) stuckQ.queue.length = 0; }
-          pendingWakeKeys.delete(key);
-          st.pendingWakeReasons = [];
-          saveSocialV2State();
-          scheduleWakeV2(key, oldest.reason);
-        }, watchdogMs);
-        st.pendingWakeWatchdog.unref?.();
-        void watchdogMs;
-      }
-      log(`[reserved2] 会话繁忙，暂存唤醒原因 ${key}（${reason}@seq${seq}）`);
-      return;
-    }
-    cancelReplyCheckV2(key); // 真实唤醒已接管，取消普通回复检查，避免 30s 后再补一刀
-    if (st.sleepTimer) {
-      clearTimeout(st.sleepTimer);
-      st.sleepTimer = null;
-    }
-    st.pendingWakeReason = reason;
-    const batchMs = Math.max(1000, Number(st.wakeConfig?.batchWindowMs) || 8000);
-    st.pendingWakeTimer = setTimeout(() => {
-      st.pendingWakeTimer = null;
-      const finalReason = st.pendingWakeReason || reason;
-      st.pendingWakeReason = null;
-      void sendWakePromptV2(key, finalReason).catch((error) => log(`[reserved2] 计划唤醒异常 ${key}:`, error?.message ?? error));
-    }, batchMs);
-    // 与其它 per-conversation 定时器保持一致：别让一个待唤醒定时器把进程钉住不退出。
-    st.pendingWakeTimer.unref?.();
-    log(`[reserved2] 计划唤醒 ${key}（${reason}），${Math.round(batchMs / 1000)}s 后发送`);
-  }
 
-  function setupSleepTimerV2(key) {
-    if (cfg.socialV2?.enabled === false) return;
-    if (!isSessionAllowedInCurrentMode(key)) return;
-    const st = getSocialV2State(key);
-    cancelReplyCheckV2(key); // 有限睡眠配置已接管，取消回复检查
-    if (st.sleepTimer) {
-      clearTimeout(st.sleepTimer);
-      st.sleepTimer = null;
-    }
-    if (socialV2.paused) return;
-    const wc = st.wakeConfig;
-    if (!wc || wc.infinite || !wc.sleepUntil) return;
-    const until = Date.parse(wc.sleepUntil);
-    if (!Number.isFinite(until)) return;
-    const delay = until - Date.now();
-    if (delay <= 0) {
-      void sendWakePromptV2(key, 'timeout').catch((error) => log(`[reserved2] 睡眠到期唤醒异常 ${key}:`, error?.message ?? error));
-      return;
-    }
-    // Node setTimeout 超过 2^31-1ms 会按 1ms 触发；远未来定时器先等满上限后重新续期，而不是提前唤醒。
-    const MAX_TIMEOUT_MS = 100009;
-    if (delay > MAX_TIMEOUT_MS) {
-      st.sleepTimer = setTimeout(() => {
-        st.sleepTimer = null;
-        setupSleepTimerV2(key);
-      }, MAX_TIMEOUT_MS);
-      st.sleepTimer.unref?.();
-      log(`[reserved2] 设置远未来有限潜水定时器 ${key}，首段 ${Math.round(MAX_TIMEOUT_MS / 86400000)} 天后续期`);
-      return;
-    }
-    st.sleepTimer = setTimeout(() => {
-      st.sleepTimer = null;
-      void sendWakePromptV2(key, 'timeout').catch((error) => log(`[reserved2] 睡眠到期唤醒异常 ${key}:`, error?.message ?? error));
-    }, delay);
-    st.sleepTimer.unref?.();
-    log(`[reserved2] 设置有限潜水定时器 ${key}，剩余 ${Math.round(delay / 1000)}s`);
-  }
 
   function cancelProactiveCheckV2(key) {
     const st = socialV2.conversations.get(key);

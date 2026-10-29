@@ -3,7 +3,7 @@
 > 目标：把「什么时候该叫醒她、什么时候该睡」这套定时器逻辑从 `bridge.js` 里拆出来，
 > 让它能用**假时钟**单测，同时合并两处已经重复的看门狗逻辑。
 >
-> 状态：**设计稿，未实施**。
+> 状态：**Step A 已实施（2026-10-29）**。Step B/C 见文末「实施记录」。
 >
 > 前置：Step 1（状态层）、Step 2 纯函数部分（唤醒判定）、Step 3（54 个端点）已完成。
 > 本文覆盖的是 Step 2 剩下的那部分——**有副作用的调度逻辑**。
@@ -241,3 +241,60 @@ if (isConversationBusyV2(...)) {
 2. **不重新设计定时器类型**。还是四类，只是统一管理。
 3. **不在同一次改动里做「按会话并发度动态调频」这类新功能**。
 4. **不碰 `sendWakePromptV2` 的 DSH 投递协议**——它只搬内部那段暂存逻辑，投递本身不动。
+
+---
+
+## 11. 实施记录
+
+### Step A 调度器 —— 完成（2026-10-29）
+
+新增 `src/core/socialv2-scheduler.mjs`：
+
+```js
+createScheduler({ getState, save, cfg, isAllowed, isPaused, isBusy,
+                  onWake, onUnstick, appendActivity, log,
+                  now, setTimer, clearTimer })
+  → { scheduleWake, setupSleepTimer, scheduleReplyCheck,
+      cancelReply, cancelTimers, pendingInfo, stashBusyWake }
+```
+
+搬出的四个定时器入口：`scheduleWakeV2` / `setupSleepTimerV2` /
+`scheduleReplyCheckV2` / `cancelReplyCheckV2`。bridge 里保留同名薄包装（调用点很多，不改调用方）。
+
+**核心收益达成**：`scheduleWakeV2` 与 `sendWakePromptV2` 里重复的
+「繁忙 → 暂存 + 5 分钟看门狗」合并成一份 `stashBusyWake`，
+`sendWakePromptV2` 现在只有一行调用。
+
+`bridge.js` 8937 → 8797 行。
+
+### 假时钟测试：12 项全过
+
+| # | 场景 |
+| --- | --- |
+| 1 | 合并窗口内二次 schedule 不新建定时器，按优先级升级 |
+| 2 | 先 probability 后 atMention 会升级 |
+| 3 | 繁忙时不建定时器，暂存队列上限 20 |
+| 4 | 看门狗 5 分钟后解卡并补发 |
+| 5 | 消息已读完则不补发，只清队列 |
+| 6 | **时间型唤醒（日记）即使消息读完也必须补发** |
+| 7 | 有限睡眠到点唤醒 |
+| 8 | 远未来睡眠首段 100009ms 后续期，不提前唤醒 |
+| 9 | 暂停 / 关闭时不排任何定时器 |
+| 10 | cancelTimers 后推进时钟也不唤醒 |
+| 11 | 已有待唤醒时不重复安排回复检查 |
+| 12 | 所有定时器都 unref（不阻止进程退出） |
+
+**以前这些只能靠「等 5 分钟」或「真实群里试」来验证。**
+
+### 测试里被纠正的一个认知
+
+我最初断言「看门狗解卡后队列清空」，实际不成立——解卡时如果她**仍然在忙**，
+补发的唤醒会正常地再次暂存。这不是 bug，是重排。
+看门狗只负责「把卡住的会话解开」，建定时器要靠下一条消息/下一次调度。
+
+### Step B / C 未做
+
+- **Step B**（提示词组装搬出）：`buildWakeSnapshotV2` / `buildWakePromptV2` 仍在 bridge。
+  它们依赖人格注入、记忆检索、工具清单，属于「组装」不是「调度」，
+  与本次目标（定时器可测）关系不大，优先级低。
+- **Step C**（`ensureWakeableV2` / `refreshDefaultWakeConfigV2` 并入状态层）：小改动，待做。
