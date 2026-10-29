@@ -58,6 +58,7 @@ const EXCLUDE_PREFIXES = [
 // 文件名级排除
 const EXCLUDE_PATTERNS = [
   /\.bak($|-)/,
+  /\.routebak$|\.testbak$|\.origbak$/,
   /\.tmp$/,
   /^\.env/,
   /^_tmp_/,
