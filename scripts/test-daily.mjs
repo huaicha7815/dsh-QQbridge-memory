@@ -76,6 +76,11 @@ const suite = [
     expect: 0,
   },
   {
+    name: '记忆身份归属',
+    args: ['--test', 'scripts/test-memory-identity.mjs'],
+    expect: 0,
+  },
+  {
     name: '记忆库端到端',
     args: ['--test', 'scripts/test-memory-e2e.mjs'],
     expect: 0,

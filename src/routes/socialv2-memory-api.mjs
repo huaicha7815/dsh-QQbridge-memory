@@ -52,7 +52,13 @@ export async function handleSocialV2MemoryApi({
           if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return true; }
           if (req.headers['x-agent-token'] && !v2ToolEnabled('memory')) { sendJson({ ok: false, error: '工具未启用：qq_memory_search' }, 403); return true; }
           const memCfg = memoryStore.getConfig();
-          const hits = memoryStore.search(q, { topK: topK || memCfg.searchTopK, days: days || memCfg.searchDays });
+          // crossSessionPolicy=isolated 时只检索当前会话；默认 open 保持跨会话记忆。
+          const isolate = memCfg.crossSessionPolicy === 'isolated';
+          const hits = memoryStore.search(q, {
+            topK: topK || memCfg.searchTopK,
+            days: days || memCfg.searchDays,
+            ...(isolate ? { key } : {}),
+          });
           const formatted = memoryStore.formatHits(hits, { maxChars: memCfg.searchMaxChars });
           sendJson({ ok: true, key, query: q, count: hits.length, formatted, hits: hits.map((h) => ({ kind: h.kind, day: h.day, ts: h.ts, score: Number(h.score?.toFixed?.(4)) || 0, text: h.text })) });
           return true;
@@ -115,7 +121,19 @@ export async function handleSocialV2MemoryApi({
             const name = redactKnownTokensOnly(String(body.name ?? '').trim());
             const content = redactKnownTokensOnly(String(body.content ?? '').trim());
             if (!name || !content) { sendJson({ ok: false, error: 'person 需要 name 和 content' }, 400); return true; }
-            const out = mergePersonFact(profile, name, content);
+            // uid 解析：优先用显式传入的，否则从最近事件里找同名的人。
+            // 有了 uid，「同名不同人」才能分档、「改昵称」才不会裂成两份。
+            let uid = String(body.uid ?? '').trim();
+            if (!uid) {
+              try {
+                const recent = memoryStore.readEvents({ days: 14 });
+                for (let i = recent.length - 1; i >= 0; i -= 1) {
+                  const e = recent[i];
+                  if (e && e.who === name && String(e.uid ?? '').trim()) { uid = String(e.uid).trim(); break; }
+                }
+              } catch { /* 读不到就按名字匹配，退回旧行为 */ }
+            }
+            const out = mergePersonFact(profile, name, content, { uid });
             profile = out.profile; okFlag = out.changed;
           } else if (kind === 'correct') {
             // 主动纠错：她发现档案里某条记错了，就说出正确的版本，系统替换掉最相似的那条。

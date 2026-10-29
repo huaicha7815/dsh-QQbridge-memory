@@ -39,6 +39,18 @@ const store = createMemoryStore({ dir: memDir, config: {} });
 // 恢复入口：以前只打印「可以用 replayWriteFailures()」但没有任何可执行入口，
 // 用户修好权限后还得自己写 Node 脚本。这里给一个真能用的一行命令。
 const argv = process.argv.slice(2);
+// 旧格式迁移入口：给旧失败记录补 id、给旧归档行补 srcDay。
+// 默认只预览（dry-run），--apply 才真正写回。
+if (argv.includes('--migrate')) {
+  const applyMigrate = argv.includes('--apply');
+  const result = store.migrateLegacyRecords({ dryRun: !applyMigrate });
+  console.log(JSON.stringify(result, null, 2));
+  if (!applyMigrate) {
+    console.log('（上面是预览。确认无误后加 --apply 真正写回）');
+  }
+  process.exit(0);
+}
+
 if (argv.includes('--replay')) {
   const apply = argv.includes('--apply');
   // 桥接本身也是失败清单的写者：它在跑的时候 replay 可能和它抢同一份清单。

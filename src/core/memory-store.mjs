@@ -878,8 +878,13 @@ export function createMemoryStore(options = {}) {
     const now = Number(opts.now) || Date.now();
     const days = Math.max(1, Number(opts.days) || cfg.searchDays);
     const topK = Math.max(1, Number(opts.topK) || cfg.searchTopK);
+    // 会话作用域（可选）：传了 opts.key 就只检索该会话的事件。
+    // 默认不传 = 保持原来的「跨会话记忆」行为（用户明确选择过保持现状）。
+    const scopeKey = String(opts.key ?? '').trim();
 
-    const eventDocs = readEvents({ days, now }).map((e) => {
+    let scopedEvents = readEvents({ days, now });
+    if (scopeKey) scopedEvents = scopedEvents.filter((e) => !e.k || e.k === scopeKey);
+    const eventDocs = scopedEvents.map((e) => {
       const who = e.kind === 'self' ? '你' : String(e.who || '人');
       const text = `${who}：${String(e.text || '')}`;
       const tier = Number.isInteger(e.s) ? e.s : salience(e);
@@ -1407,6 +1412,79 @@ export function createMemoryStore(options = {}) {
     return pendingFailureStats().records;
   }
 
+  /**
+   * 迁移旧格式数据（只加字段，不改内容）：
+   * 1. 失败清单里没有 id 的行 → 用 t 生成稳定 id（同 t 加序号），
+   *    这样它们能参与 replay 的幂等判断，而不是只能进 quarantine；
+   * 2. 归档月文件里没有 srcDay 的行 → 用 t 反推（t 就是写入时间），
+   *    这样它们能被 retention 裁剪、也能参与归档去重。
+   * 幂等：已有 id / srcDay 的行原样保留，重复执行不会改出重复数据。
+   */
+  function migrateLegacyRecords({ dryRun = false } = {}) {
+    const result = { failureIdsAdded: 0, archiveSrcDaysAdded: 0, filesTouched: 0, dryRun };
+
+    // 1) 失败清单
+    try {
+      const lines = fs.readFileSync(writeFailFile, 'utf8').split('\n').filter(Boolean);
+      let changed = 0;
+      const seen = new Set();
+      const out = lines.map((line) => {
+        let item;
+        try { item = JSON.parse(line); } catch { return line; } // 坏行不动，交给 replay 的 quarantine
+        const row = item && item.row;
+        if (!row || typeof row !== 'object') return line;
+        if (String(row.id ?? '').trim()) return line; // 已有 id
+        let id = `${Number(row.t) || 0}`;
+        let n = 1;
+        while (seen.has(id)) { id = `${Number(row.t) || 0}-${n}`; n += 1; }
+        seen.add(id);
+        row.id = id;
+        if (!item.id) item.id = id;
+        changed += 1;
+        return JSON.stringify(item);
+      });
+      if (changed) {
+        result.failureIdsAdded = changed;
+        result.filesTouched += 1;
+        if (!dryRun) {
+          const tmp = writeFailFile + '.migrate-tmp';
+          fs.writeFileSync(tmp, out.join('\n') + '\n', 'utf8');
+          fs.renameSync(tmp, writeFailFile);
+        }
+      }
+    } catch { /* 没有失败清单 */ }
+
+    // 2) 归档月文件
+    let archiveFiles = [];
+    try { archiveFiles = fs.readdirSync(archiveDir).filter((f) => f.endsWith('.jsonl')); } catch { /* 无归档 */ }
+    for (const name of archiveFiles) {
+      const full = path.join(archiveDir, name);
+      let lines = [];
+      try { lines = fs.readFileSync(full, 'utf8').split('\n').filter(Boolean); } catch { continue; }
+      let changed = 0;
+      const out = lines.map((line) => {
+        let row;
+        try { row = JSON.parse(line); } catch { return line; }
+        if (!row || typeof row !== 'object' || String(row.srcDay ?? '').trim()) return line;
+        const t = Number(row.t);
+        if (!Number.isFinite(t) || t <= 0) return line; // 没有时间戳，无法安全反推
+        row.srcDay = dayString(t);
+        changed += 1;
+        return JSON.stringify(row);
+      });
+      if (changed) {
+        result.archiveSrcDaysAdded += changed;
+        result.filesTouched += 1;
+        if (!dryRun) {
+          const tmp = full + '.migrate-tmp';
+          fs.writeFileSync(tmp, out.join('\n') + '\n', 'utf8');
+          fs.renameSync(tmp, full);
+        }
+      }
+    }
+    return result;
+  }
+
   function l1HasId(day, id) {
     const needle = '"id":' + JSON.stringify(id);
     // 1) 当天活动文件
@@ -1498,6 +1576,7 @@ export function createMemoryStore(options = {}) {
   return {
     root,
     replayWriteFailures,
+    migrateLegacyRecords,
     eventsDir,
     daysDir,
     weeksDir,

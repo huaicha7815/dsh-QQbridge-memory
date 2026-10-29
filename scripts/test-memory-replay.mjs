@@ -408,3 +408,85 @@ test('不可读快照会出现在 stats.unreadableSnapshots 里', () => {
   assert.equal(st.unreadableSnapshots, 1, 'health 必须能提示「有一份看不清的待恢复数据」');
   cleanup(dir);
 });
+
+test('旧格式迁移：给失败记录补 id、给归档行补 srcDay', () => {
+  const { dir, store } = freshStore();
+  // 旧格式失败记录：没有 id
+  const oldRow = { t: Date.now(), k: 'g:1', kind: 'msg', text: '旧的', s: 1 };
+  fs.writeFileSync(
+    path.join(dir, 'write-failures.jsonl'),
+    JSON.stringify({ at: Date.now(), phase: 'event', row: oldRow, error: 'old' }) + '\n',
+    'utf8',
+  );
+  // 旧格式归档行：没有 srcDay
+  fs.mkdirSync(path.join(dir, 'events-archive'), { recursive: true });
+  const oldArchiveRow = { t: Date.now() - 86400000, k: 'g:1', kind: 'msg', text: '归档旧行', s: 1 };
+  fs.writeFileSync(
+    path.join(dir, 'events-archive', '2026-10.jsonl'),
+    JSON.stringify(oldArchiveRow) + '\n',
+    'utf8',
+  );
+
+  // 预览不改数据
+  const preview = store.migrateLegacyRecords({ dryRun: true });
+  assert.equal(preview.failureIdsAdded, 1);
+  assert.equal(preview.archiveSrcDaysAdded, 1);
+  assert.ok(!fs.readFileSync(path.join(dir, 'write-failures.jsonl'), 'utf8').includes('"id"'), 'dry-run 不能写');
+
+  // 真正迁移
+  const applied = store.migrateLegacyRecords();
+  assert.equal(applied.failureIdsAdded, 1);
+  assert.equal(applied.archiveSrcDaysAdded, 1);
+  const migratedFailure = JSON.parse(fs.readFileSync(path.join(dir, 'write-failures.jsonl'), 'utf8').trim());
+  assert.ok(migratedFailure.row.id, '失败记录要有 id');
+  assert.equal(migratedFailure.id, migratedFailure.row.id, '外层 id 也要同步');
+  const migratedArchive = JSON.parse(fs.readFileSync(path.join(dir, 'events-archive', '2026-10.jsonl'), 'utf8').trim());
+  assert.ok(migratedArchive.srcDay, '归档行要有 srcDay');
+
+  // 再跑一次幂等
+  const again = store.migrateLegacyRecords();
+  assert.equal(again.failureIdsAdded, 0);
+  assert.equal(again.archiveSrcDaysAdded, 0);
+  cleanup(dir);
+});
+
+test('迁移后的旧记录能被 replay 正常恢复', () => {
+  const { dir, store } = freshStore();
+  const oldRow = { t: Date.now(), k: 'g:1', kind: 'msg', text: '迁移后要恢复', s: 1 };
+  fs.writeFileSync(
+    path.join(dir, 'write-failures.jsonl'),
+    JSON.stringify({ at: Date.now(), phase: 'event', row: oldRow, error: 'old' }) + '\n',
+    'utf8',
+  );
+  // 迁移前：无 id → 会被 quarantine
+  const before = store.replayWriteFailures();
+  assert.equal(before.quarantined, 1, '无 id 的旧记录先被隔离（前提）');
+
+  // 重置场景：放回旧记录并迁移，再 replay
+  fs.writeFileSync(
+    path.join(dir, 'write-failures.jsonl'),
+    JSON.stringify({ at: Date.now(), phase: 'event', row: { ...oldRow, text: '迁移后要恢复2' }, error: 'old' }) + '\n',
+    'utf8',
+  );
+  store.migrateLegacyRecords();
+  const after = store.replayWriteFailures();
+  assert.equal(after.replayed, 1, '迁移后应该能恢复');
+  cleanup(dir);
+});
+
+test('crossSessionPolicy=isolated 时只检索当前会话', () => {
+  const { dir, store } = freshStore();
+  const now = Date.now();
+  store.appendEvent({ t: now, k: 'group:111', kind: 'msg', who: 'A', text: '群里的秘密约定', s: 2 });
+  store.appendEvent({ t: now, k: 'private:222', kind: 'msg', who: 'B', text: '私聊的秘密约定', s: 2 });
+
+  // 默认 open：两个会话都能搜到
+  const openHits = store.search('秘密约定', { days: 30 });
+  assert.ok(openHits.length >= 2, '默认跨会话，应该两条都能搜到');
+
+  // isolated：只搜当前 key
+  const scoped = store.search('秘密约定', { days: 30, key: 'group:111' });
+  assert.ok(scoped.every((h) => !String(h.text).includes('私聊')), '不能返回私聊内容');
+  assert.ok(scoped.some((h) => String(h.text).includes('群里')), '当前会话的内容要能搜到');
+  cleanup(dir);
+});

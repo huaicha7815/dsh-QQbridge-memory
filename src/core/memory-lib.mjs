@@ -543,6 +543,9 @@ export function normalizeMemoryConfig(raw) {
     perDayMax: num(src.perDayMax, MEMORY_DEFAULTS.perDayMax, 1, 10),
     perWhoMax: num(src.perWhoMax, MEMORY_DEFAULTS.perWhoMax, 1, 10),
     usageRetentionDays: num(src.usageRetentionDays, MEMORY_DEFAULTS.usageRetentionDays, 1, 365),
+    // 跨会话记忆策略：open（默认，她记得所有会话的事）| isolated（只检索当前会话）
+    // 用户明确选择过保持 open；需要硬隔离时改配置即可，不需要改代码。
+    crossSessionPolicy: src.crossSessionPolicy === 'isolated' ? 'isolated' : 'open',
   };
 }
 
@@ -557,6 +560,10 @@ export function ensureProfile(raw) {
       const firstSeen = Number(v.firstSeen) || 0;
       const lastSeen = Number(v.lastSeen) || 0;
       people[k] = {
+        // uid：这个档位绑定的是哪个 QQ 号（有的话）。显示名放 name，
+        // 这样「同名不同人」能分档、「改昵称」不会裂成两份。
+        ...(String(v.uid ?? '').trim() ? { uid: String(v.uid).trim() } : {}),
+        ...(String(v.name ?? '').trim() ? { name: String(v.name).trim() } : {}),
         // facts 从 V3.2 起是对象（带确认时间），旧格式是字符串数组，这里统一迁移：
         // 老事实的「最后确认时间」回退到这个人物的 lastSeen，语义上等价于「当时确认过」。
         facts: (Array.isArray(v.facts) ? v.facts : [])
@@ -1351,14 +1358,53 @@ function adoptCanonicalPersonName(p, rawKey) {
  *
  * @returns {{profile:object, changed:boolean, action:'CREATE'|'CORROBORATE'|'SKIP'}}
  */
-export function mergePersonFact(profile, name, fact, { now = Date.now() } = {}) {
+/**
+ * 决定这次事实写到哪个「人」的档位上。
+ *
+ * 背景：原来的键就是显示名，于是「两个人都叫小明」会合并成一份档案，
+ * 「某人改了群名片」又会裂成两份。现在优先用 uid：
+ *   1. 已有条目的 uid 匹配 → 直接用它（改昵称不会裂）；
+ *   2. 有同名旧档位且没绑定 uid → 绑定上去（老数据自动升级）；
+ *   3. 同名档位已绑定别的 uid → 用 `名字#uid` 新建一份（同名不同人不再合并）。
+ * 没有 uid 时完全退回原来的行为，旧调用方不受影响。
+ */
+function resolvePersonKey(profile, canonicalName, uid, now) {
+  const wantedUid = String(uid ?? '').trim();
+  if (!wantedUid) return canonicalName;
+  // 1) 已有 uid 匹配
+  for (const [key, entry] of Object.entries(profile.people)) {
+    if (entry && String(entry.uid ?? '') === wantedUid) return key;
+  }
+  // 2) 同名旧档位绑定 uid
+  const sameName = profile.people[canonicalName];
+  if (sameName && !String(sameName.uid ?? '').trim()) {
+    sameName.uid = wantedUid;
+    sameName.name = String(sameName.name ?? canonicalName);
+    return canonicalName;
+  }
+  // 3) 同名但属于别人 → 分档
+  if (sameName) {
+    const splitKey = `${canonicalName}#${wantedUid}`;
+    if (!profile.people[splitKey]) {
+      profile.people[splitKey] = { facts: [], count: 0, firstSeen: now, lastSeen: now, uid: wantedUid, name: canonicalName };
+    }
+    return splitKey;
+  }
+  return canonicalName;
+}
+
+export function mergePersonFact(profile, name, fact, { now = Date.now(), uid = '' } = {}) {
   const rawKey = String(name ?? '').trim();
   if (!rawKey || FORBIDDEN_KEYS.has(rawKey)) return { profile: ensureProfile(profile), changed: false, action: 'SKIP' };
   const p = ensureProfile(profile);
   // 「爸爸（凉州词）」这种带备注的名字要落到已经在的「爸爸」上，别开第二份档案。
-  const key = adoptCanonicalPersonName(p, rawKey);
+  const canonical = adoptCanonicalPersonName(p, rawKey);
+  const key = resolvePersonKey(p, canonical, uid, now);
   const text = truncateChars(String(fact ?? '').trim(), 80);
   const entry = p.people[key] || { facts: [], count: 0, firstSeen: now, lastSeen: now };
+  const wantedUid = String(uid ?? '').trim();
+  if (wantedUid && !String(entry.uid ?? '').trim()) entry.uid = wantedUid;
+  if (canonical && !String(entry.name ?? '').trim()) entry.name = canonical;
   let action = 'SKIP';
   if (text) {
     const dup = entry.facts.find((f) => factSimilarity(f.text, text) >= 0.9);
