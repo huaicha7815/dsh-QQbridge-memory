@@ -91,7 +91,18 @@ function listDaysUpTo(day, days) {
 function readJsonFile(file, fallback) {
   try {
     return JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch {
+  } catch (error) {
+    // 文件存在但解析失败 ≠ 文件不存在。以前一律返回 fallback，
+    // 于是损坏的 profile.json 会被当成「空档案」，下一次写入直接覆盖掉原文件——
+    // 表现为「QQ 正常聊天但档案悄悄没了」。这里先备份坏文件再降级。
+    if (error && error.code !== 'ENOENT') {
+      try {
+        fs.copyFileSync(file, `${file}.corrupt-${Date.now()}`);
+        console.warn(`[memory] JSON 损坏已备份 ${path.basename(file)}: ${error.message}`);
+      } catch {
+        // 备份也失败就只能降级，至少不抛出
+      }
+    }
     return fallback;
   }
 }
@@ -265,7 +276,10 @@ export function createMemoryStore(options = {}) {
         }
       }
       return true;
-    } catch {
+    } catch (error) {
+      // 写失败不能静默：以前只 return false，调用方不检查返回值，
+      // 结果是「聊天一切正常，但 L1 事件已经丢了」也没人发现。
+      console.warn('[memory] 事件写入失败:', error?.message ?? error);
       return false;
     }
   }
@@ -401,6 +415,16 @@ export function createMemoryStore(options = {}) {
    * 为缺失的日期生成日摘要（纯规则，0 次 LLM 调用）。
    * 已在 days/ 里存在的日期直接跳过，所以重启/多天补算都很便宜。
    */
+  /** 当天事件文件的指纹（大小 + mtime）：摘要据此判断是否需要重算。 */
+  function dayFingerprint(day) {
+    try {
+      const stat = fs.statSync(path.join(eventsDir, `${day}.jsonl`));
+      return `${stat.size}:${Math.floor(stat.mtimeMs)}`;
+    } catch {
+      return '';
+    }
+  }
+
   function ensureDaySummaries({ upTo, now = Date.now(), maxDays = 400 } = {}) {
     const end = upTo || dayString(now);
     const existing = new Set();
@@ -414,7 +438,16 @@ export function createMemoryStore(options = {}) {
     }
     let created = 0;
     const days = listEventDays().filter((d) => d <= end);
-    const todo = days.filter((d) => !existing.has(d)).slice(-Math.max(1, Number(maxDays) || 400));
+    // 关键：不能「文件存在就跳过」。当天摘要生成后还会不断有新消息进来，
+    // 只按存在性判断会让摘要永久停留在第一次生成的版本（用户反馈：她说想不起来）。
+    // 用「事件文件大小 + mtime」做指纹，变了就重算这一天的摘要。
+    const todo = days.filter((d) => {
+      if (!existing.has(d)) return true;
+      let prev = null;
+      try { prev = JSON.parse(fs.readFileSync(path.join(daysDir, `${d}.json`), 'utf8')); } catch { return true; }
+      if (!prev || typeof prev !== 'object') return true;
+      return prev.srcFingerprint !== dayFingerprint(d);
+    }).slice(-Math.max(1, Number(maxDays) || 400));
     for (const day of todo) {
       const events = readDayEvents(day);
       const summary = summarizeDay(events, day);
@@ -422,7 +455,8 @@ export function createMemoryStore(options = {}) {
         ? summary
         : { day, ts: dayNoon(day), count: summary?.count || 0, keys: [], people: [], lines: [], tiers: [0, 0, 0, 0], skipped: true };
       try {
-        writeJsonFile(path.join(daysDir, `${day}.json`), payload);
+        // 记录生成时的指纹，供下次判断「这一天是否又有了新消息」
+        writeJsonFile(path.join(daysDir, `${day}.json`), { ...payload, srcFingerprint: dayFingerprint(day) });
         created += 1;
       } catch {
         // 单天写失败不影响其它天

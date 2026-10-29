@@ -6,6 +6,8 @@
 // 约定：返回 true 表示「这个请求我处理了」，调用方直接 return；false 继续往下走。
 export async function handleSocialV2WakeSlangApi({
   SLANG_STATUS, activeWaits, agentTokenOk, allowSlangSubmit, appendActivity, buildSlangContext, cancelReplyCheckV2, canonicalV2Key, confirmedSlangListV2, createSlangEntry, getSocialV2State, log, looksLikeUnfinished, mergeEvidence, modeAllowed, noteModelMessagesV2, preSleepWaitBlockedV2, publicSlangEntry, queueSlangTask, readBody, readThroughSeqV2, redactKnownTokensOnly, runSlangResearch, saveSlangStore, saveSocialV2State, sendJson, sendWakePromptV2, sleep, socialV2, suggestQuietMsV2, cfg, v2SessionAllowed, v2ToolEnabled,
+  currentMode: getCurrentMode,
+  ACTIVE_WAIT_LEASE_MS,
   req, url,
   slangEntries: getSlangEntries,
 }) {
@@ -14,12 +16,12 @@ export async function handleSocialV2WakeSlangApi({
           const key = String(body.key ?? '').trim();
           const reason = String(body.reason ?? 'admin').trim() || 'admin';
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return true; }
-          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return true; }
+          if (getCurrentMode() !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return true; }
           const keyMatch = /^(group|private):(\d+)$/.exec(key);
           if (!keyMatch) { sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400); return true; }
           const kind = keyMatch[1];
           const id = Number(keyMatch[2]);
-          if (!Number.isFinite(id) || id <= 0 || !modeAllowed(key, kind, id, cfg, currentMode)) {
+          if (!Number.isFinite(id) || id <= 0 || !modeAllowed(key, kind, id, cfg, getCurrentMode())) {
             sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403);
             return true;
           }
@@ -156,7 +158,7 @@ export async function handleSocialV2WakeSlangApi({
           }
           const waitedMs = Date.now() - start;
           if (socialV2.conversations.get(canonicalV2Key(key)) !== st ||
-              (req.headers['x-agent-token'] && (currentMode !== 'reserved2' || socialV2.paused || cfg.socialV2?.enabled === false
+              (req.headers['x-agent-token'] && (getCurrentMode() !== 'reserved2' || socialV2.paused || cfg.socialV2?.enabled === false
                 || !agentTokenOk(key, req.headers['x-agent-token']) || !v2SessionAllowed(key) || !v2ToolEnabled('waitMessages')))) {
             finishWait();
             sendJson({ ok: false, error: '等待期间会话已重置或权限已变化，请重新读取会话' }, 403);

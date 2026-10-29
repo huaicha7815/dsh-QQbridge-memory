@@ -10,6 +10,10 @@
 
 /** 唤醒原因 → 优先级（数值越大越优先）。reason 可能带子类型（keyword:小鲸鱼），取冒号前的基名。 */
 export const WAKE_PRIORITY = Object.freeze({
+  // 时间型唤醒必须高于概率：否则「先排到 probability，后来的 diary 不升级」，
+  // 当天的日记/记忆整理就会被当成一次概率唤醒吞掉。
+  diary: 95,
+  memoryRefine: 94,
   private: 100,
   atMention: 90,
   question: 80,
@@ -34,7 +38,7 @@ export function wakePriorityV2(reason) {
 // 对 diary 却是致命的：2026-10-27 23:00 的日记触发时她正在聊天，唤醒被暂存；之后她
 // 把消息读完并 mark_read，unread 里就没有更大的 seq 了，补发判定「已处理」直接跳过
 // —— 当天的日记和晚安一起消失，而且不会有任何报错。
-export const TIME_BASED_WAKE_V2 = new Set(['diary', 'greeting', 'timeout', 'proactiveCheck', 'chatStart']);
+export const TIME_BASED_WAKE_V2 = new Set(['diary', 'greeting', 'timeout', 'proactiveCheck', 'chatStart', 'memoryRefine']);
 
 export function isTimeBasedWakeV2(reason) {
   return TIME_BASED_WAKE_V2.has(String(reason ?? '').split(':')[0]);

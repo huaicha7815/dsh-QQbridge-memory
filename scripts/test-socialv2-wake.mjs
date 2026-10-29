@@ -34,7 +34,7 @@ test('时间型唤醒：日记/问候/超时/主动检查/开聊', () => {
   assert.ok(isTimeBasedWakeV2('diary:2026-10-28'), '带子类型也算');
   assert.ok(!isTimeBasedWakeV2('atMention'), '@ 唤醒不是时间型（它依赖未读）');
   assert.ok(!isTimeBasedWakeV2('keyword:你好'));
-  assert.equal(TIME_BASED_WAKE_V2.size, 5);
+  assert.equal(TIME_BASED_WAKE_V2.size, 6, 'diary/greeting/timeout/proactiveCheck/chatStart/memoryRefine');
 });
 
 test('是否直接针对 AI：正例', () => {
@@ -81,6 +81,13 @@ test('安全阀：硬触发 / 定时 / 概率 / 确认过期', () => {
   const stale = computeWakeSafetyV2({ confirmedAt: now - 25 * 3600 * 1000 }, now);
   assert.equal(stale.stale, true, '超过 24 小时算过期');
   assert.equal(computeWakeSafetyV2({}, now).stale, true, '从没确认过也算过期');
+});
+
+
+test('时间型唤醒必须优先于概率（否则日记会被概率唤醒吞掉）', () => {
+  assert.ok(wakePriorityV2('diary') > wakePriorityV2('probability'), '日记优先级要高于概率');
+  assert.ok(wakePriorityV2('memoryRefine') > wakePriorityV2('probability'), '记忆整理优先级要高于概率');
+  assert.ok(wakePriorityV2('diary') < wakePriorityV2('private'), '但私聊仍然最高');
 });
 
 test('防永眠判定：有任一触发途径就算可唤醒', () => {

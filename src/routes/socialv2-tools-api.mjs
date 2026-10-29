@@ -6,6 +6,8 @@
 // 约定：返回 true 表示「这个请求我处理了」，调用方直接 return；false 继续往下走。
 export async function handleSocialV2ToolsApi({
   agentTokenOk, api, appendActivity, appendFeedbackEntry, atomicWriteJson, bot, feedbackTimes, fetchMediaData, formatForwardResponse, getSocialV2State, log, modeAllowed, readBody, readFeedbackEntries, readThroughSeqV2, readToolLog, resolveReplyInfo, seenForwardIds, sendJson, truncateText, v2SessionAllowed, v2ToolEnabled,
+  TOOL_LOG_FILE,
+  FEEDBACK_FILE,
   req, url,
   currentMode: getCurrentMode,
   cfg,

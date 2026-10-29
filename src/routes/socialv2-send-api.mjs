@@ -6,6 +6,14 @@
 // 约定：返回 true 表示「这个请求我处理了」，调用方直接 return；false 继续往下走。
 export async function handleSocialV2SendApi({
   SENSITIVE_RE, agentTokenOk, appendActivity, applyStickerNoteV2, assertGroupMember, bot, collectStickerV2, computeGapsV2, describeAudio, fetch, findCjkSpaceWarning, findSplitBoundaryWarning, formatStickerList, getImageDimensions, getSocialV2State, getStickerImageData, inspectAudio, lastForcedAgentStickerSync, listAudioFiles, log, mimeFromBuffer, mimeFromUrl, modeAllowed, parseTargetKey, path, readBody, recordSentMessagesV2, resolveAudioProcessing, resolveReplyTargetV2, resolveVoicePathForOperator, resolveVoicePathForV2, safeFetchBuffer, saveSocialV2State, scheduleReplyCheckV2, sendJson, sendMessagesV2, sendStickerV2, sendVoiceForV2, sendVoiceV2, setStickerRemarkV2, shouldBlockSilentReply, socialV2, stickerEnabled, syncStickerLibrary, truncateText, v2SessionAllowed, v2ToolEnabled, verifyVoiceMessageSent, voiceBudgetCheck, voiceBudgetCommit, voiceCfg, cfg,
+  currentMode: getCurrentMode,
+  stickerEntries: getStickerEntries,
+  stickerSyncedAt: getStickerSyncedAt,
+  getLastForcedAgentStickerSync,
+  setLastForcedAgentStickerSync,
+  MAX_MEDIA_BYTES,
+  MAX_MEDIA_PIXELS,
+  ROOT,
   req, url,
 }) {
         if (req.method === 'POST' && url.pathname === '/api/socialV2/send-burst') {
@@ -15,7 +23,9 @@ export async function handleSocialV2SendApi({
           if (typeof rawMessages === 'string') {
             const trimmed = rawMessages.trim();
             if (trimmed.startsWith('[')) {
-              try {
+                        const st = getSocialV2State(key);
+          const now = Date.now();
+try {
                 const parsed = JSON.parse(trimmed);
                 if (Array.isArray(parsed)) rawMessages = parsed.map(String);
               } catch {}
@@ -48,7 +58,7 @@ export async function handleSocialV2SendApi({
           if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return true; }
           if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return true; }
           if (req.headers['x-agent-token'] && !v2ToolEnabled('sendBurst')) { sendJson({ ok: false, error: '工具未启用：qq_send_burst' }, 403); return true; }
-          if (currentMode !== 'reserved2') {
+          if (getCurrentMode() !== 'reserved2') {
             sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403);
             return true;
           }
@@ -60,7 +70,7 @@ export async function handleSocialV2SendApi({
           }
           const kind = keyMatch[1];
           const id = Number(keyMatch[2]);
-          if (!Number.isFinite(id) || id <= 0 || !modeAllowed(key, kind, id, cfg, currentMode)) {
+          if (!Number.isFinite(id) || id <= 0 || !modeAllowed(key, kind, id, cfg, getCurrentMode())) {
             sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403);
             return true;
           }
@@ -86,9 +96,7 @@ export async function handleSocialV2SendApi({
             }
           }
           try {
-            const st = getSocialV2State(key);
-            const now = Date.now();
-            const maxPerMinute = Number(sendCfg.maxSendPerMinute) || 0;
+                const maxPerMinute = Number(sendCfg.maxSendPerMinute) || 0;
             const maxPerHour = Number(sendCfg.maxSendPerHour) || 0;
             const recentMinute = (st.sendTimes || []).filter((t) => now - t < 60000).length;
             const recentHour = (st.sendTimes || []).filter((t) => now - t < 3600000).length;
@@ -179,13 +187,13 @@ export async function handleSocialV2SendApi({
           if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return true; }
           if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return true; }
           if (req.headers['x-agent-token'] && !v2ToolEnabled('sendMessage')) { sendJson({ ok: false, error: '工具未启用：qq_send_message' }, 403); return true; }
-          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return true; }
+          if (getCurrentMode() !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return true; }
           if (!req.headers['x-agent-token']) { sendJson({ ok: false, error: 'reserved2 模式发送必须携带 agent token' }, 403); return true; }
           const keyMatch = /^(group|private):(\d+)$/.exec(key);
           if (!keyMatch) { sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400); return true; }
           const kind = keyMatch[1];
           const id = Number(keyMatch[2]);
-          if (!Number.isFinite(id) || id <= 0 || !modeAllowed(key, kind, id, cfg, currentMode)) {
+          if (!Number.isFinite(id) || id <= 0 || !modeAllowed(key, kind, id, cfg, getCurrentMode())) {
             sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403);
             return true;
           }
@@ -287,7 +295,7 @@ export async function handleSocialV2SendApi({
           const key = String(body.key ?? '').trim();
           const targetUserId = String(body.targetUserId ?? body.userId ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return true; }
-          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return true; }
+          if (getCurrentMode() !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return true; }
           if (!req.headers['x-agent-token']) { sendJson({ ok: false, error: 'reserved2 模式发送拍一拍必须携带 agent token' }, 403); return true; }
           if (!agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return true; }
           if (!v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return true; }
@@ -297,7 +305,7 @@ export async function handleSocialV2SendApi({
           if (!keyMatch) { sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400); return true; }
           const kind = keyMatch[1];
           const id = Number(keyMatch[2]);
-          if (!Number.isFinite(id) || id <= 0 || !modeAllowed(key, kind, id, cfg, currentMode)) {
+          if (!Number.isFinite(id) || id <= 0 || !modeAllowed(key, kind, id, cfg, getCurrentMode())) {
             sendJson({ ok: false, error: '当前模式不允许操作该会话' }, 403);
             return true;
           }
@@ -578,7 +586,7 @@ export async function handleSocialV2SendApi({
           const key = String(body.target ?? body.key ?? '').trim();
           const parsedTarget = parseTargetKey(key);
           if (!parsedTarget) { sendJson({ ok: false, error: 'target 格式应为 group:群号 或 private:QQ号' }, 400); return true; }
-          if (!modeAllowed(key, parsedTarget.kind, Number(parsedTarget.id), cfg, currentMode)) {
+          if (!modeAllowed(key, parsedTarget.kind, Number(parsedTarget.id), cfg, getCurrentMode())) {
             const a = cfg.allow ?? {};
             sendJson({
               ok: false,
@@ -678,7 +686,7 @@ export async function handleSocialV2SendApi({
           const voice = voiceCfg();
           if (!voice.enabled) { sendJson({ ok: false, error: '语音功能已关闭' }, 403); return true; }
           if (!key) { sendJson({ ok: false, error: 'key 不能为空（格式 group:群号 或 private:QQ号）' }, 400); return true; }
-          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return true; }
+          if (getCurrentMode() !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return true; }
           if (!token) { sendJson({ ok: false, error: 'reserved2 模式发送必须携带 agent token' }, 403); return true; }
           if (!agentTokenOk(key, token)) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return true; }
           if (!v2ToolEnabled('sendVoice')) { sendJson({ ok: false, error: '工具未启用：qq_send_voice' }, 403); return true; }
@@ -688,7 +696,7 @@ export async function handleSocialV2SendApi({
           if (!keyMatch) { sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400); return true; }
           const kind = keyMatch[1];
           const id = Number(keyMatch[2]);
-          if (!Number.isFinite(id) || id <= 0 || !modeAllowed(key, kind, id, cfg, currentMode)) {
+          if (!Number.isFinite(id) || id <= 0 || !modeAllowed(key, kind, id, cfg, getCurrentMode())) {
             sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403);
             return true;
           }
@@ -753,13 +761,13 @@ export async function handleSocialV2SendApi({
           if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return true; }
           if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return true; }
           if (req.headers['x-agent-token'] && !v2ToolEnabled('sendSticker')) { sendJson({ ok: false, error: '工具未启用：qq_send_sticker' }, 403); return true; }
-          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return true; }
+          if (getCurrentMode() !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return true; }
           if (!req.headers['x-agent-token']) { sendJson({ ok: false, error: 'reserved2 模式发送必须携带 agent token' }, 403); return true; }
           const keyMatch = /^(group|private):(\d+)$/.exec(key);
           if (!keyMatch) { sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400); return true; }
           const kind = keyMatch[1];
           const id = Number(keyMatch[2]);
-          if (!Number.isFinite(id) || id <= 0 || !modeAllowed(key, kind, id, cfg, currentMode)) {
+          if (!Number.isFinite(id) || id <= 0 || !modeAllowed(key, kind, id, cfg, getCurrentMode())) {
             sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403);
             return true;
           }
@@ -951,8 +959,8 @@ export async function handleSocialV2SendApi({
           if (req.headers['x-agent-token'] && !v2ToolEnabled('listStickers')) { sendJson({ ok: false, error: '工具未启用：qq_list_stickers' }, 403); return true; }
           try {
             const synced = await syncStickerLibrary(force);
-            const list = formatStickerList(synced?.entries ?? stickerEntries, query, count);
-            sendJson({ ok: true, key, ...list, syncedAt: synced?.syncedAt ?? stickerSyncedAt, fromCache: synced?.fromCache ?? false });
+            const list = formatStickerList(synced?.entries ?? getStickerEntries(), query, count);
+            sendJson({ ok: true, key, ...list, syncedAt: synced?.syncedAt ?? getStickerSyncedAt(), fromCache: synced?.fromCache ?? false });
           } catch (error) {
             sendJson({ ok: false, error: `获取表情列表失败：${error?.message ?? error}` }, 500);
           }
@@ -973,13 +981,13 @@ export async function handleSocialV2SendApi({
           // AI 强制刷新加最小间隔，避免反复调用 OneBot 表情接口造成限频/负载。
           if (req.headers['x-agent-token'] && force) {
             const now = Date.now();
-            if (now - lastForcedAgentStickerSync < 10000) force = false;
-            else lastForcedAgentStickerSync = now;
+            if (now - getLastForcedAgentStickerSync() < 10000) force = false;
+            else setLastForcedAgentStickerSync(now);
           }
           try {
             const synced = await syncStickerLibrary(force);
-            const list = formatStickerList(synced?.entries ?? stickerEntries, query, count);
-            sendJson({ ok: true, key, ...list, syncedAt: synced?.syncedAt ?? stickerSyncedAt, fromCache: synced?.fromCache ?? false });
+            const list = formatStickerList(synced?.entries ?? getStickerEntries(), query, count);
+            sendJson({ ok: true, key, ...list, syncedAt: synced?.syncedAt ?? getStickerSyncedAt(), fromCache: synced?.fromCache ?? false });
           } catch (error) {
             sendJson({ ok: false, error: `获取表情列表失败：${error?.message ?? error}` }, 500);
           }

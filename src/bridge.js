@@ -3976,6 +3976,19 @@ async function main() {
         // socialV2 控制类端点（会改状态）已拆到 src/routes/socialv2-control-api.mjs
         if (await handleSocialV2ControlApi({
           acknowledgeMessagesV2, agentTokenOk, atomicWriteJson, cancelReplyCheckV2, clearAllPendingWakeLeases, clearAllSocialV2Timers, computeWakeSafetyV2, drainAllPromptQueues, ensureWakeableV2, forgetAgentToken, getSocialV2State, isSleepingConfigV2, log, normalizeSpeakerIdsV2, preSleepWaitBlockedV2, readBody, readConfigObject, readThroughSeqV2, refreshAllDefaultWakeConfigsV2, requestedReadThroughSeqV2, saveSocialV2State, saveState, scheduleProactiveCheckV2, sendJson, setupSleepTimerV2, stopRetiredSessionWork, v2SessionAllowed, v2ToolEnabled, cfg, socialV2, SOCIAL_V2_FILE, ROOT, wakeConfigUpdatedKeys, wakeConfigMissCount, readRoleState, roleHintForMode, roleNameFor, syncStickerLibrary, stickerEnabled, voiceCfg, voiceLibrary, state, retireSession, sessionEpoch,
+          sessionPromises,
+          sessionModels,
+          modelAppliedSessions,
+          reverse,
+          collectors,
+          v2TurnStartAt,
+          toolCallNames,
+          pendingSendToolCalls,
+          sendToolSucceededSessions,
+          seenForwardIds,
+          pendingWakeKeys,
+          api,
+          bumpSessionEpoch: () => { sessionEpoch += 1; return sessionEpoch; },
           req, url,
           currentMode: () => currentMode,
         })) return;
@@ -3990,12 +4003,22 @@ async function main() {
         // socialV2 唤醒与黑话端点已拆到 src/routes/socialv2-wake-slang-api.mjs
         if (await handleSocialV2WakeSlangApi({
           SLANG_STATUS, activeWaits, agentTokenOk, allowSlangSubmit, appendActivity, buildSlangContext, cancelReplyCheckV2, canonicalV2Key, confirmedSlangListV2, createSlangEntry, getSocialV2State, log, looksLikeUnfinished, mergeEvidence, modeAllowed, noteModelMessagesV2, preSleepWaitBlockedV2, publicSlangEntry, queueSlangTask, readBody, readThroughSeqV2, redactKnownTokensOnly, runSlangResearch, saveSlangStore, saveSocialV2State, sendJson, sendWakePromptV2, sleep, socialV2, suggestQuietMsV2, cfg, v2SessionAllowed, v2ToolEnabled,
+          currentMode: () => currentMode,
+          ACTIVE_WAIT_LEASE_MS,
           req, url,
           slangEntries: () => slangEntries,
         })) return;
         // socialV2 发送与媒体端点已拆到 src/routes/socialv2-send-api.mjs
         if (await handleSocialV2SendApi({
           SENSITIVE_RE, agentTokenOk, appendActivity, applyStickerNoteV2, assertGroupMember, bot, collectStickerV2, computeGapsV2, describeAudio, fetch, findCjkSpaceWarning, findSplitBoundaryWarning, formatStickerList, getImageDimensions, getSocialV2State, getStickerImageData, inspectAudio, lastForcedAgentStickerSync, listAudioFiles, log, mimeFromBuffer, mimeFromUrl, modeAllowed, parseTargetKey, path, readBody, recordSentMessagesV2, resolveAudioProcessing, resolveReplyTargetV2, resolveVoicePathForOperator, resolveVoicePathForV2, safeFetchBuffer, saveSocialV2State, scheduleReplyCheckV2, sendJson, sendMessagesV2, sendStickerV2, sendVoiceForV2, sendVoiceV2, setStickerRemarkV2, shouldBlockSilentReply, socialV2, stickerEnabled, syncStickerLibrary, truncateText, v2SessionAllowed, v2ToolEnabled, verifyVoiceMessageSent, voiceBudgetCheck, voiceBudgetCommit, voiceCfg, cfg,
+          currentMode: () => currentMode,
+          stickerEntries: () => stickerEntries,
+          stickerSyncedAt: () => stickerSyncedAt,
+          getLastForcedAgentStickerSync: () => lastForcedAgentStickerSync,
+          setLastForcedAgentStickerSync: (v) => { lastForcedAgentStickerSync = v; },
+          MAX_MEDIA_BYTES,
+          MAX_MEDIA_PIXELS,
+          ROOT,
           req, url,
         })) return;
         // 表情库端点已拆到 src/routes/stickers-api.mjs
@@ -4011,6 +4034,8 @@ async function main() {
         // socialV2 工具侧端点已拆到 src/routes/socialv2-tools-api.mjs
         if (await handleSocialV2ToolsApi({
           agentTokenOk, api, appendActivity, appendFeedbackEntry, atomicWriteJson, bot, feedbackTimes, fetchMediaData, formatForwardResponse, getSocialV2State, log, modeAllowed, readBody, readFeedbackEntries, readThroughSeqV2, readToolLog, resolveReplyInfo, seenForwardIds, sendJson, truncateText, v2SessionAllowed, v2ToolEnabled,
+          TOOL_LOG_FILE,
+          FEEDBACK_FILE,
           req, url,
           currentMode: () => currentMode,
           cfg,
@@ -8550,6 +8575,11 @@ async function main() {
   startDiaryTimer();
   startMemoryRefineTimer();
   refreshMemorySummariesV3('boot');
+  // 运行期也要定期补齐：桥接连续跑几周时，只在启动调一次会让后续日期的摘要永远不生成，
+  // 而事件归档后原始消息只能靠摘要找回来（用户反馈过「以前说过的话她想不起来」）。
+  setInterval(() => {
+    try { refreshMemorySummariesV3('tick'); } catch (error) { log('[memory] 定期压缩失败:', error?.message ?? error); }
+  }, 60 * 60 * 1000).unref?.();
   startDshWatch();
   startConsoleServer();
 

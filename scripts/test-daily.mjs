@@ -61,6 +61,11 @@ const suite = [
     expect: 0,
   },
   {
+    name: '路由依赖注入',
+    args: ['--test', 'scripts/test-routes-inject.mjs'],
+    expect: 0,
+  },
+  {
     name: '记忆库端到端',
     args: ['--test', 'scripts/test-memory-e2e.mjs'],
     expect: 0,

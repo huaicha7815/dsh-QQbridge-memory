@@ -6,6 +6,19 @@
 // 约定：返回 true 表示「这个请求我处理了」，调用方直接 return；false 继续往下走。
 export async function handleSocialV2ControlApi({
   acknowledgeMessagesV2, agentTokenOk, atomicWriteJson, cancelReplyCheckV2, clearAllPendingWakeLeases, clearAllSocialV2Timers, computeWakeSafetyV2, drainAllPromptQueues, ensureWakeableV2, forgetAgentToken, getSocialV2State, isSleepingConfigV2, log, normalizeSpeakerIdsV2, preSleepWaitBlockedV2, readBody, readConfigObject, readThroughSeqV2, refreshAllDefaultWakeConfigsV2, requestedReadThroughSeqV2, saveSocialV2State, saveState, scheduleProactiveCheckV2, sendJson, setupSleepTimerV2, stopRetiredSessionWork, v2SessionAllowed, v2ToolEnabled, cfg, socialV2, SOCIAL_V2_FILE, ROOT, wakeConfigUpdatedKeys, wakeConfigMissCount, readRoleState, roleHintForMode, roleNameFor, syncStickerLibrary, stickerEnabled, voiceCfg, voiceLibrary, state, retireSession, sessionEpoch,
+  sessionPromises,
+  sessionModels,
+  modelAppliedSessions,
+  reverse,
+  collectors,
+  v2TurnStartAt,
+  toolCallNames,
+  pendingSendToolCalls,
+  sendToolSucceededSessions,
+  seenForwardIds,
+  pendingWakeKeys,
+  api,
+  bumpSessionEpoch,
   req, url,
   currentMode: getCurrentMode,
 }) {
@@ -202,7 +215,7 @@ export async function handleSocialV2ControlApi({
           return true;
         }
         if (req.method === 'POST' && url.pathname === '/api/socialV2/reset') {
-          sessionEpoch++;
+          bumpSessionEpoch();
           sessionPromises.clear();
           clearAllSocialV2Timers();
           drainAllPromptQueues('二代状态已重置');
