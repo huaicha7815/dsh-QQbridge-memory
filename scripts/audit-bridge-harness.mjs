@@ -1,4 +1,4 @@
-// Execute the real bridge initialization/functions against temporary files and fake peers.
+﻿// Execute the real bridge initialization/functions against temporary files and fake peers.
 // No production config, QQ connection, DSH process, or persistent home is accessed.
 import fs from 'node:fs';
 import os from 'node:os';
@@ -25,6 +25,25 @@ import * as socialv2Store from '../src/core/socialv2-store.mjs';
 import * as socialv2Wake from '../src/core/socialv2-wake.mjs';
 import * as socialv2Scheduler from '../src/core/socialv2-scheduler.mjs';
 import * as socialv2Prompt from '../src/core/socialv2-prompt.mjs';
+// bridge.js 把 HTTP 路由拆成了 src/routes/*.mjs，VM 里剥掉 import 后这些 handler
+// 必须同样注入，否则 bridge 调 handleXxxApiRequest 时是 undefined → 全部端点 500。
+import * as routeMemoryApi from '../src/routes/memory-api.mjs';
+import * as routeRolesApi from '../src/routes/roles-api.mjs';
+import * as routeTokensApi from '../src/routes/tokens-api.mjs';
+import * as routeStickersApi from '../src/routes/stickers-api.mjs';
+import * as routeSocialV2MemoryApi from '../src/routes/socialv2-memory-api.mjs';
+import * as routeSocialV2StateApi from '../src/routes/socialv2-state-api.mjs';
+import * as routeSocialV2ControlApi from '../src/routes/socialv2-control-api.mjs';
+import * as routeSocialV2ToolsApi from '../src/routes/socialv2-tools-api.mjs';
+import * as routeSocialV2WakeSlangApi from '../src/routes/socialv2-wake-slang-api.mjs';
+import * as routeSocialV2SendApi from '../src/routes/socialv2-send-api.mjs';
+// 这批同样是 bridge.js 顶层 import、但 VM 里被剥掉的模块：不注入就会在端点上抛
+// 「xxx is not defined」→ 500（roleCharStats 就是这么暴露出来的）。
+import yaml from 'js-yaml';
+import * as roleCard from '../src/role-card.js';
+import * as presetPrompt from '../src/preset-prompt.js';
+import * as qqModelView from '../src/qq-model-view.js';
+import * as snowlumaConn from '../src/snowluma-conn.js';
 import { unwrap, createTurnCollector } from '../src/dsh-client.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -142,6 +161,12 @@ export async function bridgeHarness({ config = {}, savedState, globals = {} } = 
     // 长期记忆：bridge.js 顶层 import 在这里被剥掉，必须把同一份实现注入 VM，
     // 否则 createMemoryStore 未定义会让整个 harness 起不来。
     ...memoryLib, ...memoryStore, ...socialv2Store, ...socialv2Wake, ...socialv2Scheduler, ...socialv2Prompt,
+    // 路由层（src/routes/*）：同样必须与 bridge.js 的 import 一一对应注入。
+    ...routeMemoryApi, ...routeRolesApi, ...routeTokensApi, ...routeStickersApi,
+    ...routeSocialV2MemoryApi, ...routeSocialV2StateApi, ...routeSocialV2ControlApi,
+    ...routeSocialV2ToolsApi, ...routeSocialV2WakeSlangApi, ...routeSocialV2SendApi,
+    // 其余被 bridge.js 顶层 import、VM 里剥掉的模块（roleCharStats 等就是靠这里补齐的）。
+    yaml, ...roleCard, ...presetPrompt, ...qqModelView, ...snowlumaConn,
     // ACL 收紧会 spawn icacls 去改**真实**文件系统；测试不该做这件事（同理见下面的
     // cleanupTemp / processAudioVolume 桩）。桩成成功，让 hardenStateDirAcl 走正常分支。
     hardenDir: () => ({ ok: true, detail: 'stub' }),

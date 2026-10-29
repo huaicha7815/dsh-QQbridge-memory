@@ -251,3 +251,66 @@ test('锁文件损坏不会被当成活锁卡死', () => {
   assert.equal(r.replayed, 1, '应能正常恢复');
   cleanup(dir);
 });
+
+test('上次 replay 崩溃留下的 .processing 快照会被恢复，而不是被覆盖', () => {
+  const { dir, store } = freshStore();
+  // 遗留快照里有一条事件 A
+  const rowA = { id: 'snap-a', t: Date.now(), k: 'g:1', kind: 'msg', text: '旧快照里的事', s: 1 };
+  fs.writeFileSync(
+    path.join(dir, 'write-failures.jsonl.processing'),
+    JSON.stringify({ at: Date.now(), phase: 'event', id: 'snap-a', row: rowA, error: 'crash' }) + '\n',
+    'utf8',
+  );
+  // 主清单里有一条事件 B
+  const rowB = { id: 'snap-b', t: Date.now(), k: 'g:1', kind: 'msg', text: '主清单里的事', s: 1 };
+  fs.writeFileSync(
+    path.join(dir, 'write-failures.jsonl'),
+    JSON.stringify({ at: Date.now(), phase: 'event', id: 'snap-b', row: rowB, error: 'fail' }) + '\n',
+    'utf8',
+  );
+
+  const r = store.replayWriteFailures();
+  assert.equal(r.replayed, 2, '两条都要恢复，不能只恢复主清单那条');
+  const evFile = path.join(dir, 'events', `${day()}.jsonl`);
+  const content = fs.readFileSync(evFile, 'utf8');
+  assert.ok(content.includes('旧快照里的事'), '遗留快照里的事件必须恢复');
+  assert.ok(content.includes('主清单里的事'), '主清单里的事件必须恢复');
+  cleanup(dir);
+});
+
+test('只有遗留 .processing 时，dry-run 和 apply 的计数一致', () => {
+  const { dir, store } = freshStore();
+  const row = { id: 'only-snap', t: Date.now(), k: 'g:1', kind: 'msg', text: '只有快照', s: 1 };
+  fs.writeFileSync(
+    path.join(dir, 'write-failures.jsonl.processing'),
+    JSON.stringify({ at: Date.now(), phase: 'event', id: 'only-snap', row, error: 'crash' }) + '\n',
+    'utf8',
+  );
+  // 主清单不存在
+  const dry = store.replayWriteFailures({ dryRun: true });
+  assert.equal(dry.replayed, 1, 'dry-run 也要看到遗留快照');
+  const st = store.stats();
+  assert.ok(st.writeFailures >= 1, '统计要计入遗留快照，不能显示 0');
+  const applied = store.replayWriteFailures();
+  assert.equal(applied.replayed, 1, 'apply 的计数要与 dry-run 一致');
+  cleanup(dir);
+});
+
+test('多个遗留快照都会被处理，不互相覆盖', () => {
+  const { dir, store } = freshStore();
+  for (const [name, id] of [["write-failures.jsonl.processing", "gen-1"], ["write-failures.jsonl.processing-123-abc", "gen-2"]]) {
+    const row = { id, t: Date.now(), k: 'g:1', kind: 'msg', text: `快照${id}`, s: 1 };
+    fs.writeFileSync(
+      path.join(dir, name),
+      JSON.stringify({ at: Date.now(), phase: 'event', id, row, error: 'crash' }) + '\n',
+      'utf8',
+    );
+  }
+  const r = store.replayWriteFailures();
+  assert.equal(r.replayed, 2, '两个快照都要恢复');
+  const evFile = path.join(dir, 'events', `${day()}.jsonl`);
+  const content = fs.readFileSync(evFile, 'utf8');
+  assert.ok(content.includes('快照gen-1'));
+  assert.ok(content.includes('快照gen-2'));
+  cleanup(dir);
+});

@@ -1219,19 +1219,22 @@ export function createMemoryStore(options = {}) {
       }
     }
     try {
-      // 快照：把清单原子 rename 走，之后桥接的 append 会写进新的 write-failures.jsonl。
-      // 不这么做的话，「重新读取 → rename 覆盖」之间新增的行仍会被吞掉（审查复现过）。
-      const processingFile = writeFailFile + '.processing';
+      // 遗留快照（上一次 replay 在 rename 后崩溃留下的）：必须和新快照一起处理。
+      // 以前 rename 到固定名 .processing 会把它覆盖掉，旧事件就永远丢了。
+      const leftovers = listPendingSnapshots();
+      // 唯一名快照：不会覆盖任何遗留文件。
+      const snapshotFile = `${writeFailFile}.processing-${Date.now()}-${crypto.randomUUID().slice(0, 6)}`;
       if (!dryRun) {
-        try { fs.renameSync(writeFailFile, processingFile); } catch { /* 清单不存在 */ }
+        try { fs.renameSync(writeFailFile, snapshotFile); } catch { /* 主清单不存在 */ }
       }
-      const lines = (() => {
-        try {
-          return fs.readFileSync(dryRun ? writeFailFile : processingFile, 'utf8').split('\n').filter(Boolean);
-        } catch { return []; }
-      })();
+      // dryRun 不动文件，直接读「遗留快照 + 主清单」；apply 读「遗留快照 + 本次快照」。
+      const sources = dryRun ? [...leftovers, writeFailFile] : [...leftovers, snapshotFile];
+      const lines = [];
+      for (const file of sources) {
+        try { lines.push(...fs.readFileSync(file, 'utf8').split('\n').filter(Boolean)); } catch { /* 读不到就跳过 */ }
+      }
       if (!lines.length) {
-        if (!dryRun) { try { fs.unlinkSync(processingFile); } catch {} }
+        if (!dryRun) { for (const f of sources) { try { fs.unlinkSync(f); } catch {} } }
         return { replayed: 0, skipped: 0, failed: 0, quarantined: 0, dryRun };
       }
       let replayed = 0;
@@ -1300,17 +1303,45 @@ export function createMemoryStore(options = {}) {
           if (bad.length) {
             try { fs.appendFileSync(writeFailFile + '.quarantine', bad.join('\n') + '\n', 'utf8'); } catch {}
           }
-          // 快照文件处理完就删；即使删失败，下次启动会把它当普通清单再处理一遍（幂等保证不重复写）。
-          try { fs.unlinkSync(processingFile); } catch {}
+          // 所有读过的快照都删掉（遗留的 + 本次的）；删失败也没关系，
+          // 下次会被当遗留快照再处理一遍，幂等检查保证不会重复写 L1。
+          for (const f of sources) { try { fs.unlinkSync(f); } catch {} }
         } catch {
           // 回填失败：.processing 还在，下次会再处理（幂等检查保证不会重复写 L1）
         }
-        writeFailureCount = Math.max(0, readFailureLines().length);
+        writeFailureCount = pendingFailureCount();
       }
       return { replayed, skipped, failed: remaining.length, quarantined, dryRun };
     } finally {
       if (lockHeld) releaseReplayLock(lockFile, owner);
     }
+  }
+
+  /**
+   * 列出所有遗留的 replay 快照文件（.processing / .processing-<token>）。
+   * 上一次 replay 可能在 rename 之后、处理完成之前崩溃，留下快照；
+   * 下一次 replay 必须先把它当待处理数据读掉，绝不能覆盖。
+   */
+  function listPendingSnapshots() {
+    const dir = path.dirname(writeFailFile);
+    const base = path.basename(writeFailFile);
+    const out = [];
+    try {
+      for (const name of fs.readdirSync(dir)) {
+        if (name.startsWith(`${base}.processing`)) out.push(path.join(dir, name));
+      }
+    } catch { /* 目录不存在 */ }
+    return out;
+  }
+
+  /** 待恢复记录总数 = 主清单 + 所有遗留快照（健康检查用）。 */
+  function pendingFailureCount() {
+    let n = 0;
+    try { n += fs.readFileSync(writeFailFile, 'utf8').split('\n').filter(Boolean).length; } catch { /* 主清单不存在 */ }
+    for (const file of listPendingSnapshots()) {
+      try { n += fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).length; } catch { /* 单个快照读不到 */ }
+    }
+    return n;
   }
 
   function l1HasId(day, id) {
@@ -1385,7 +1416,9 @@ export function createMemoryStore(options = {}) {
       config: getConfig(),
       today: dayString(now),
       // 写入失败：>0 说明有事件没落进 L1（聊天看起来正常，但记忆已经缺了）
-      writeFailures: writeFailureCount,
+      // 计数要包含遗留快照：否则上一次 replay 崩溃后，健康页会显示「没有失败」，
+      // 而实际上还有一批记录躺在 .processing-* 里没恢复。
+      writeFailures: Math.max(writeFailureCount, pendingFailureCount()),
       lastWriteFailure,
       // 坏行（无法解析 / 缺 id）被隔离后的数量：这些也是「没恢复的数据」，
       // 不进 writeFailures 会让人误以为处理完了。
