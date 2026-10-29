@@ -71,6 +71,11 @@ const suite = [
     expect: 0,
   },
   {
+    name: '记忆写入恢复（replay）',
+    args: ['--test', 'scripts/test-memory-replay.mjs'],
+    expect: 0,
+  },
+  {
     name: '记忆库端到端',
     args: ['--test', 'scripts/test-memory-e2e.mjs'],
     expect: 0,

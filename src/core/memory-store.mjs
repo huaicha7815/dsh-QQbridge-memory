@@ -1127,6 +1127,30 @@ export function createMemoryStore(options = {}) {
   function replayWriteFailures({ dryRun = false } = {}) {
     const lines = readFailureLines();
     if (!lines.length) return { replayed: 0, skipped: 0, failed: 0, quarantined: 0, dryRun };
+
+    // 并发保护：id 检查和 append 之间不是原子的，两个进程同时 --apply 会各写一份。
+    // 用 O_EXCL 建锁文件；锁超过 5 分钟视为上次崩溃残留，自动接管。
+    let lockFd = null;
+    if (!dryRun) {
+      const lockFile = writeFailFile + '.lock';
+      try {
+        lockFd = fs.openSync(lockFile, 'wx');
+      } catch (error) {
+        if (error && error.code === 'EEXIST') {
+          let stale = false;
+          try {
+            const stat = fs.statSync(lockFile);
+            stale = Date.now() - stat.mtimeMs > 5 * 60 * 1000;
+          } catch { /* 锁文件刚好被别人删了 */ }
+          if (!stale) {
+            return { replayed: 0, skipped: 0, failed: 0, quarantined: 0, dryRun, locked: true };
+          }
+          try { fs.unlinkSync(lockFile); } catch {}
+          try { lockFd = fs.openSync(lockFile, 'wx'); } catch { /* 竞争失败就放弃本轮 */ }
+        }
+      }
+    }
+    try {
     let replayed = 0;
     let skipped = 0;
     let quarantined = 0;
@@ -1149,7 +1173,17 @@ export function createMemoryStore(options = {}) {
           writeSalientRow(row, day, Number(row.s) || 0);
         } else {
           writeEventRow(row);
-          try { writeSalientRow(row, day, Number(row.s) || 0); } catch (e) { lastWriteFailure = { at: Date.now(), error: String(e?.message ?? e), phase: 'salient' }; }
+          try {
+            writeSalientRow(row, day, Number(row.s) || 0);
+          } catch (e) {
+            // 主事件已写进 L1，但 S3 副本没写：这条不能算「恢复完成」，
+            // 降级成 salient 阶段的待处理记录，下次 replay 只补副本。
+            remaining.push(JSON.stringify({
+              at: Date.now(), phase: 'salient', id, row, error: String(e?.message ?? e),
+            }));
+            lastWriteFailure = { at: Date.now(), error: String(e?.message ?? e), phase: 'salient' };
+            continue;
+          }
         }
         replayed += 1;
       } catch (error) {
@@ -1176,14 +1210,32 @@ export function createMemoryStore(options = {}) {
       writeFailureCount = remaining.length;
     }
     return { replayed, skipped, failed: remaining.length, quarantined, dryRun };
+    } finally {
+      if (lockFd != null) {
+        try { fs.closeSync(lockFd); } catch {}
+        try { fs.unlinkSync(writeFailFile + '.lock'); } catch {}
+      }
+    }
   }
 
   /** 某天的 L1 里是否已有这个事件 id（replay 幂等判断）。 */
   function l1HasId(day, id) {
+    const needle = '"id":' + JSON.stringify(id);
+    // 1) 当天活动文件
     try {
-      const content = fs.readFileSync(path.join(eventsDir, `${day}.jsonl`), 'utf8');
-      return content.includes('"id":' + JSON.stringify(id));
-    } catch { return false; }
+      if (fs.readFileSync(path.join(eventsDir, `${day}.jsonl`), 'utf8').includes(needle)) return true;
+    } catch { /* 当天文件可能还没建 */ }
+    // 2) 归档月文件：事件可能早已归档，「活动日里没有」不等于「库里没有」。
+    //    以前只查活动日，导致已归档的事件被 replay 又写进活动日 → readEvents 出现同 id 两条。
+    try {
+      const months = fs.readdirSync(archiveDir).filter((f) => f.endsWith('.jsonl'));
+      for (const name of months) {
+        try {
+          if (fs.readFileSync(path.join(archiveDir, name), 'utf8').includes(needle)) return true;
+        } catch { /* 单个归档文件读不到就跳过 */ }
+      }
+    } catch { /* 还没有归档目录 */ }
+    return false;
   }
 
   function stats({ now = Date.now() } = {}) {
@@ -1241,6 +1293,13 @@ export function createMemoryStore(options = {}) {
       // 写入失败：>0 说明有事件没落进 L1（聊天看起来正常，但记忆已经缺了）
       writeFailures: writeFailureCount,
       lastWriteFailure,
+      // 坏行（无法解析 / 缺 id）被隔离后的数量：这些也是「没恢复的数据」，
+      // 不进 writeFailures 会让人误以为处理完了。
+      quarantined: (() => {
+        try {
+          return fs.readFileSync(writeFailFile + '.quarantine', 'utf8').split('\n').filter(Boolean).length;
+        } catch { return 0; }
+      })(),
     };
   }
 

@@ -61,7 +61,9 @@ const FILES = [
 ];
 
 // 这些由调用方在调用点用 `req, url` 之类固定提供，或者在模块里是可选参数
-const OPTIONAL = new Set(['req', 'url', 'sendJson', 'readBody']);
+// 只有 req/url 是调用点按位置约定给的；sendJson/readBody 是必需依赖，
+// 漏传会让路由直接不工作，不能从 missing 里过滤掉。
+const OPTIONAL = new Set(['req', 'url']);
 
 test('bridge 调用点传齐了所有 routes 模块声明的参数', () => {
   const problems = [];
