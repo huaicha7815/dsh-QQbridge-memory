@@ -18,9 +18,18 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const OUT = path.join(root, 'docs', 'ROUTES.md');
 const CHECK = process.argv.includes('--check');
 
+// 自动收集：bridge.js + src/routes/ 下所有拆出去的域模块，
+// 以后新增模块不用改这个脚本（只要它按同样写法写路由判断）。
+const ROUTE_DIR = path.join(root, 'src', 'routes');
+const routeModules = fs.existsSync(ROUTE_DIR)
+  ? fs.readdirSync(ROUTE_DIR).filter((n) => n.endsWith('.mjs')).sort().map((n) => ({
+    file: `src/routes/${n}`,
+    label: `routes/${n}`,
+  }))
+  : [];
 const SOURCES = [
   { file: 'src/bridge.js', label: 'bridge.js（主服务）' },
-  { file: 'src/routes/memory-api.mjs', label: 'routes/memory-api.mjs（记忆库只读）' },
+  ...routeModules,
 ].map((s) => ({ ...s, abs: path.join(root, s.file) })).filter((s) => fs.existsSync(s.abs));
 
 /** 从一行代码里抠出 (method, path)；匹配不到返回 null。 */
