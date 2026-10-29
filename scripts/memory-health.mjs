@@ -103,9 +103,15 @@ say('');
 // ── 1. 规模 ───────────────────────────────────────────────
 say('【规模】');
 // 事件写入失败：这是「聊天看起来正常、但 L1 已经缺数据」的唯一信号。
-if (st.writeFailures > 0) {
-  say(`  ⚠️ 事件写入失败 ${st.writeFailures} 条（最近一次：${st.lastWriteFailure?.error ?? "未知"}）`);
-  say('     这些消息没进 L1，可以用 store.replayWriteFailures() 重新写回；先修好 events/ 目录权限或磁盘空间。');
+if (st.pendingRecoverable > 0 || st.unrecoverableOverflow > 0) {
+  // 拆成两本账：能补回的 vs 只丢了计数的。混成一个数字用户没法判断。
+  say(`  ⚠️ 事件写入失败：${st.pendingRecoverable} 条可恢复 + ${st.unrecoverableOverflow} 条溢出（已丢明细，只能知道数量）`);
+  if (st.pendingRecoverable > 0) {
+    say('     可恢复部分用 node scripts/memory-health.mjs --replay --apply 写回；先修好 events/ 权限或磁盘空间。');
+  }
+  if (st.unrecoverableOverflow > 0) {
+    say('     溢出的条目超过失败清单上限（10000 条），明细没有保存、无法自动恢复——这是上限换可用性的代价。');
+  }
 }
 if (st.unreadableSnapshots > 0) {
   say(`  ⚠️ 有 ${st.unreadableSnapshots} 个待恢复快照读不出来（权限问题或目录冒充文件）`);

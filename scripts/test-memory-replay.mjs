@@ -490,3 +490,57 @@ test('crossSessionPolicy=isolated 时只检索当前会话', () => {
   assert.ok(scoped.some((h) => String(h.text).includes('群里')), '当前会话的内容要能搜到');
   cleanup(dir);
 });
+
+test('replay 后 overflow 计数一致：当前 store / 重启 store / 文件三方对齐', () => {
+  const { dir, store } = freshStore();
+  // 2 条明细 + 5 条溢出
+  const rows = [
+    JSON.stringify({ at: Date.now(), phase: 'event', id: 'a1', row: { id: 'a1', t: Date.now(), k: 'g:1', kind: 'msg', text: '一', s: 1 }, error: 'x' }),
+    JSON.stringify({ at: Date.now(), phase: 'event', id: 'a2', row: { id: 'a2', t: Date.now(), k: 'g:1', kind: 'msg', text: '二', s: 1 }, error: 'x' }),
+  ].join('\n') + '\n';
+  fs.writeFileSync(path.join(dir, 'write-failures.jsonl'), rows, 'utf8');
+  fs.writeFileSync(path.join(dir, 'write-failures.jsonl.overflow'), '5', 'utf8');
+
+  const before = store.stats();
+  assert.equal(before.pendingRecoverable, 2, '可恢复明细应是 2');
+  assert.equal(before.unrecoverableOverflow, 5, '不可恢复溢出应是 5');
+  assert.equal(before.writeFailures, 7, '总和 7');
+
+  const r = store.replayWriteFailures();
+  assert.equal(r.replayed, 2, '两条明细恢复');
+
+  const after = store.stats();
+  assert.equal(after.pendingRecoverable, 0, '明细已恢复');
+  assert.equal(after.unrecoverableOverflow, 5, '溢出仍然不可恢复，必须保留');
+  assert.equal(after.writeFailures, 5, '当前 store 不能显示 0');
+
+  // 重启后必须看到同一个数
+  const restarted = createMemoryStore({ dir });
+  const rs = restarted.stats();
+  assert.equal(rs.writeFailures, 5, '重启后仍是 5（不能回退成 0 或 7）');
+  assert.equal(rs.pendingRecoverable, 0);
+  assert.equal(rs.unrecoverableOverflow, 5);
+  assert.equal(fs.readFileSync(path.join(dir, 'write-failures.jsonl.overflow'), 'utf8').trim(), '5');
+  cleanup(dir);
+});
+
+test('overflow 批量累加：不是每条都写盘', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'replay-'));
+  // 先塞满明细（10000 行），再创建 store —— 这样计数初始化时才读得到
+  const lines = [];
+  for (let i = 0; i < 10000; i += 1) {
+    lines.push(JSON.stringify({ at: Date.now(), phase: 'event', id: `x${i}`, row: { id: `x${i}`, t: Date.now(), k: 'g:1', kind: 'msg', text: 'x', s: 1 }, error: 'x' }));
+  }
+  fs.writeFileSync(path.join(dir, 'write-failures.jsonl'), lines.join('\n') + '\n', 'utf8');
+  // 再让事件写入持续失败
+  fs.rmSync(path.join(dir, 'events'), { recursive: true, force: true });
+  fs.writeFileSync(path.join(dir, 'events'), 'blocked');
+  const store = createMemoryStore({ dir });
+  // 制造 150 次溢出（超过 100 的批量阈值）
+  for (let i = 0; i < 150; i += 1) {
+    store.appendEvent({ t: Date.now(), k: 'g:1', kind: 'msg', text: `溢出${i}`, s: 1 });
+  }
+  const st = store.stats(); // stats 会 flush
+  assert.ok(st.unrecoverableOverflow >= 150, `溢出计数应至少 150，实际 ${st.unrecoverableOverflow}`);
+  cleanup(dir);
+});

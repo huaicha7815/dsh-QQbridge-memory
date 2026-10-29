@@ -153,8 +153,20 @@ export function createMemoryStore(options = {}) {
   function readOverflowCount() {
     try { return Number(fs.readFileSync(overflowFile, 'utf8').trim()) || 0; } catch { return 0; }
   }
+  // 溢出计数在内存里累加，每 100 条（或读取统计时）批量落盘。
+  // 以前是每条失败同步 read+write 一次，故障风暴下每次 QQ 消息都要碰一次磁盘。
+  let overflowPending = 0;
   function bumpOverflowCount() {
-    try { fs.writeFileSync(overflowFile, String(readOverflowCount() + 1), 'utf8'); } catch { /* 写不进去只能靠内存计数 */ }
+    overflowPending += 1;
+    if (overflowPending >= 100) flushOverflowCount();
+  }
+  function flushOverflowCount() {
+    if (!overflowPending) return;
+    try {
+      const next = readOverflowCount() + overflowPending;
+      fs.writeFileSync(overflowFile, String(next), 'utf8');
+      overflowPending = 0;
+    } catch { /* 写不进去就继续攒着，下次再试 */ }
   }
   let writeFailureCount = initialFailLines.length + readOverflowCount();
   let lastWriteFailure = (() => {
@@ -1363,7 +1375,7 @@ export function createMemoryStore(options = {}) {
         } catch {
           // 回填失败：.processing 还在，下次会再处理（幂等检查保证不会重复写 L1）
         }
-        writeFailureCount = pendingFailureCount();
+        writeFailureCount = pendingFailureStats().total;
       }
       return { replayed, skipped, failed: remaining.length, quarantined, dryRun, unreadable: unreadableFiles.length };
     } finally {
@@ -1394,6 +1406,10 @@ export function createMemoryStore(options = {}) {
    * 健康页必须能提示，否则用户会以为一切正常。
    */
   function pendingFailureStats() {
+    // overflow 是「知道丢了，但没有明细可恢复」的账本，必须一起算：
+    // 以前 replay 结束后把当前计数清零，但 .overflow 还在，重启后数字又回来。
+    flushOverflowCount();
+    const overflow = readOverflowCount();
     let records = 0;
     let unreadable = 0;
     try { records += fs.readFileSync(writeFailFile, 'utf8').split('\n').filter(Boolean).length; } catch { /* 主清单不存在 */ }
@@ -1404,7 +1420,7 @@ export function createMemoryStore(options = {}) {
         unreadable += 1;
       }
     }
-    return { records, unreadable };
+    return { records, unreadable, overflow, total: records + overflow };
   }
 
   /** 兼容旧调用点：只取记录数。 */
@@ -1559,9 +1575,12 @@ export function createMemoryStore(options = {}) {
       // 写入失败：>0 说明有事件没落进 L1（聊天看起来正常，但记忆已经缺了）
       // 计数要包含遗留快照：否则上一次 replay 崩溃后，健康页会显示「没有失败」，
       // 而实际上还有一批记录躺在 .processing-* 里没恢复。
-      writeFailures: Math.max(writeFailureCount, pendingFailureStats().records),
-      // 读不出来的快照数量：health 要单独提示，不能显示 0 就当成没事
+      // 四个明确指标：用户要能分清「还能恢复」和「永久丢了明细」。
+      pendingRecoverable: pendingFailureStats().records,
+      unrecoverableOverflow: pendingFailureStats().overflow,
       unreadableSnapshots: pendingFailureStats().unreadable,
+      // writeFailures 保留为总和（兼容旧调用点/健康页）
+      writeFailures: Math.max(writeFailureCount, pendingFailureStats().total),
       lastWriteFailure,
       // 坏行（无法解析 / 缺 id）被隔离后的数量：这些也是「没恢复的数据」，
       // 不进 writeFailures 会让人误以为处理完了。
