@@ -350,3 +350,35 @@ src/routes/socialv2-stats-api.mjs    ← 诊断与统计
 1. Step 2 剩余：把 `scheduleWakeV2` 的定时器依赖抽成可注入（`setTimer/clearTimer`），
    之后它也能用假时钟单测（推进到「该唤醒」的时刻）。
 2. Step 3：54 个端点分 4 个文件搬迁。
+
+### Step 3 端点搬迁 —— 第一批完成（2026-10-29，commit `6dc5d7c`）
+
+已搬：`src/routes/socialv2-memory-api.mjs`（10 个端点）
+
+```
+memory / memory-append / memory-search / memory-stats / memory-remember
+memory-inspect / memory-profile / memory-update / memory-remove / memory-clear
+```
+
+`bridge.js` 11333 → 11056 行。这批的调用方是 QQ 侧 AI（agent token），
+三道校验（token / 会话范围 / 工具开关）原样保留。
+
+**两个值得记的坑**：
+
+1. 抽取范围把早先拆出的 `/api/memory/*` 调用块一起包了进去 → 所有 `/api/memory/*` 变 500。
+   教训：**按行号切块时要先确认这段里没有别的域留下的调用桩**。
+2. 依赖注入漏了 `memoryQueryV3` / `formatMemoryInjectionV3`（bridge 内部函数），
+   错误只在运行时出现（500「xxx is not defined」）。
+   教训：注入清单应该**从代码里的实际引用生成**，不要凭印象列。
+
+### Step 3 剩余（未做，按风险排序）
+
+| 组 | 端点数 | 风险 | 说明 |
+| --- | --- | --- | --- |
+| 状态与配置 | 11 | 低 | config/activity/reset/state/prompt/unread/recent/mark-read/wake-config/states |
+| 唤醒与等待 | 3 | 中 | wake/wait/check-send，涉及 DSH 会话与队列 |
+| 工具侧 | 10 | 中 | tool-log/feedback/my-recent/record-sent/message-detail/forward-*/active-members |
+| 发送与媒体 | 15 | **高** | send-*/qzone-*/voice/sticker-*，直连 SnowLuma 发送链路，建议最后做 |
+| 黑话 | 2 | 中 | slang/query 与 slang/submit 依赖 slangEntries（let + 4 张 Map/Set） |
+
+建议顺序：状态与配置 → 工具侧 → 唤醒与等待 → 黑话 → 发送与媒体。
