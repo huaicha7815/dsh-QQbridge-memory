@@ -5653,7 +5653,13 @@ async function main() {
       const memCfg = memoryStore.getConfig();
       if (!memCfg.enabled) return formatMemoryV2(st);
       const query = memoryQueryV3(st);
-      const hits = query ? memoryStore.search(query, { topK: memCfg.searchTopK, days: memCfg.searchDays }) : [];
+      // isolated 时自动注入也必须按当前会话过滤，否则检索接口隔离了、注入却没隔离。
+      const isolateInjection = memCfg.crossSessionPolicy === 'isolated';
+      const hits = query ? memoryStore.search(query, {
+        topK: memCfg.searchTopK,
+        days: memCfg.searchDays,
+        ...(isolateInjection ? { key } : {}),
+      }) : [];
       const hot = {
         topics: Array.isArray(st?.activeTopics) ? st.activeTopics.filter((t) => t && t.text) : [],
         thoughts: (Array.isArray(st?.pendingThoughts) ? st.pendingThoughts : [])

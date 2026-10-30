@@ -60,12 +60,12 @@
 | GET | `/api/socialV2/memory-search` | 检索是纯本地 BM25，零 token；只有 AI 主动调用时才产生这两个工具调用的成本 | src/routes/socialv2-memory-api.mjs:44 |
 | GET | `/api/socialV2/memory-stats` | — | src/routes/socialv2-memory-api.mjs:68 |
 | POST | `/api/socialV2/memory-remember` | — | src/routes/socialv2-memory-api.mjs:77 |
-| GET | `/api/socialV2/memory-inspect` | — | src/routes/socialv2-memory-api.mjs:175 |
-| GET | `/api/socialV2/memory-profile` | — | src/routes/socialv2-memory-api.mjs:203 |
-| POST | `/api/socialV2/memory-update` | — | src/routes/socialv2-memory-api.mjs:211 |
-| GET | `/api/socialV2/memory` | — | src/routes/socialv2-memory-api.mjs:264 |
-| POST | `/api/socialV2/memory-remove` | — | src/routes/socialv2-memory-api.mjs:290 |
-| POST | `/api/socialV2/memory-clear` | — | src/routes/socialv2-memory-api.mjs:316 |
+| GET | `/api/socialV2/memory-inspect` | — | src/routes/socialv2-memory-api.mjs:186 |
+| GET | `/api/socialV2/memory-profile` | — | src/routes/socialv2-memory-api.mjs:214 |
+| POST | `/api/socialV2/memory-update` | — | src/routes/socialv2-memory-api.mjs:222 |
+| GET | `/api/socialV2/memory` | — | src/routes/socialv2-memory-api.mjs:275 |
+| POST | `/api/socialV2/memory-remove` | — | src/routes/socialv2-memory-api.mjs:301 |
+| POST | `/api/socialV2/memory-clear` | — | src/routes/socialv2-memory-api.mjs:327 |
 | POST | `/api/socialV2/send-burst` | — | src/routes/socialv2-send-api.mjs:21 |
 | POST | `/api/socialV2/send-message` | — | src/routes/socialv2-send-api.mjs:148 |
 | POST | `/api/socialV2/send-poke` | — | src/routes/socialv2-send-api.mjs:297 |

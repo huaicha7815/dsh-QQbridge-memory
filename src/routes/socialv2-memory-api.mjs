@@ -140,7 +140,18 @@ export async function handleSocialV2MemoryApi({
             const name = redactKnownTokensOnly(String(body.name ?? '').trim());
             const content = redactKnownTokensOnly(String(body.content ?? '').trim());
             if (!name || !content) { sendJson({ ok: false, error: 'correct 需要 name 和 content' }, 400); return true; }
-            const out = memoryStore.correctFact(name, content);
+            // 和 person 一样解析 uid：同名不同人时，纠错不能落到别人身上。
+            let correctUid = String(body.uid ?? '').trim();
+            if (!correctUid) {
+              try {
+                const recent = memoryStore.readEvents({ days: 14 });
+                for (let i = recent.length - 1; i >= 0; i -= 1) {
+                  const e = recent[i];
+                  if (e && e.who === name && String(e.uid ?? '').trim()) { correctUid = String(e.uid).trim(); break; }
+                }
+              } catch { /* 读不到就按名字匹配，退回旧行为 */ }
+            }
+            const out = memoryStore.correctFact(name, content, { uid: correctUid });
             profile = out.profile;
             okFlag = out.changed;
             correctResult = { action: out.action, replaced: out.replaced || null };

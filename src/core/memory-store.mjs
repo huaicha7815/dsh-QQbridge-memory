@@ -150,23 +150,26 @@ export function createMemoryStore(options = {}) {
   }
   const initialFailLines = readFailureLines();
   const overflowFile = writeFailFile + '.overflow';
+  /**
+   * 溢出计数用「追加日志」而不是「读-改-写」：
+   * 1. 崩溃不丢：每条失败 append 一行 "1"，已落盘的永远不会因为进程被杀而消失；
+   * 2. 不会损坏历史：O_APPEND 是原子追加，不会像覆盖写那样中途崩掉整份计数；
+   * 3. 仍然便宜：超过上限后本来就不写明细了，写 1 字节比写整行小三个数量级。
+   */
   function readOverflowCount() {
-    try { return Number(fs.readFileSync(overflowFile, 'utf8').trim()) || 0; } catch { return 0; }
+    try {
+      const raw = fs.readFileSync(overflowFile, 'utf8').trim();
+      if (!raw) return 0;
+      // 兼容两种格式：数字（旧）和逐行 append（新）
+      if (/^\d+$/.test(raw)) return Number(raw);
+      return raw.split('\n').filter(Boolean).length;
+    } catch { return 0; }
   }
-  // 溢出计数在内存里累加，每 100 条（或读取统计时）批量落盘。
-  // 以前是每条失败同步 read+write 一次，故障风暴下每次 QQ 消息都要碰一次磁盘。
-  let overflowPending = 0;
   function bumpOverflowCount() {
-    overflowPending += 1;
-    if (overflowPending >= 100) flushOverflowCount();
+    try { fs.appendFileSync(overflowFile, '1\n', 'utf8'); } catch { /* 连 append 都失败就只能靠内存计数 */ }
   }
   function flushOverflowCount() {
-    if (!overflowPending) return;
-    try {
-      const next = readOverflowCount() + overflowPending;
-      fs.writeFileSync(overflowFile, String(next), 'utf8');
-      overflowPending = 0;
-    } catch { /* 写不进去就继续攒着，下次再试 */ }
+    // 追加日志没有内存缓冲，无需 flush（保留空实现给调用点）
   }
   let writeFailureCount = initialFailLines.length + readOverflowCount();
   let lastWriteFailure = (() => {
@@ -918,7 +921,13 @@ export function createMemoryStore(options = {}) {
       };
     });
 
-    const dayDocs = readSummaries({ days, now }).map((s) => {
+    // isolated 时按摘要的 keys[] 过滤：不含当前会话的整天摘要直接跳过。
+    const summaryAllowed = (keys) => {
+      if (!scopeKey) return true;
+      if (!Array.isArray(keys) || !keys.length) return false; // 没有会话标记的旧摘要，保守跳过
+      return keys.includes(scopeKey);
+    };
+    const dayDocs = readSummaries({ days, now }).filter((s) => summaryAllowed(s.keys)).map((s) => {
       const lines = (s.lines || []).map(lineText).filter(Boolean);
       const maxTier = Math.max(1, ...(Array.isArray(s.tiers) && s.tiers[1] ? [2] : [1]),
         ...(s.lines || []).map((l) => (l && typeof l === 'object' && Number.isInteger(l.s) ? l.s : 1)));
@@ -935,7 +944,9 @@ export function createMemoryStore(options = {}) {
       };
     });
 
-    const weekDocs = readWeekNotes({ weeks: Math.ceil(days / 7) + 4, now }).map((w) => {
+    const weekDocs = readWeekNotes({ weeks: Math.ceil(days / 7) + 4, now })
+      .filter((w) => summaryAllowed(w.keys))
+      .map((w) => {
       const id = `w:${w.week}`;
       return {
         id,
@@ -951,7 +962,9 @@ export function createMemoryStore(options = {}) {
       };
     });
 
-    const monthDocs = readMonthNotes({ months: Math.ceil(days / 30) + 3, now }).map((m) => {
+    const monthDocs = readMonthNotes({ months: Math.ceil(days / 30) + 3, now })
+      .filter((m) => summaryAllowed(m.keys))
+      .map((m) => {
       const id = `m:${m.month}`;
       return {
         id,
@@ -1082,9 +1095,9 @@ export function createMemoryStore(options = {}) {
   }
 
   /** 主动纠错：把某人的一条旧事实换成新说法（旧文本留 previous 可追溯）。 */
-  function correctFact(name, content, { now = Date.now() } = {}) {
+  function correctFact(name, content, { now = Date.now(), uid = '' } = {}) {
     const p = readProfile();
-    const out = correctPersonFact(p, name, content, { now });
+    const out = correctPersonFact(p, name, content, { now, uid });
     if (out.changed) writeProfile(out.profile);
     return out;
   }
@@ -1174,13 +1187,12 @@ export function createMemoryStore(options = {}) {
   // 2. 过期接管只按 mtime 判断 → 现在看 owner + at，且只接管确实过期的；
   // 3. 释放时无条件 unlink → 现在只删自己持有（owner 匹配）的锁。
   function acquireReplayLock(lockFile, owner) {
-    const writeLock = () => fs.writeFileSync(
-      lockFile,
-      JSON.stringify({ owner, pid: process.pid, at: Date.now() }),
-      { flag: 'wx' },
-    );
     try {
-      writeLock();
+      fs.writeFileSync(
+        lockFile,
+        JSON.stringify({ owner, pid: process.pid, at: Date.now() }),
+        { flag: 'wx' },
+      );
       return true;
     } catch (error) {
       if (!error || error.code !== 'EEXIST') {
@@ -1189,17 +1201,33 @@ export function createMemoryStore(options = {}) {
         console.warn('[memory] 无法创建 replay 锁，本轮不执行:', error?.message ?? error);
         return false;
       }
+      // 锁已存在。过期/损坏时尝试接管，但接管必须**原子**：
+      // 旧实现是「读锁 → 判断过期 → unlink → 重建」，这是 TOCTOU ——
+      // 两个进程可能都读到同一个过期锁，A 重建后 B 用自己的 unlink 删掉 A 的新锁，
+      // 结果两个 replay 同时认为自己持锁。
+      // 现在改为：先 rename 把旧锁移走（OS 保证只有一个进程能成功），
+      // 成功的那一个才创建新锁；失败的直接放弃。
       let info = null;
       try { info = JSON.parse(fs.readFileSync(lockFile, 'utf8')); } catch { /* 锁文件损坏按过期处理 */ }
       const age = Date.now() - (Number(info && info.at) || 0);
       if (info && age < 5 * 60 * 1000) return false; // 活锁，放弃本轮
-      // 过期锁：先删再建；删和建都有竞争风险，失败就放弃（下次再来）
-      try { fs.unlinkSync(lockFile); } catch {}
+      const staleFile = `${lockFile}.stale-${process.pid}-${crypto.randomUUID().slice(0, 6)}`;
       try {
-        writeLock();
+        fs.renameSync(lockFile, staleFile); // 原子抢占：只有一个人成功
+      } catch {
+        return false; // 别人先接管了
+      }
+      try {
+        fs.writeFileSync(
+          lockFile,
+          JSON.stringify({ owner, pid: process.pid, at: Date.now() }),
+          { flag: 'wx' },
+        );
         return true;
       } catch {
-        return false;
+        return false; // 抢到旧锁但建新锁失败，放弃（旧锁已被移走，下次会重建）
+      } finally {
+        try { fs.unlinkSync(staleFile); } catch {}
       }
     }
   }
@@ -1439,9 +1467,26 @@ export function createMemoryStore(options = {}) {
   function migrateLegacyRecords({ dryRun = false } = {}) {
     const result = { failureIdsAdded: 0, archiveSrcDaysAdded: 0, filesTouched: 0, dryRun };
 
+    // 迁移和 replay 一样要防并发：桥接在「读取」和「写回」之间追加的新失败行，
+    // 如果直接整体覆盖就会丢。这里复用同一套协议：
+    //   拿锁 → rename 快照 → 只处理快照 → append 回主清单 → 删快照。
+    const lockFile = writeFailFile + '.lock';
+    const owner = `${process.pid}-${crypto.randomUUID().slice(0, 8)}`;
+    let lockHeld = false;
+    if (!dryRun) {
+      lockHeld = acquireReplayLock(lockFile, owner);
+      if (!lockHeld) return { ...result, locked: true };
+    }
+    try {
+
     // 1) 失败清单
     try {
-      const lines = fs.readFileSync(writeFailFile, 'utf8').split('\n').filter(Boolean);
+      let sourceFile = writeFailFile;
+      if (!dryRun) {
+        sourceFile = `${writeFailFile}.migrate-${Date.now()}-${crypto.randomUUID().slice(0, 6)}`;
+        try { fs.renameSync(writeFailFile, sourceFile); } catch { sourceFile = writeFailFile; }
+      }
+      const lines = fs.readFileSync(sourceFile, 'utf8').split('\n').filter(Boolean);
       let changed = 0;
       const seen = new Set();
       const out = lines.map((line) => {
@@ -1463,10 +1508,12 @@ export function createMemoryStore(options = {}) {
         result.failureIdsAdded = changed;
         result.filesTouched += 1;
         if (!dryRun) {
-          const tmp = writeFailFile + '.migrate-tmp';
-          fs.writeFileSync(tmp, out.join('\n') + '\n', 'utf8');
-          fs.renameSync(tmp, writeFailFile);
+          // append 回主清单：不改动期间桥接新写入的行（rename 快照已经隔离了旧内容）。
+          fs.appendFileSync(writeFailFile, out.join('\n') + '\n', 'utf8');
         }
+      }
+      if (!dryRun && sourceFile !== writeFailFile) {
+        try { fs.unlinkSync(sourceFile); } catch {}
       }
     } catch { /* 没有失败清单 */ }
 
@@ -1499,6 +1546,9 @@ export function createMemoryStore(options = {}) {
       }
     }
     return result;
+    } finally {
+      if (lockHeld) releaseReplayLock(lockFile, owner);
+    }
   }
 
   function l1HasId(day, id) {

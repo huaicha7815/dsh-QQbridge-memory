@@ -1438,11 +1438,19 @@ export function mergePersonFact(profile, name, fact, { now = Date.now(), uid = '
  *
  * @returns {{profile:object, changed:boolean, action:'CORRECT'|'CREATE'|'SKIP', replaced?:string}}
  */
-export function correctPersonFact(profile, name, fact, { now = Date.now(), threshold = 0.35 } = {}) {
+export function correctPersonFact(profile, name, fact, { now = Date.now(), threshold = 0.35, uid = '' } = {}) {
   const rawKey = String(name ?? '').trim();
   if (!rawKey || FORBIDDEN_KEYS.has(rawKey)) return { profile: ensureProfile(profile), changed: false, action: 'SKIP' };
   const p = ensureProfile(profile);
-  const key = adoptCanonicalPersonName(p, rawKey);
+  // 同名不同人时，纠错必须落到正确的档位：先按 uid 找，找不到再按名字。
+  const wantedUid = String(uid ?? '').trim();
+  let key = null;
+  if (wantedUid) {
+    for (const [k, entry] of Object.entries(p.people)) {
+      if (entry && String(entry.uid ?? '') === wantedUid) { key = k; break; }
+    }
+  }
+  if (!key) key = adoptCanonicalPersonName(p, rawKey);
   const text = truncateChars(String(fact ?? '').trim(), 80);
   if (!text) return { profile: p, changed: false, action: 'SKIP' };
   const entry = p.people[key] || { facts: [], count: 0, firstSeen: now, lastSeen: now };

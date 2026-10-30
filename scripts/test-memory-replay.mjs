@@ -544,3 +544,32 @@ test('overflow 批量累加：不是每条都写盘', () => {
   assert.ok(st.unrecoverableOverflow >= 150, `溢出计数应至少 150，实际 ${st.unrecoverableOverflow}`);
   cleanup(dir);
 });
+
+test('isolated 时摘要也不泄漏（私聊内容只在日摘要里）', () => {
+  const { dir, store } = freshStore();
+  const now = Date.now();
+  const yesterday = now - 86400000;
+  // 私聊消息只写进事件，随后被压成日摘要
+  store.appendEvent({ t: yesterday, k: 'private:222', kind: 'msg', who: 'B', text: '珊瑚的事情只说给一个人听', s: 2 });
+  // 强制生成摘要（超过保留阈值才会进 lines）
+  store.ensureConsolidation({ now });
+  // 群会话做 isolated 搜索：不能通过「日摘要」把私聊内容捞出来
+  const hits = store.search('珊瑚', { key: 'group:111', days: 30 });
+  const leaked = hits.filter((h) => String(h.text).includes('珊瑚'));
+  assert.equal(leaked.length, 0, `isolated 下不能通过摘要拿到私聊内容，实际命中 ${leaked.length} 条`);
+  cleanup(dir);
+});
+
+test('overflow 用追加日志：崩溃不会丢已落盘的计数', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'replay-'));
+  // 直接写追加日志格式（每行一个 1）
+  fs.writeFileSync(path.join(dir, 'write-failures.jsonl.overflow'), '1\n1\n1\n', 'utf8');
+  const store = createMemoryStore({ dir });
+  assert.equal(store.stats().unrecoverableOverflow, 3, '三行 1 应读成 3');
+  // 再追加两条
+  // 模拟崩溃：不调用 stats，直接重建
+  fs.appendFileSync(path.join(dir, 'write-failures.jsonl.overflow'), '1\n1\n', 'utf8');
+  const store2 = createMemoryStore({ dir });
+  assert.equal(store2.stats().unrecoverableOverflow, 5, '崩溃后已落盘的计数必须还在');
+  cleanup(dir);
+});

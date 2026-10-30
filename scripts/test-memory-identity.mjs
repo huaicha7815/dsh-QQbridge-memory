@@ -4,7 +4,7 @@
 // 之前用显示名做键，两个同名群友会共享事实、改群名片又会裂成两份。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mergePersonFact, ensureProfile, auditProfile } from '../src/core/memory-lib.mjs';
+import { mergePersonFact, ensureProfile, auditProfile, correctPersonFact } from '../src/core/memory-lib.mjs';
 
 test('同名不同 uid 会分成两份档案，不共享事实', () => {
   let p = ensureProfile({});
@@ -60,4 +60,19 @@ test('档案审计仍然健康（分档后没有重复事实）', () => {
   p = mergePersonFact(p, '小明', '是管理员', { uid: '222' }).profile;
   const audit = auditProfile(p);
   assert.ok(audit, 'auditProfile 要有返回');
+});
+
+test('同名不同 uid 时，纠错只改到正确的那个人', () => {
+  let p = ensureProfile({});
+  p = mergePersonFact(p, '小明', '喜欢篮球', { uid: '111' }).profile;
+  p = mergePersonFact(p, '小明', '是管理员', { uid: '222' }).profile;
+  // 对 uid=222 的事实纠错
+  const out = correctPersonFact(p, '小明', '是管理员（确认真的是）', { uid: '222' });
+  const keys = Object.keys(out.profile.people);
+  const u111 = keys.find((k) => out.profile.people[k].uid === '111');
+  const u222 = keys.find((k) => out.profile.people[k].uid === '222');
+  const facts111 = out.profile.people[u111].facts.map((f) => f.text);
+  const facts222 = out.profile.people[u222].facts.map((f) => f.text);
+  assert.ok(facts111.includes('喜欢篮球'), 'uid=111 的事实不能被改');
+  assert.ok(facts222.some((x) => x.includes('确认真的是')), 'uid=222 的事实应被纠正');
 });
