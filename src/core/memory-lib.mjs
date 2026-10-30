@@ -377,7 +377,7 @@ export function summarizeDay(events, day) {
       .sort((a, b) => (Number(a.e.t) || 0) - (Number(b.e.t) || 0));
     for (const { e } of picked) {
       const who = e.kind === 'self' ? '你' : (e.who || '人');
-      lines.push({ t: `${label} ${who}：${truncateChars(String(e.text || ''), 90)}`, s: e.s });
+      lines.push({ t: `${label} ${who}：${truncateChars(String(e.text || ''), 90)}`, s: e.s, k: key });
     }
   }
   // 一天里如果出现了 S3，摘要里必须保住它（不论它出现在哪条消息里）
@@ -387,7 +387,7 @@ export function summarizeDay(events, day) {
   for (const e of topSalient) {
     const who = e.kind === 'self' ? '你' : (e.who || '人');
     const line = `${String(e.k || '').startsWith('group:') ? '群聊' : '私聊'} ${who}：${truncateChars(String(e.text || ''), 90)}`;
-    if (!lines.some((l) => l.t === line)) lines.push({ t: line, s: 3 });
+    if (!lines.some((l) => l.t === line)) lines.push({ t: line, s: 3, k: String(e.k || '') });
   }
 
   // 日期取当地中午，避免 00:00 落在前一天导致时间衰减算歪。
@@ -412,7 +412,8 @@ function normalizeDayLines(lines) {
   return (Array.isArray(lines) ? lines : [])
     .map((l) => {
       if (typeof l === 'string') return { t: l, s: 1 };
-      if (l && typeof l === 'object' && l.t) return { t: String(l.t), s: Number.isInteger(l.s) ? l.s : 1 };
+      // k 必须一路带着：周/月压缩靠它做行级会话隔离，丢了就又泄漏了。
+      if (l && typeof l === 'object' && l.t) return { t: String(l.t), s: Number.isInteger(l.s) ? l.s : 1, ...(l.k ? { k: String(l.k) } : {}) };
       return null;
     })
     .filter(Boolean);
@@ -452,14 +453,20 @@ export function consolidateWeek(daySummaries, week, { minLines = 5, maxLines = 1
     const extra = pick(1).filter((l) => !lines.includes(l)).slice(0, minLines - lines.length);
     lines = [...lines, ...extra];
   }
-  lines = lines.slice(0, maxLines).sort((a, b) => a.ts - b.ts).map(({ t, s }) => ({ t, s }));
+  lines = lines.slice(0, maxLines).sort((a, b) => a.ts - b.ts).map(({ t, s, k }) => (k ? { t, s, k } : { t, s }));
 
+  // keys：这一周涉及的会话（从日摘要的 keys 聚合），isolated 检索要靠它判断可见性。
+  const weekKeys = new Set();
+  for (const d of days) {
+    if (Array.isArray(d.keys)) for (const k of d.keys) if (k) weekKeys.add(k);
+  }
   return {
     week: String(week || ''),
     days: days.length,
     count,
     tiers,
     lines,
+    keys: [...weekKeys],
     ts: days[days.length - 1].ts || days[0].ts || Date.now(),
   };
 }
@@ -498,7 +505,13 @@ export function consolidateMonth(weekNotes, month, { minLines = 3, maxLines = 8 
   }
   if (!lines.length) return null;
 
+  // keys：这一月涉及的会话（从周要点聚合）
+  const monthKeys = new Set();
+  for (const w of weeks) {
+    if (Array.isArray(w.keys)) for (const k of w.keys) if (k) monthKeys.add(k);
+  }
   return {
+    keys: [...monthKeys],
     month: String(month || ''),
     weeks: weeks.length,
     count,
@@ -549,6 +562,205 @@ export function normalizeMemoryConfig(raw) {
   };
 }
 
+/**
+ * 按会话来源裁剪整份档案（isolated 模式用）。
+ *
+ * 关键：不能只过滤人物事实 —— threads / self 同样是长期记忆，也带别人的私事。
+ * 这里统一处理 people.facts、threads、self；audit 属于管理员留痕，不通过会话级接口返回。
+ *
+ * fail-closed：没有 sourceKeys 的旧记录也不返回。升级后旧数据在 isolated 下不可见，
+ * 需要保留应走迁移或管理员模式，而不是让隔离静默放行。
+ *
+ * 时间口径：投影里所有时间字段都换成「会话内序数」（越新数字越大，未知=0），
+ * 并且把顶层 clock 标成 'session-rank'。两个坑一起踩过：
+ *   ① 直接归零 —— buildInjection 按 confirmedAt / lastSeen / lastMentionAt 降序
+ *      取「最近几条」，全零会让排序退化成插入顺序，把最旧的事实顶到最前面；
+ *   ② 保留原时间戳 —— 那是全局时间，会话能从「今天确认过」推断这条记忆刚在
+ *      别的会话里被刷新过，等于泄漏跨会话活动。
+ * 序数保留相对先后、丢掉绝对时间，两边的错都避开。
+ */
+export function filterProfileForSession(profile, sourceKey) {
+  const p = ensureProfile(profile);
+  const wanted = String(sourceKey ?? '').trim();
+  if (!wanted) return p;
+  const hasKey = (rec) => normalizeSourceKeys(rec).includes(wanted);
+
+  const visiblePeople = {};
+  for (const [name, entry] of Object.entries(p.people)) {
+    const rawFacts = (Array.isArray(entry.facts) ? entry.facts : []).filter(hasKey);
+    if (rawFacts.length) visiblePeople[name] = { entry, facts: rawFacts };
+  }
+  const visibleThreads = (Array.isArray(p.threads) ? p.threads : []).filter(hasKey);
+  const visibleSelf = (Array.isArray(p.self) ? p.self : []).filter(hasKey);
+
+  // 会话内时钟：把所有可见时间点收集起来，按从新到旧编号（最新 = N，未知时间 = 0）。
+  // 同一个人物/事实之间的相对先后完全保留，但绝对时间不出这个函数。
+  const clockValues = [];
+  for (const { facts } of Object.values(visiblePeople)) {
+    for (const f of facts) clockValues.push(Number(f.confirmedAt) || Number(f.createdAt) || 0);
+  }
+  for (const t of visibleThreads) clockValues.push(Number(t.lastMentionAt) || Number(t.createdAt) || 0);
+  for (const s of visibleSelf) clockValues.push(Number(s.at) || 0);
+  const distinct = [...new Set(clockValues.filter((t) => t > 0))]
+    .sort((a, b) => b - a);
+  const rankByTime = new Map(distinct.map((t, i) => [t, distinct.length - i]));
+  const rankOf = (t) => rankByTime.get(Number(t) || 0) || 0;
+
+  const projectFact = (f) => {
+    const out = { ...f };
+    delete out.sourceKeys;
+    delete out.sourceKey;
+    // count 用「可见事实数」而不是全局确认次数（否则会暴露私聊里确认过几次）
+    out.count = 1;
+    out.confirmedAt = rankOf(f.confirmedAt);
+    out.createdAt = rankOf(f.createdAt);
+    return out;
+  };
+  const people = {};
+  for (const [name, { entry, facts }] of Object.entries(visiblePeople)) {
+    const ranks = facts.map((f) => rankOf(f.confirmedAt) || rankOf(f.createdAt)).filter((n) => n > 0);
+    people[name] = {
+      ...entry,
+      facts: facts.map(projectFact),
+      count: facts.length,
+      // firstSeen / lastSeen 也在会话内重算：只用本会话看得见的那几次记录。
+      firstSeen: ranks.length ? Math.min(...ranks) : 0,
+      lastSeen: ranks.length ? Math.max(...ranks) : 0,
+    };
+  }
+  const projectThread = (t) => {
+    const out = { ...t };
+    delete out.sourceKeys;
+    delete out.sourceKey;
+    out.createdAt = rankOf(t.createdAt);
+    out.lastMentionAt = rankOf(t.lastMentionAt) || out.createdAt;
+    if (Number(t.resolvedAt)) out.resolvedAt = rankOf(t.resolvedAt);
+    else delete out.resolvedAt;
+    return out;
+  };
+  const projectSelf = (s) => {
+    const out = { ...s };
+    delete out.sourceKeys;
+    delete out.sourceKey;
+    out.at = rankOf(s.at);
+    return out;
+  };
+  return {
+    ...p,
+    clock: 'session-rank',
+    // 顶层 updatedAt 是全局时间（档案最后一次被任何会话写入的时间），同样不下发。
+    updatedAt: 0,
+    people,
+    threads: visibleThreads.map(projectThread),
+    self: visibleSelf.map(projectSelf),
+    audit: [],
+  };
+}
+
+/** 兼容旧名字。 */
+export const filterProfileBySource = filterProfileForSession;
+
+/**
+ * 统一的「记录来源会话」工具。
+ *
+ * 为什么是数组：同一条事实可能先在群聊写、之后在私聊又被确认——
+ * 单个 sourceKey 会让第二个会话看不到它。所有长期记忆断言（人物事实 /
+ * 未完结的线 / 自我记录）都用 sourceKeys[]，由 addSourceKeys 合并。
+ */
+export function normalizeSourceKeys(record) {
+  if (!record || typeof record !== 'object') return [];
+  const list = Array.isArray(record.sourceKeys) ? record.sourceKeys : [];
+  const out = list.map((k) => String(k || '').trim()).filter(Boolean);
+  if (!out.length && String(record.sourceKey ?? '').trim()) out.push(String(record.sourceKey).trim());
+  return [...new Set(out)];
+}
+
+export function addSourceKeys(record, sourceKey) {
+  const wanted = String(sourceKey ?? '').trim();
+  if (!wanted || !record || typeof record !== 'object') return record;
+  const merged = new Set(normalizeSourceKeys(record));
+  merged.add(wanted);
+  record.sourceKeys = [...merged];
+  delete record.sourceKey;
+  return record;
+}
+
+/**
+ * isolated 写入路径的可见性判定：这条已有记录对当前会话是否可见。
+ *
+ * 为什么写函数也需要它：isolated 原来只约束了读取投影，写入时的「候选搜索」
+ * 仍然在完整 profile 上做 —— correct 会把私聊里最相似的那条找出来，把原文放进
+ * replaced 和 previous 返回给群会话；threadDone 会把只有私聊来源的线关掉。
+ * 读不到的记录不能参与匹配，否则隔离只覆盖了读集、没覆盖写集。
+ *
+ * visibilityKey 为空（open 模式）时全部可见，保持原来的跨会话合并语义。
+ */
+export function isVisibleToSession(record, visibilityKey) {
+  const wanted = String(visibilityKey ?? '').trim();
+  if (!wanted) return true;
+  return normalizeSourceKeys(record).includes(wanted);
+}
+
+/**
+ * 事件流的会话过滤（证据校验、uid 推断这类「读取最近事件」的地方用）。
+ * 与 search() 的 scope 语义保持一致：没有来源标签的旧事件放行，其余必须匹配。
+ */
+export function eventsVisibleToSession(events, visibilityKey) {
+  const only = String(visibilityKey ?? '').trim();
+  const list = Array.isArray(events) ? events : [];
+  if (!only) return list;
+  // fail-closed：没有 k 的旧事件无法证明属于哪个会话，不能交给 isolated 会话。
+  // 之前放行 !e.k 是为了兼容旧数据，可群聊和私聊写的是同一种事件格式，
+  // 「没有来源」不等于「公开」——摘要层和档案层早就是 fail-closed，事件层不能更宽松。
+  return list.filter((e) => e && String(e.k ?? '') === only);
+}
+
+/**
+ * 写上下文：把「来源会话」和「允许匹配的可见范围」一次定死。
+ *
+ * 之前是两个独立参数，靠每个调用点自己记得传 visibilityKey —— 漏传就静默
+ * 退回跨会话匹配。这里让 store 层按配置统一算一次，写入口只 spread 这个对象。
+ *
+ * @param {object} config 记忆配置（含 crossSessionPolicy）
+ * @param {string} sourceKey 当前会话 key
+ * @returns {{sourceKey:string, visibilityKey:string}}
+ */
+export function buildWriteScope(config, sourceKey) {
+  const key = String(sourceKey ?? '').trim();
+  const cfg = normalizeMemoryConfig(config);
+  return { sourceKey: key, visibilityKey: cfg.crossSessionPolicy === 'isolated' ? key : '' };
+}
+
+/**
+ * 人物事实的容量裁剪。
+ *
+ * isolated 下只淘汰**当前会话可见**的事实：群会话新增一条就挤掉一条它从未见过的
+ * 私聊旧事实，那是用一次写入造成了不可见数据的永久丢失。
+ * 宁可让这个人物暂时超过上限，也不能删看不见的记录——超限会由可见部分自己的
+ * 写入继续收敛（见下面 visibleFacts.length <= max 的判断）。
+ */
+function pruneFactsInPlace(entry, max, visibilityKey) {
+  const only = String(visibilityKey ?? '').trim();
+  if (!only) {
+    entry.facts.sort((a, b) => (Number(b.confirmedAt) || 0) - (Number(a.confirmedAt) || 0));
+    entry.facts = entry.facts.slice(0, max);
+    return;
+  }
+  const visibleFacts = entry.facts.filter((f) => isVisibleToSession(f, only));
+  if (visibleFacts.length <= max) return; // 可见部分没超限 → 一条都不删
+  // 淘汰顺序（先淘汰的排在前面）：只属于本会话的记录先走，共享断言放最后。
+  // 共享事实在别的会话里也看得见，删它等于替别的会话做决定；
+  // 真到必须删的时候，也先牺牲只属于本会话的那条。
+  const ranked = visibleFacts.slice().sort((a, b) => {
+    const sa = normalizeSourceKeys(a).length > 1 ? 1 : 0;
+    const sb = normalizeSourceKeys(b).length > 1 ? 1 : 0;
+    if (sa !== sb) return sa - sb;
+    return (Number(a.confirmedAt) || 0) - (Number(b.confirmedAt) || 0);
+  });
+  const drop = new Set(ranked.slice(0, visibleFacts.length - max));
+  entry.facts = entry.facts.filter((f) => !drop.has(f));
+}
+
 /** 保证 profile 结构可用（防御脏数据 / 缺字段）。 */
 export function ensureProfile(raw) {
   const src = raw && typeof raw === 'object' ? raw : {};
@@ -566,6 +778,10 @@ export function ensureProfile(raw) {
         ...(String(v.name ?? '').trim() ? { name: String(v.name).trim() } : {}),
         // facts 从 V3.2 起是对象（带确认时间），旧格式是字符串数组，这里统一迁移：
         // 老事实的「最后确认时间」回退到这个人物的 lastSeen，语义上等价于「当时确认过」。
+        //
+        // 这里**不做数量截断**：ensureProfile 也被读取路径调用，一次 readProfile +
+        // writeProfile 就能把超额事实永久删掉；而且截断不区分会话来源，
+        // isolated 下会把看不见的私聊事实一起砍掉。数量收敛统一交给 pruneProfile。
         facts: (Array.isArray(v.facts) ? v.facts : [])
           .map((f) => {
             if (typeof f === 'string') {
@@ -574,6 +790,7 @@ export function ensureProfile(raw) {
             if (!f || typeof f !== 'object' || !String(f.text || '').trim()) return null;
             return {
               text: truncateChars(String(f.text), 80),
+              ...(normalizeSourceKeys(f).length ? { sourceKeys: normalizeSourceKeys(f) } : {}),
               createdAt: Number(f.createdAt) || firstSeen,
               confirmedAt: Number(f.confirmedAt) || lastSeen,
               count: Math.max(1, Number(f.count) || 1),
@@ -581,8 +798,7 @@ export function ensureProfile(raw) {
               ...(f.previous ? { previous: truncateChars(String(f.previous), 120) } : {}),
             };
           })
-          .filter(Boolean)
-          .slice(-PROFILE_LIMITS.maxFactsPerPerson),
+          .filter(Boolean),
         count: Number(v.count) || 0,
         firstSeen,
         lastSeen,
@@ -593,6 +809,7 @@ export function ensureProfile(raw) {
     .filter((t) => t && typeof t === 'object' && String(t.text || '').trim())
     .map((t) => ({
       text: truncateChars(String(t.text), 120),
+      ...(normalizeSourceKeys(t).length ? { sourceKeys: normalizeSourceKeys(t) } : {}),
       with: Array.isArray(t.with) ? t.with.map(String).slice(0, 6) : [],
       state: t.state === 'done' ? 'done' : 'open',
       createdAt: Number(t.createdAt) || 0,
@@ -618,6 +835,7 @@ export function ensureProfile(raw) {
       const kind = SELF_KIND_KEYS.includes(x.kind) ? x.kind : classifySelfNote(text);
       return {
         text: truncateChars(text, 200),
+        ...(normalizeSourceKeys(x).length ? { sourceKeys: normalizeSourceKeys(x) } : {}),
         kind,
         at: Number(x.at) || 0,
         count: Math.max(1, Number(x.count) || 1),
@@ -629,6 +847,9 @@ export function ensureProfile(raw) {
   const audit = (Array.isArray(src.audit) ? src.audit : []).slice(-200).filter((a) => a && typeof a === "object");
   return {
     version: 3,
+    // clock：时间字段的口径标记。会话级投影会把全局时间戳换成 1..N 的序数，
+    // 消费方（注入渲染）靠它知道「这里的时间不是真实时间，别渲染成日期」。
+    ...(src.clock ? { clock: String(src.clock) } : {}),
     people,
     threads,
     self,
@@ -637,27 +858,117 @@ export function ensureProfile(raw) {
   };
 }
 
-/** 按 lastSeen 淘汰超额人物档案（保留最近互动的人）。 */
-export function pruneProfile(profile, limits = PROFILE_LIMITS) {
+/**
+ * 按容量裁剪档案。
+ *
+ * isolated 写路径必须传 visibilityKey：裁剪只能淘汰当前会话**看得见**的记录。
+ * 否则群会话的一次写入就会把私聊里最旧的 fact / thread / self note / 人物档位
+ * 挤掉——写者从未见过那条数据，却造成了它永久消失。宁可暂时超限，也不删看不见的。
+ *
+ * open 模式（不传 visibilityKey）行为与之前完全一致：全局裁剪。
+ */
+export function pruneProfile(profile, limits = PROFILE_LIMITS, { visibilityKey = '' } = {}) {
   const p = ensureProfile(profile);
+  const only = String(visibilityKey ?? '').trim();
+  const vis = (rec) => isVisibleToSession(rec, only);
+
+  // ── 人物 ──
   const entries = Object.entries(p.people);
-  if (entries.length > limits.maxPeople) {
-    entries.sort((a, b) => (Number(a[1].lastSeen) || 0) - (Number(b[1].lastSeen) || 0));
-    for (let i = 0; i < entries.length - limits.maxPeople; i += 1) delete p.people[entries[i][0]];
+  if (!only) {
+    if (entries.length > limits.maxPeople) {
+      entries.sort((a, b) => (Number(a[1].lastSeen) || 0) - (Number(b[1].lastSeen) || 0));
+      for (let i = 0; i < entries.length - limits.maxPeople; i += 1) delete p.people[entries[i][0]];
+    }
+  } else {
+    // 只淘汰「整档都可见」的人：混合档位里躺着看不见的事实，删它等于删那些事实。
+    // 档位的「共享度」= 它所有事实涉及的会话数；被多个会话引用的人最后淘汰。
+    const ownerKeyCount = (v) => {
+      const set = new Set();
+      for (const f of (Array.isArray(v.facts) ? v.facts : [])) {
+        for (const k of normalizeSourceKeys(f)) set.add(k);
+      }
+      return set.size;
+    };
+    const removable = entries
+      .filter(([, v]) => {
+        const facts = Array.isArray(v.facts) ? v.facts : [];
+        return facts.length > 0 && facts.every(vis);
+      })
+      .sort((a, b) => {
+        const sa = ownerKeyCount(a[1]) > 1 ? 1 : 0;
+        const sb = ownerKeyCount(b[1]) > 1 ? 1 : 0;
+        if (sa !== sb) return sa - sb;
+        return (Number(a[1].lastSeen) || 0) - (Number(b[1].lastSeen) || 0);
+      });
+    const visiblePeople = entries
+      .filter(([, v]) => (Array.isArray(v.facts) ? v.facts : []).some(vis)).length;
+    const excess = Math.max(0, visiblePeople - limits.maxPeople);
+    for (let i = 0; i < Math.min(excess, removable.length); i += 1) delete p.people[removable[i][0]];
   }
-  // 先按是否 open 排，再按最后提起时间：完结的线优先被淘汰。
-  p.threads.sort((a, b) => {
+
+  // ── 每个人物的事实数量 ──
+  // 收敛点放在这里（而不是 ensureProfile）：open 模式按全局淘汰最久没被确认的，
+  // isolated 只淘汰当前会话可见的——群写入不能挤掉私聊里看不见的旧事实。
+  for (const entry of Object.values(p.people)) {
+    if (!entry || !Array.isArray(entry.facts)) continue;
+    if (entry.facts.length > limits.maxFactsPerPerson) {
+      pruneFactsInPlace(entry, limits.maxFactsPerPerson, visibilityKey);
+    }
+  }
+
+  // ── 线 ──
+  const threadOrder = (a, b) => {
     if (a.state !== b.state) return a.state === 'open' ? -1 : 1;
     return (Number(b.lastMentionAt) || 0) - (Number(a.lastMentionAt) || 0);
-  });
-  if (p.threads.length > limits.maxThreads) p.threads = p.threads.slice(0, limits.maxThreads);
-  // 她的一生：身份与里程碑是主轴，不能被后来的一堆情绪流水挤掉；
-  // 情绪/喜欢/世界这些按时间淘汰最旧的。
-  if (p.self.length > limits.maxSelfNotes) {
-    const backbone = p.self.filter((s) => s.kind === 'identity' || s.kind === 'milestone');
-    const rest = p.self.filter((s) => s.kind !== 'identity' && s.kind !== 'milestone');
-    const room = Math.max(0, limits.maxSelfNotes - backbone.length);
-    p.self = [...backbone, ...rest.slice(-room)];
+  };
+  if (!only) {
+    // 先按是否 open 排，再按最后提起时间：完结的线优先被淘汰。
+    p.threads.sort(threadOrder);
+    if (p.threads.length > limits.maxThreads) p.threads = p.threads.slice(0, limits.maxThreads);
+  } else {
+    const visibleThreads = p.threads.filter(vis);
+    const excess = visibleThreads.length - limits.maxThreads;
+    if (excess > 0) {
+      // 淘汰顺序：只属于本会话的线先走，共享线最后；同档内保持原规则
+      // （完结的线优先淘汰，再按最后提及时间旧的优先）。
+      const evictOrder = (a, b) => {
+        const sa = normalizeSourceKeys(a).length > 1 ? 1 : 0;
+        const sb = normalizeSourceKeys(b).length > 1 ? 1 : 0;
+        if (sa !== sb) return sa - sb;
+        if (a.state !== b.state) return a.state === 'done' ? -1 : 1;
+        return (Number(a.lastMentionAt) || 0) - (Number(b.lastMentionAt) || 0);
+      };
+      const ranked = visibleThreads.slice().sort(evictOrder);
+      const drop = new Set(ranked.slice(0, excess));
+      p.threads = p.threads.filter((t) => !drop.has(t));
+    }
+  }
+
+  // ── 她自己 ──
+  // 身份与里程碑是主轴，不能被后来的一堆情绪流水挤掉；情绪/喜欢/世界按时间淘汰最旧的。
+  const backboneOf = (s) => s.kind === 'identity' || s.kind === 'milestone';
+  if (!only) {
+    if (p.self.length > limits.maxSelfNotes) {
+      const backbone = p.self.filter(backboneOf);
+      const rest = p.self.filter((s) => !backboneOf(s));
+      const room = Math.max(0, limits.maxSelfNotes - backbone.length);
+      p.self = [...backbone, ...rest.slice(-room)];
+    }
+  } else {
+    const visibleSelf = p.self.filter(vis);
+    if (visibleSelf.length > limits.maxSelfNotes) {
+      const backbone = visibleSelf.filter(backboneOf);
+      // 淘汰顺序：只属于本会话的先淘汰，共享的最后；同档内旧的先淘汰。
+      const rest = visibleSelf.filter((s) => !backboneOf(s)).sort((a, b) => {
+        const sa = normalizeSourceKeys(a).length > 1 ? 1 : 0;
+        const sb = normalizeSourceKeys(b).length > 1 ? 1 : 0;
+        if (sa !== sb) return sa - sb;
+        return (Number(a.at) || 0) - (Number(b.at) || 0);
+      });
+      const room = Math.max(0, limits.maxSelfNotes - backbone.length);
+      const keep = new Set([...backbone, ...rest.slice(-room)]);
+      p.self = p.self.filter((s) => !vis(s) || keep.has(s));
+    }
   }
   return p;
 }
@@ -1393,7 +1704,7 @@ function resolvePersonKey(profile, canonicalName, uid, now) {
   return canonicalName;
 }
 
-export function mergePersonFact(profile, name, fact, { now = Date.now(), uid = '' } = {}) {
+export function mergePersonFact(profile, name, fact, { now = Date.now(), uid = '', sourceKey = '', visibilityKey = '' } = {}) {
   const rawKey = String(name ?? '').trim();
   if (!rawKey || FORBIDDEN_KEYS.has(rawKey)) return { profile: ensureProfile(profile), changed: false, action: 'SKIP' };
   const p = ensureProfile(profile);
@@ -1407,17 +1718,24 @@ export function mergePersonFact(profile, name, fact, { now = Date.now(), uid = '
   if (canonical && !String(entry.name ?? '').trim()) entry.name = canonical;
   let action = 'SKIP';
   if (text) {
-    const dup = entry.facts.find((f) => factSimilarity(f.text, text) >= 0.9);
+    // isolated：只跟本会话看得见的事实去重。看不见的私聊事实不能因为「猜中同一句话」
+    // 就被合并、继承来源，进而出现在群会话的档案里。
+    const dup = entry.facts.find((f) => isVisibleToSession(f, visibilityKey) && factSimilarity(f.text, text) >= 0.9);
     if (dup) {
       dup.confirmedAt = now;
       dup.count = (Number(dup.count) || 1) + 1;
+      // 同一个事实被第二个会话再次确认：把来源并进去，否则那个会话在 isolated 下看不到它。
+      addSourceKeys(dup, sourceKey);
       action = 'CORROBORATE';
     } else {
-      entry.facts.push({ text, createdAt: now, confirmedAt: now, count: 1 });
+      const factEntry = { text, createdAt: now, confirmedAt: now, count: 1 };
+      // 记录这条事实来自哪些会话：isolated 模式靠它过滤档案注入。
+      addSourceKeys(factEntry, sourceKey);
+      entry.facts.push(factEntry);
       if (entry.facts.length > PROFILE_LIMITS.maxFactsPerPerson) {
         // 淘汰「最久没被确认」的，而不是最老的——旧的但如果常被重复确认，说明还在生效。
-        entry.facts.sort((a, b) => (Number(b.confirmedAt) || 0) - (Number(a.confirmedAt) || 0));
-        entry.facts = entry.facts.slice(0, PROFILE_LIMITS.maxFactsPerPerson);
+        // isolated 下只淘汰可见事实（见 pruneFactsInPlace）。
+        pruneFactsInPlace(entry, PROFILE_LIMITS.maxFactsPerPerson, visibilityKey);
       }
       action = 'CREATE';
     }
@@ -1426,7 +1744,7 @@ export function mergePersonFact(profile, name, fact, { now = Date.now(), uid = '
   entry.lastSeen = now;
   p.people[key] = entry;
   p.updatedAt = now;
-  return { profile: pruneProfile(p), changed: action !== 'SKIP', action };
+  return { profile: pruneProfile(p, PROFILE_LIMITS, { visibilityKey }), changed: action !== 'SKIP', action };
 }
 
 /**
@@ -1438,7 +1756,7 @@ export function mergePersonFact(profile, name, fact, { now = Date.now(), uid = '
  *
  * @returns {{profile:object, changed:boolean, action:'CORRECT'|'CREATE'|'SKIP', replaced?:string}}
  */
-export function correctPersonFact(profile, name, fact, { now = Date.now(), threshold = 0.35, uid = '' } = {}) {
+export function correctPersonFact(profile, name, fact, { now = Date.now(), threshold = 0.35, uid = '', sourceKey = '', visibilityKey = '' } = {}) {
   const rawKey = String(name ?? '').trim();
   if (!rawKey || FORBIDDEN_KEYS.has(rawKey)) return { profile: ensureProfile(profile), changed: false, action: 'SKIP' };
   const p = ensureProfile(profile);
@@ -1458,6 +1776,9 @@ export function correctPersonFact(profile, name, fact, { now = Date.now(), thres
   let bestIdx = -1;
   let bestScore = 0;
   entry.facts.forEach((f, i) => {
+    // 不可见的旧事实不参与匹配：否则群会话能借 correct 把私聊原文当成 replaced
+    // 拿回去，还会在群档案里留下 previous:私聊原文。
+    if (!isVisibleToSession(f, visibilityKey)) return;
     const score = factSimilarity(f.text, text);
     if (score > bestScore) {
       bestScore = score;
@@ -1467,30 +1788,40 @@ export function correctPersonFact(profile, name, fact, { now = Date.now(), thres
 
   let action = 'CREATE';
   let replaced;
+  // 统一收尾模式：不管是「替换旧事实」还是「找不到相似项转新建」，
+  // 都把最终写入的记录记在 finalFact 上，函数末尾统一合并来源。
+  // 以前只有 CORRECT 分支加了来源，fallback CREATE 漏掉——纠错成功但 isolated 下立刻消失。
+  let finalFact = null;
   if (bestIdx >= 0 && bestScore >= threshold) {
     const old = entry.facts[bestIdx];
     replaced = old.text;
-    entry.facts[bestIdx] = {
+    const corrected = {
       text,
       createdAt: Number(old.createdAt) || now,
       confirmedAt: now,
       count: (Number(old.count) || 1) + 1,
       previous: truncateChars(replaced, 120),
     };
+    // 纠错要继承旧事实的全部来源。
+    for (const k of normalizeSourceKeys(old)) addSourceKeys(corrected, k);
+    entry.facts[bestIdx] = corrected;
+    finalFact = corrected;
     action = 'CORRECT';
   } else {
-    entry.facts.push({ text, createdAt: now, confirmedAt: now, count: 1 });
+    finalFact = { text, createdAt: now, confirmedAt: now, count: 1 };
+    entry.facts.push(finalFact);
     action = 'CREATE';
   }
+  // 统一收尾：把发起这次纠错的会话并进来源。
+  if (finalFact) addSourceKeys(finalFact, sourceKey);
   if (entry.facts.length > PROFILE_LIMITS.maxFactsPerPerson) {
-    entry.facts.sort((a, b) => (Number(b.confirmedAt) || 0) - (Number(a.confirmedAt) || 0));
-    entry.facts = entry.facts.slice(0, PROFILE_LIMITS.maxFactsPerPerson);
+    pruneFactsInPlace(entry, PROFILE_LIMITS.maxFactsPerPerson, visibilityKey);
   }
   entry.count = (Number(entry.count) || 0) + 1;
   entry.lastSeen = now;
   p.people[key] = entry;
   p.updatedAt = now;
-  return { profile: pruneProfile(p), changed: true, action, replaced };
+  return { profile: pruneProfile(p, PROFILE_LIMITS, { visibilityKey }), changed: true, action, replaced };
 }
 
 /**
@@ -1551,7 +1882,7 @@ export function echoMatch(text, knownTokenSets) {
  *
  * @returns {{profile:object, changed:boolean, resolved:string[]}}
  */
-export function mergeThread(profile, text, { withWho = [], now = Date.now(), state = 'open' } = {}) {
+export function mergeThread(profile, text, { withWho = [], now = Date.now(), state = 'open', sourceKey = '', visibilityKey = '' } = {}) {
   const p = ensureProfile(profile);
   const body = truncateChars(String(text ?? '').trim(), 120);
   if (!body) return { profile: p, changed: false, resolved: [] };
@@ -1568,7 +1899,7 @@ export function mergeThread(profile, text, { withWho = [], now = Date.now(), sta
   };
   const isSame = (x, y) => (done ? sameStory(x, y) : threadStoryMatch(x, y).same);
 
-  let target = p.threads.find((t) => t.text === body || isSame(t.text, body));
+  let target = p.threads.find((t) => isVisibleToSession(t, visibilityKey) && (t.text === body || isSame(t.text, body)));
   if (target) {
     target.lastMentionAt = now;
     if (withArr.length) target.with = [...new Set([...(target.with || []), ...withArr])].slice(0, 6);
@@ -1588,7 +1919,8 @@ export function mergeThread(profile, text, { withWho = [], now = Date.now(), sta
       target.resolvedAt = now;
     }
     for (const t of p.threads) {
-      if (t === target || t.state !== 'open') continue;
+      // 看不见的线不能被群会话的 threadDone 顺手收掉，也不能进 resolved 列表。
+      if (t === target || t.state !== 'open' || !isVisibleToSession(t, visibilityKey)) continue;
       // 用「了结文本」和「目标线文本」两个参照都判一次：谁跟这件事对得上都收。
       if (!sameStory(t.text, body) && !sameStory(t.text, target.text)) continue;
       t.state = 'done';
@@ -1602,8 +1934,11 @@ export function mergeThread(profile, text, { withWho = [], now = Date.now(), sta
     delete target.resolvedBy;
     delete target.resolvedAt;
   }
+  // 统一收尾：不管走的是「命中已有」还是「新建」，都把当前会话并进来源。
+  // 以前只在新建分支调用，导致「私聊先提、群里再提」时群里看不到这条线。
+  addSourceKeys(target, sourceKey);
   p.updatedAt = now;
-  return { profile: pruneProfile(p), changed: true, resolved };
+  return { profile: pruneProfile(p, PROFILE_LIMITS, { visibilityKey }), changed: true, resolved };
 }
 
 /**
@@ -1613,13 +1948,14 @@ export function mergeThread(profile, text, { withWho = [], now = Date.now(), sta
  * 记忆库的轴心是她自己，分类是为了让她的人生能分得清层次，不是为了归档整齐。
  * 不传 kind 时用规则粗分（分错了只影响展示分组，不影响内容）。
  */
-export function mergeSelfNote(profile, text, { now = Date.now(), kind } = {}) {
+export function mergeSelfNote(profile, text, { now = Date.now(), kind, sourceKey = '', visibilityKey = '' } = {}) {
   const p = ensureProfile(profile);
   const body = truncateChars(String(text ?? '').trim(), 200);
   if (!body) return { profile: p, changed: false };
   const k = SELF_KIND_KEYS.includes(kind) ? kind : classifySelfNote(body);
-  const hit = p.self.find((s) => s.text === body || factSimilarity(s.text, body) >= 0.9);
+  const hit = p.self.find((s) => isVisibleToSession(s, visibilityKey) && (s.text === body || factSimilarity(s.text, body) >= 0.9));
   if (hit) {
+    addSourceKeys(hit, sourceKey);
     hit.count = (Number(hit.count) || 1) + 1;
     hit.at = now;
     // 明确指定分类时以调用方为准（她比规则更清楚这条属于她人生的哪一部分）
@@ -1627,9 +1963,11 @@ export function mergeSelfNote(profile, text, { now = Date.now(), kind } = {}) {
     p.updatedAt = now;
     return { profile: p, changed: true, action: 'CORROBORATE' };
   }
-  p.self.push({ text: body, kind: k, at: now, count: 1 });
+  const selfEntry = { text: body, kind: k, at: now, count: 1 };
+  addSourceKeys(selfEntry, sourceKey);
+  p.self.push(selfEntry);
   p.updatedAt = now;
-  return { profile: pruneProfile(p), changed: true, action: 'CREATE' };
+  return { profile: pruneProfile(p, PROFILE_LIMITS, { visibilityKey }), changed: true, action: 'CREATE' };
 }
 
 /**
@@ -1674,6 +2012,9 @@ export function buildInjection(input = {}) {
   if (!budget) return '';
   const now = Number(input.now) || Date.now();
   const profile = ensureProfile(input.profile);
+  // 会话级投影里的时间是「会话内序数」，不是真实时间戳：渲染成日期会给出假日期，
+  // 所以这类 profile 只在有时序意义的地方用（排序），不做时间显示。
+  const rankClock = profile.clock === 'session-rank';
   const hits = Array.isArray(input.hits) ? input.hits : [];
   const hot = input.hot && typeof input.hot === 'object' ? input.hot : {};
 
@@ -1689,10 +2030,27 @@ export function buildInjection(input = {}) {
   // 0) 她自己——永远排第一。她的一生才是记忆库的主语。
   const selfGroups = groupSelfNotes(profile);
   const selfLines = [];
-  const identity = selfGroups.identity.slice(-2);
-  const milestones = selfGroups.milestone.slice(-3);
-  const likes = selfGroups.like.slice(-2);
-  const worlds = selfGroups.world.slice(-1);
+  // 选「最近确认的几条」，而不是数组最后几条：
+  // 一条旧记录在本会话被再次确认时 at 会刷新，但它仍停在数组原位，
+  // slice(-N) 会一直把它排除在外——越早写的反而越容易被注入，正好反了。
+  // 老数据 at 全 0 时退回插入顺序，保持原有行为。
+  const recentSelf = (list, n) => {
+    if (!Array.isArray(list) || !list.length) return [];
+    if (!list.some((x) => Number(x.at) > 0)) return list.slice(-n);
+    return list
+      .map((x, i) => ({ x, i }))
+      .sort((a, b) => (Number(b.x.at) || 0) - (Number(a.x.at) || 0) || a.i - b.i)
+      .slice(0, n)
+      // 输出按 at 升序（较早 → 较晚）：选中的是「最近的 N 条」，但读起来要顺。
+      // 不能按下标排——插入顺序 ≠ 确认顺序，重新确认过的旧记录会跑到前面，
+      // 和这里声称的顺序正好相反。at 相同时用原下标做稳定兜底。
+      .sort((a, b) => (Number(a.x.at) || 0) - (Number(b.x.at) || 0) || a.i - b.i)
+      .map((e) => e.x);
+  };
+  const identity = recentSelf(selfGroups.identity, 2);
+  const milestones = recentSelf(selfGroups.milestone, 3);
+  const likes = recentSelf(selfGroups.like, 2);
+  const worlds = recentSelf(selfGroups.world, 1);
   for (const s of identity) selfLines.push(`- 我是：${s.text}`);
   for (const s of milestones) selfLines.push(`- 走过的路：${s.text}`);
   for (const s of likes) selfLines.push(`- 我喜欢：${s.text}`);
@@ -1735,7 +2093,7 @@ export function buildInjection(input = {}) {
     .sort((a, b) => b.rank - a.rank)
     .slice(0, cfg.threadsTop)
     .map(({ t }) => {
-      const ago = mmdd(t.lastMentionAt || t.createdAt);
+      const ago = rankClock ? '' : mmdd(t.lastMentionAt || t.createdAt);
       const who = t.with && t.with.length ? `${t.with.join('、')}：` : '';
       return `- ${who}${t.text}${ago ? `（${ago} 提过）` : ''}`;
     });

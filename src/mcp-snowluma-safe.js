@@ -928,15 +928,16 @@ server.tool(
     kind: z.enum(['person', 'thread', 'threadDone', 'correct', 'self']).describe('档案类别'),
     content: z.string().describe('要记住的内容，一句话说清（correct 时写正确的新版本）'),
     name: z.string().optional().describe('kind=person / correct 时的人名/昵称'),
+    uid: z.string().optional().describe('kind=person / correct 时这个人对应的 QQ 号。同名不同人时必须传，否则可能写到别人的档案上。消息里的 [uid:xxx] 就是它。'),
     withWho: z.array(z.string()).optional().describe('kind=thread 时这条线牵涉到谁'),
     category: z.enum(['identity', 'milestone', 'like', 'feeling', 'world']).optional().describe('kind=self 时这条属于你人生的哪一部分；不传就按内容自动归类。'),
     evidence: z.string().optional().describe('支撑这次写入的原话片段（从当天记录里直接抄，别改写）。纠正旧事实、了结一条线时尽量带：桥接会核对它是否真的出现在当天记录里，编的会被拒绝。')
   },
-  async ({ key, token, kind, content, name, withWho, category, evidence }) => {
+  async ({ key, token, kind, content, name, withWho, category, evidence, uid }) => {
     try {
       const data = await agentApi('/api/socialV2/memory-remember', {
         method: 'POST',
-        body: JSON.stringify({ key, kind, content, name: name || '', withWho: withWho || [], category: category || '', evidence: evidence || '' }),
+        body: JSON.stringify({ key, kind, content, name: name || '', uid: uid || '', withWho: withWho || [], category: category || '', evidence: evidence || '' }),
         headers: { 'x-agent-token': token }
       });
       return { content: [{ type: 'text', text: serializeModelData(data) }] };

@@ -56,16 +56,16 @@
 | POST | `/api/socialV2/reset` | — | src/routes/socialv2-control-api.mjs:219 |
 | POST | `/api/socialV2/mark-read` | — | src/routes/socialv2-control-api.mjs:261 |
 | POST | `/api/socialV2/wake-config` | — | src/routes/socialv2-control-api.mjs:300 |
-| POST | `/api/socialV2/memory-append` | — | src/routes/socialv2-memory-api.mjs:16 |
-| GET | `/api/socialV2/memory-search` | 检索是纯本地 BM25，零 token；只有 AI 主动调用时才产生这两个工具调用的成本 | src/routes/socialv2-memory-api.mjs:44 |
-| GET | `/api/socialV2/memory-stats` | — | src/routes/socialv2-memory-api.mjs:68 |
-| POST | `/api/socialV2/memory-remember` | — | src/routes/socialv2-memory-api.mjs:77 |
-| GET | `/api/socialV2/memory-inspect` | — | src/routes/socialv2-memory-api.mjs:186 |
-| GET | `/api/socialV2/memory-profile` | — | src/routes/socialv2-memory-api.mjs:214 |
-| POST | `/api/socialV2/memory-update` | — | src/routes/socialv2-memory-api.mjs:222 |
-| GET | `/api/socialV2/memory` | — | src/routes/socialv2-memory-api.mjs:275 |
-| POST | `/api/socialV2/memory-remove` | — | src/routes/socialv2-memory-api.mjs:301 |
-| POST | `/api/socialV2/memory-clear` | — | src/routes/socialv2-memory-api.mjs:327 |
+| POST | `/api/socialV2/memory-append` | — | src/routes/socialv2-memory-api.mjs:30 |
+| GET | `/api/socialV2/memory-search` | 检索是纯本地 BM25，零 token；只有 AI 主动调用时才产生这两个工具调用的成本 | src/routes/socialv2-memory-api.mjs:58 |
+| GET | `/api/socialV2/memory-stats` | — | src/routes/socialv2-memory-api.mjs:104 |
+| POST | `/api/socialV2/memory-remember` | — | src/routes/socialv2-memory-api.mjs:127 |
+| GET | `/api/socialV2/memory-inspect` | — | src/routes/socialv2-memory-api.mjs:280 |
+| GET | `/api/socialV2/memory-profile` | — | src/routes/socialv2-memory-api.mjs:319 |
+| POST | `/api/socialV2/memory-update` | — | src/routes/socialv2-memory-api.mjs:345 |
+| GET | `/api/socialV2/memory` | — | src/routes/socialv2-memory-api.mjs:398 |
+| POST | `/api/socialV2/memory-remove` | — | src/routes/socialv2-memory-api.mjs:424 |
+| POST | `/api/socialV2/memory-clear` | — | src/routes/socialv2-memory-api.mjs:450 |
 | POST | `/api/socialV2/send-burst` | — | src/routes/socialv2-send-api.mjs:21 |
 | POST | `/api/socialV2/send-message` | — | src/routes/socialv2-send-api.mjs:148 |
 | POST | `/api/socialV2/send-poke` | — | src/routes/socialv2-send-api.mjs:297 |
@@ -155,9 +155,9 @@
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
 | ANY | `/api/send/*` | — | src/bridge.js:3132 |
-| ANY | `/api/send/group` | ── 统一发送端点（MCP 旧发送工具也走这里） ─────────────────────────── | src/bridge.js:4133 |
-| ANY | `/api/send/private` | — | src/bridge.js:4136 |
-| ANY | `/api/send/reply` | — | src/bridge.js:4137 |
+| ANY | `/api/send/group` | ── 统一发送端点（MCP 旧发送工具也走这里） ─────────────────────────── | src/bridge.js:4135 |
+| ANY | `/api/send/private` | — | src/bridge.js:4138 |
+| ANY | `/api/send/reply` | — | src/bridge.js:4139 |
 | ANY | `/api/send/voice` | 避免 AI 借用操作者通道绕过「只能发自己会话」的限制 | src/routes/socialv2-send-api.mjs:583 |
 
 ## api/preset
@@ -206,14 +206,14 @@
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
 | ANY | `/api/images/*` | — | src/bridge.js:3133 |
-| GET | `/api/images/message` | ── 图片/表情查询端点（MCP qq_get_message_images 走这里） ──────────── | src/bridge.js:4084 |
+| GET | `/api/images/message` | ── 图片/表情查询端点（MCP qq_get_message_images 走这里） ──────────── | src/bridge.js:4086 |
 
 ## api/authorize
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
 | ANY | `/api/authorize/read` | — | src/bridge.js:3134 |
-| POST | `/api/authorize/read` | ── 二代黑话学习（reserved2）：AI 查询/提交黑话候选 ───────────────── | src/bridge.js:4061 |
+| POST | `/api/authorize/read` | ── 二代黑话学习（reserved2）：AI 查询/提交黑话候选 ───────────────── | src/bridge.js:4063 |
 
 ## api/whitelist
 
@@ -290,19 +290,19 @@
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| POST | `/api/session/reset` | ── 清除上下文 / 清空工作区 ────────────────────────────────────────── | src/bridge.js:4240 |
+| POST | `/api/session/reset` | ── 清除上下文 / 清空工作区 ────────────────────────────────────────── | src/bridge.js:4242 |
 
 ## api/workspace
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| POST | `/api/workspace/reset` | — | src/bridge.js:4298 |
+| POST | `/api/workspace/reset` | — | src/bridge.js:4300 |
 
 ## api/restart
 
 | 方法 | 路径 | 说明 | 位置 |
 | --- | --- | --- | --- |
-| POST | `/api/restart` | ── 重启桥接（守护模式下 5 秒后自动拉起） ────────────────────────────── | src/bridge.js:4365 |
+| POST | `/api/restart` | ── 重启桥接（守护模式下 5 秒后自动拉起） ────────────────────────────── | src/bridge.js:4367 |
 
 ## api/role
 

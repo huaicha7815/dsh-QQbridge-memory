@@ -59,6 +59,9 @@ const EXCLUDE_PREFIXES = [
 // 文件名级排除
 const EXCLUDE_PATTERNS = [
   /\.bak($|-)/,
+  // 审查轮次留下的一次性备份：memory-store.mjs.r26bak 这类命名（.bak 前带 rNN）
+  // 不在上面那条规则里，曾被导出到公开目录（git status 里出现过 ?? *.r26bak）。
+  /\.r\d+bak$/,
   /\.routebak$|\.testbak$|\.origbak$/,
   /\.tmp$/,
   /^\.env/,

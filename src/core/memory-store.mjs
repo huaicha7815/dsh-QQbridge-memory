@@ -27,6 +27,7 @@ import {
   correctPersonFact,
   echoMatch,
   ensureProfile,
+  filterProfileForSession,
   normalizeMemoryConfig,
   pruneProfile,
   rankDocuments,
@@ -89,21 +90,229 @@ function listDaysUpTo(day, days) {
   return out.filter(Boolean);
 }
 
-function readJsonFile(file, fallback) {
+// 进程内「现在读不出来」的记忆文件：file → { at, code }。
+// 这不是历史累计，而是当前仍处于读取失败状态的文件；下次读成功会自动清除。
+// 健康页要能看见它：临时 IO 错误不能让整库显示成「空的但健康」。
+const readFailureFiles = new Map();
+
+function noteReadFailure(file, error) {
+  readFailureFiles.set(file, {
+    at: Date.now(),
+    code: String((error && error.code) || 'IO'),
+  });
+}
+
+function clearReadFailure(file) {
+  if (readFailureFiles.has(file)) readFailureFiles.delete(file);
+}
+
+/**
+ * 这个路径是不是「确定不存在」。
+ *
+ * 不能用 fs.existsSync()：它对任何异常都返回 false，包括 EACCES/EIO ——
+ * 那会把「文件存在但读不到」误判成「文件没了」，进而删掉刚登记的故障，
+ * 于是 readErrors=0、search 不标 partial，health 又变绿。
+ * 只有 lstatSync 明确抛 ENOENT 才算确定不存在；其它错误是状态未知，保留登记。
+ */
+function isDefinitelyMissing(file) {
   try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
+    fs.lstatSync(file);
+    return false;
   } catch (error) {
-    // 文件存在但解析失败 ≠ 文件不存在。以前一律返回 fallback，
-    // 于是损坏的 profile.json 会被当成「空档案」，下一次写入直接覆盖掉原文件——
-    // 表现为「QQ 正常聊天但档案悄悄没了」。这里先备份坏文件再降级。
-    if (error && error.code !== 'ENOENT') {
-      try {
-        fs.copyFileSync(file, `${file}.corrupt-${Date.now()}`);
-        console.warn(`[memory] JSON 损坏已备份 ${path.basename(file)}: ${error.message}`);
-      } catch {
-        // 备份也失败就只能降级，至少不抛出
-      }
+    return Boolean(error && error.code === 'ENOENT');
+  }
+}
+
+/**
+ * 目录枚举的统一原语。
+ *
+ * 记忆库有 events / days / weeks / months / events-archive / root 多个目录，
+ * 以前每处各写一个 try/catch，于是 EACCES 在某些层被当成「空目录」——
+ * 该层就在故障时静默消失（周月摘要没了、S3 没了，health 还是绿的）。
+ * 规则统一：只有 ENOENT 是正常空态，其余错误登记 + 返回空 + 让调用方知道。
+ *
+ * @returns {{names:string[], error:string|null}}
+ */
+function listDirStrict(dir) {
+  try {
+    const names = fs.readdirSync(dir);
+    clearReadFailure(dir);
+    return { names, error: null };
+  } catch (error) {
+    if (!error || error.code === 'ENOENT') {
+      clearReadFailure(dir);
+      return { names: [], error: null };
     }
+    noteReadFailure(dir, error);
+    return { names: [], error: `${(error && error.code) || 'IO'}: ${(error && error.message) || error}` };
+  }
+}
+
+/**
+ * 文本读取的统一原语（JSONL / 纯文本）。
+ * @returns {{text:string|null, error:string|null}} error=null 表示成功或文件不存在
+ */
+function readTextStrict(file) {
+  try {
+    const text = fs.readFileSync(file, 'utf8');
+    clearReadFailure(file);
+    return { text, error: null };
+  } catch (error) {
+    if (!error || error.code === 'ENOENT') {
+      clearReadFailure(file);
+      return { text: null, error: null };
+    }
+    noteReadFailure(file, error);
+    return { text: null, error: `${(error && error.code) || 'IO'}: ${(error && error.message) || error}` };
+  }
+}
+
+/**
+ * stat 的统一原语：ENOENT 或读不到都返回 null，读不到时已登记。
+ * 调用方据此决定「这天没有事件」还是「这天暂时看不见」——两者都不写缓存。
+ */
+function statStrict(file) {
+  try {
+    const stat = fs.statSync(file);
+    clearReadFailure(file);
+    return stat;
+  } catch (error) {
+    if (!error || error.code === 'ENOENT') clearReadFailure(file);
+    else noteReadFailure(file, error);
+    return null;
+  }
+}
+
+// 进程内「文件读到了、但有行/内容解析不了」的登记：file → { errors, at }。
+// 坏行/截断行/损坏摘要是最常见的磁盘故障形态，它们和 ENOENT、空文件、暂时读不到
+// 是四种不同状态 —— 不能都表现成「没有数据」。
+const parseFailureFiles = new Map();
+
+/**
+ * 记录一次解析结果：errors=0 表示这个文件现在能完整解析，自动清除登记。
+ * kind 用来区分「JSONL 里的坏行」和「整个 JSON 文件损坏」—— 这两种故障的
+ * 处理方式完全不同，混在一个指标里健康页就说不清了。
+ */
+function noteParseFailure(file, errors = 1, { kind = 'jsonl', samples = [] } = {}) {
+  const count = Number(errors) || 0;
+  if (count > 0) {
+    parseFailureFiles.set(file, {
+      errors: count,
+      kind,
+      at: Date.now(),
+      samples: Array.isArray(samples) ? samples.slice(0, 3) : [],
+    });
+  } else if (parseFailureFiles.has(file)) {
+    parseFailureFiles.delete(file);
+  }
+}
+
+/**
+ * 一条记忆记录的最小契约。
+ *
+ * 为什么必须校验：JSON.parse 只保证语法正确。`null`、`"abc"`、`[1,2]`、`{}`
+ * 都是合法 JSON，能一路进到 rows，然后在 search/stats 里读 e.kind / r.k 时
+ * 抛 TypeError —— 检索和健康检查直接 500，而 parseErrors 还是 0。
+ */
+function isValidMemoryRow(row) {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return false;
+  // 必须是数字，不能靠 Number() 强转：`"123"` 和 `true` 也会被转成数字，
+  // 但它们是结构错误的数据，不该被当成合法事件。
+  if (typeof row.t !== 'number' || !Number.isFinite(row.t) || row.t <= 0) return false;
+  if (row.kind !== undefined && typeof row.kind !== 'string') return false;
+  if (row.text !== undefined && typeof row.text !== 'string') return false;
+  if (row.k !== undefined && row.k !== null && typeof row.k !== 'string') return false;
+  const id = row.id;
+  if (id !== undefined && id !== null) {
+    if (!(typeof id === 'string' || typeof id === 'number')) return false;
+    if (typeof id === 'string' && !id.trim()) return false;
+  }
+  return true;
+}
+
+/**
+ * 解析 JSONL 文本：坏行跳过但计数，原文保留在原位（不删、不改写）。
+ * @returns {{rows:object[], parseErrors:number}}
+ */
+function parseJsonl(text, file) {
+  const rows = [];
+  let parseErrors = 0;
+  const badSamples = [];
+  const reject = (line) => {
+    parseErrors += 1;
+    if (badSamples.length < 3) badSamples.push(String(line).slice(0, 120));
+  };
+  for (const line of String(text ?? '').split('\n')) {
+    if (!line.trim()) continue;
+    let row;
+    try {
+      row = JSON.parse(line);
+    } catch {
+      reject(line);
+      continue;
+    }
+    // 语法合法但记录不合法（null / 数组 / 字符串 / {} 等）同样算坏行，
+    // 原文保留在原文件里，绝不改写。
+    if (!isValidMemoryRow(row)) {
+      reject(line);
+      continue;
+    }
+    rows.push(row);
+  }
+  noteParseFailure(file, parseErrors, { kind: 'jsonl', samples: badSamples });
+  return { rows, parseErrors, badSamples };
+}
+
+/**
+ * 读 JSON 文件。三种失败必须分开处理：
+ *   ENOENT  → 文件不存在，返回 fallback（全新库是合法状态）
+ *   SyntaxError → 内容损坏：备份原文件后返回 fallback，并通知调用方「别写回」
+ *   其它 IO → 默认返回 fallback 并登记；strict 模式直接抛错。
+ * 以前所有错误都当「JSON 损坏」降级成空值，于是一次瞬时 EIO 就能让
+ * 「读档案 → 改 → 写档案」把原档案清空。
+ */
+function readJsonFile(file, fallback, { strict = false, onCorrupt, onIOError } = {}) {
+  let raw;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      clearReadFailure(file);
+      return fallback;
+    }
+    noteReadFailure(file, error);
+    if (typeof onIOError === 'function') onIOError(error);
+    if (strict) {
+      const wrapped = new Error(`读取 ${path.basename(file)} 失败：${(error && error.code) || error}`);
+      wrapped.code = 'MEMORY_READ_FAILED';
+      wrapped.file = file;
+      wrapped.cause = error;
+      throw wrapped;
+    }
+    return fallback;
+  }
+  clearReadFailure(file);
+  try {
+    const parsed = JSON.parse(raw);
+    noteParseFailure(file, 0);
+    return parsed;
+  } catch (error) {
+    // 解析失败：登记成独立状态（不是「没有数据」），并备份一次原始内容。
+    // 备份名固定，不做带时间戳的版本 —— 否则每次 search/唤醒读到同一个损坏摘要
+    // 都会新增一个 .corrupt-* 文件，目录会被这些重复副本撑爆。
+    noteParseFailure(file, 1, { kind: 'json' });
+    let backup = null;
+    try {
+      const fixedBackup = `${file}.corrupt`;
+      if (!fs.existsSync(fixedBackup)) {
+        fs.copyFileSync(file, fixedBackup);
+        console.warn(`[memory] JSON 损坏已备份 ${path.basename(file)}: ${error.message}`);
+      }
+      backup = fixedBackup;
+    } catch {
+      // 备份失败也要走 onCorrupt：调用方必须拒写，不能把空值覆盖回去
+    }
+    if (typeof onCorrupt === 'function') onCorrupt({ file, backup, error });
     return fallback;
   }
 }
@@ -142,7 +351,8 @@ export function createMemoryStore(options = {}) {
   // 没有上限的话失败清单会无限增长（每条带完整消息文本），把磁盘和内存拖垮，
   // 后续 replay 也要整份读进内存。这里做两道限制：条目数上限 + 单条文本截断。
   const MAX_FAILURE_ENTRIES = 10000;
-  const MAX_FAILURE_TEXT = 200;
+  // overflow 追加日志最多保留这么多行，超过就压缩成一行数字
+  const MAX_OVERFLOW_LINES = 5000;
   function readFailureLines() {
     try {
       return fs.readFileSync(writeFailFile, 'utf8').split('\n').filter(Boolean);
@@ -160,13 +370,56 @@ export function createMemoryStore(options = {}) {
     try {
       const raw = fs.readFileSync(overflowFile, 'utf8').trim();
       if (!raw) return 0;
-      // 兼容两种格式：数字（旧）和逐行 append（新）
-      if (/^\d+$/.test(raw)) return Number(raw);
-      return raw.split('\n').filter(Boolean).length;
+      // 逐行累加，兼容「旧数字格式 + 新追加」混用：
+      // 旧文件是 "5"（无换行），升级后 append "1\n" 变成 "51\n" ——
+      // 如果整份当数字解析会得到 51（正确应为 6）。
+      // 这里按行解析，每行是数字就加数字，是 "1" 就加 1。
+      const lines = raw.split('\n').map((l) => l.trim()).filter(Boolean);
+      let total = 0;
+      for (const line of lines) {
+        const n = Number(line);
+        total += Number.isFinite(n) && n > 0 ? n : 1;
+      }
+      return total;
     } catch { return 0; }
   }
+
+  /**
+   * 启动时把旧格式（纯数字、无换行）规范化成逐行格式，
+   * 否则下一次 append 会和旧数字粘成 "51"。
+   */
+  function normalizeOverflowFile() {
+    try {
+      const raw = fs.readFileSync(overflowFile, 'utf8');
+      if (raw.includes('\n')) return; // 已经是逐行格式
+      const n = Number(raw.trim());
+      if (!Number.isFinite(n) || n <= 0) return;
+      const tmp = overflowFile + '.normalize-tmp';
+      fs.writeFileSync(tmp, `${n}\n`, 'utf8');
+      fs.renameSync(tmp, overflowFile);
+    } catch { /* 文件不存在或不可写，忽略 */ }
+  }
+  normalizeOverflowFile();
+  // 追加日志会随故障时长增长：每 1000 次检查一次行数，超过上限就压缩成一行数字。
+  // 压缩后文件从「N 行 1」变成「一行 N」，语义不变但体积回到常数级。
+  let overflowAppendCount = 0;
   function bumpOverflowCount() {
-    try { fs.appendFileSync(overflowFile, '1\n', 'utf8'); } catch { /* 连 append 都失败就只能靠内存计数 */ }
+    try {
+      fs.appendFileSync(overflowFile, '1\n', 'utf8');
+      overflowAppendCount += 1;
+      if (overflowAppendCount % 1000 === 0) compactOverflowIfNeeded();
+    } catch { /* 连 append 都失败就只能靠内存计数 */ }
+  }
+  function compactOverflowIfNeeded() {
+    try {
+      const raw = fs.readFileSync(overflowFile, 'utf8');
+      const lineCount = raw.split('\n').filter(Boolean).length;
+      if (lineCount <= MAX_OVERFLOW_LINES) return;
+      const total = readOverflowCount();
+      const tmp = overflowFile + '.compact-tmp';
+      fs.writeFileSync(tmp, `${total}\n`, 'utf8');
+      fs.renameSync(tmp, overflowFile);
+    } catch { /* 压缩失败不影响计数 */ }
   }
   function flushOverflowCount() {
     // 追加日志没有内存缓冲，无需 flush（保留空实现给调用点）
@@ -239,28 +492,14 @@ export function createMemoryStore(options = {}) {
   /** 读某天的事件行（带缓存）。返回数组，解析失败的行静默跳过。 */
   function readDayEvents(day) {
     const file = path.join(eventsDir, `${day}.jsonl`);
-    let stat;
-    try {
-      stat = fs.statSync(file);
-    } catch {
-      cache.delete(file);
-      return [];
-    }
+    const stat = statStrict(file);
+    if (!stat) { cache.delete(file); return []; }
     const hit = cache.get(file);
     if (hit && hit.size === stat.size && hit.mtimeMs === stat.mtimeMs) return hit.rows;
-    let rows = [];
-    try {
-      const text = fs.readFileSync(file, 'utf8');
-      rows = text.split('\n').filter(Boolean).map((line) => {
-        try {
-          return JSON.parse(line);
-        } catch {
-          return null;
-        }
-      }).filter(Boolean);
-    } catch {
-      rows = [];
-    }
+    const { text } = readTextStrict(file);
+    // 读失败（已登记）不能写进缓存：否则权限恢复后这一天在进程余生里都「看不见」。
+    if (text === null) return [];
+    const { rows } = parseJsonl(text, file);
     cache.set(file, { size: stat.size, mtimeMs: stat.mtimeMs, rows });
     return rows;
   }
@@ -269,20 +508,59 @@ export function createMemoryStore(options = {}) {
     return `${Number(row.t) || 0}|${String(row.k || '')}|${String(row.text || '').slice(0, 60)}`;
   }
 
+  let salientIndexStamp = null; // { size, mtimeMs }
+
+  /**
+   * 读 S3 索引，返回 { index, state }：
+   *   state='hit'     索引可信（缓存命中或完整解析成功）
+   *   state='missing' 文件确实不存在 → 空索引可信（全新库/被清空）
+   *   state='unknown' 读不到 / 有坏行 → **索引不可作为幂等依据**
+   *
+   * 为什么必须有 unknown：{@link writeSalientRow} 用索引判断「这个副本已经存在」。
+   * 如果读取失败时沿用旧索引，外部替换过 S3 之后就会把「文件里其实没有」的 key
+   * 当成已存在而跳过写入，且没有任何失败记录 —— 副本永久缺失。
+   */
   function loadSalientIndex() {
-    if (salientIndex) return salientIndex;
-    salientIndex = new Set();
+    // 索引必须带文件指纹：外部修复/追加 S3 文件不会经过本进程的写路径，
+    // 没有指纹的话缓存会一直停留在旧内容（replay 因此重复补写）。
+    let stat = null;
     try {
-      for (const line of fs.readFileSync(salientFile, 'utf8').split('\n')) {
-        if (!line.trim()) continue;
-        try {
-          salientIndex.add(salientKey(JSON.parse(line)));
-        } catch {}
+      stat = fs.statSync(salientFile);
+    } catch (error) {
+      if (!error || error.code === 'ENOENT') {
+        salientIndex = null;
+        salientIndexStamp = null;
+        return { index: new Set(), state: 'missing' };
       }
-    } catch {
-      // 文件还不存在
+      noteReadFailure(salientFile, error);
+      return { index: null, state: 'unknown' };
     }
-    return salientIndex;
+    if (salientIndex && salientIndexStamp
+      && salientIndexStamp.size === stat.size && salientIndexStamp.mtimeMs === stat.mtimeMs) {
+      return { index: salientIndex, state: 'hit' };
+    }
+    // 读失败（EACCES/EIO）时**不能**把空 Set 缓存下来：那会让 S3 在进程余生里
+    // 都「没有已写记录」，replay 会重复补写，健康页也看不到问题。
+    const { text, error } = readTextStrict(salientFile);
+    if (text === null) {
+      if (error) return { index: null, state: 'unknown' };
+      salientIndex = new Set();
+      salientIndexStamp = null;
+      return { index: salientIndex, state: 'missing' };
+    }
+    const { rows, parseErrors } = parseJsonl(text, salientFile);
+    // 有坏行时不缓存部分索引：坏行里可能正好有某个 key，缓存少了它就会
+    // 让 replay / 写路径重复补写；文件修好后 stat 指纹变化会触发重新解析。
+    if (parseErrors > 0) {
+      salientIndex = null;
+      salientIndexStamp = null;
+      return { index: null, state: 'unknown' };
+    }
+    const index = new Set();
+    for (const row of rows) index.add(salientKey(row));
+    salientIndex = index;
+    salientIndexStamp = { size: stat.size, mtimeMs: stat.mtimeMs };
+    return { index: salientIndex, state: 'hit' };
   }
 
   /** 把一行写进当天 L1 事件文件。 */
@@ -298,12 +576,23 @@ export function createMemoryStore(options = {}) {
     if (!cfg.salientFile || Number(tier) < 3) return;
     // 文件被删/重建时缓存必须失效：否则 index 里记着「已写过」但文件里其实没有，
     // 结果就是 S3 副本永远补不上（replay 也会误判为已完成）。
-    if (!fs.existsSync(salientFile)) salientIndex = null;
-    const index = loadSalientIndex();
+    if (!fs.existsSync(salientFile)) {
+      salientIndex = null;
+      salientIndexStamp = null;
+    }
+    const { index, state } = loadSalientIndex();
+    if (state === 'unknown') {
+      // 读取失败或有坏行时，旧索引不能拿来判断「副本已存在」：
+      // 外部可能已经替换/清空过 S3，静默跳过会让副本永久缺失且没有恢复清单。
+      // 抛错交给调用方：appendEvent 记 pending 'salient'，replay 保留待处理行。
+      throw new Error('S3 索引暂时不可用（读取失败或文件含坏行），无法确认副本是否存在');
+    }
     const key = salientKey(row);
     if (index.has(key)) return;
     fs.appendFileSync(salientFile, JSON.stringify({ ...row, srcDay: day }) + '\n', 'utf8');
     index.add(key);
+    // 刚自己写过：指纹作废，下一次读取重新解析（避免拿陈旧指纹当最新）。
+    salientIndexStamp = null;
   }
 
   /**
@@ -383,12 +672,7 @@ export function createMemoryStore(options = {}) {
 
   /** 列出有事件文件的所有日期（升序）。 */
   function listEventDays() {
-    let names = [];
-    try {
-      names = fs.readdirSync(eventsDir);
-    } catch {
-      return [];
-    }
+    const { names } = listDirStrict(eventsDir);
     return names
       .map((name) => DAY_RE.exec(name)?.[1])
       .filter(Boolean)
@@ -397,12 +681,7 @@ export function createMemoryStore(options = {}) {
 
   /** 列出已归档的月份（events-archive/YYYY-MM.jsonl）。 */
   function listArchiveMonths() {
-    let names = [];
-    try {
-      names = fs.readdirSync(archiveDir);
-    } catch {
-      return [];
-    }
+    const { names } = listDirStrict(archiveDir);
     return names
       .map((name) => ARCHIVE_RE.exec(name)?.[1])
       .filter(Boolean)
@@ -412,26 +691,13 @@ export function createMemoryStore(options = {}) {
   /** 读一个归档月的全部事件（带缓存）。 */
   function readArchiveMonth(month) {
     const file = path.join(archiveDir, `${month}.jsonl`);
-    let stat;
-    try {
-      stat = fs.statSync(file);
-    } catch {
-      return [];
-    }
+    const stat = statStrict(file);
+    if (!stat) return [];
     const hit = cache.get(file);
     if (hit && hit.size === stat.size && hit.mtimeMs === stat.mtimeMs) return hit.rows;
-    let rows = [];
-    try {
-      rows = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => {
-        try {
-          return JSON.parse(line);
-        } catch {
-          return null;
-        }
-      }).filter(Boolean);
-    } catch {
-      rows = [];
-    }
+    const { text } = readTextStrict(file);
+    if (text === null) return [];
+    const { rows } = parseJsonl(text, file);
     cache.set(file, { size: stat.size, mtimeMs: stat.mtimeMs, rows });
     return rows;
   }
@@ -609,22 +875,12 @@ export function createMemoryStore(options = {}) {
   }
 
   function listWeekFiles() {
-    let names = [];
-    try {
-      names = fs.readdirSync(weeksDir);
-    } catch {
-      return [];
-    }
+    const { names } = listDirStrict(weeksDir);
     return names.map((n) => WEEK_RE.exec(n)?.[1]).filter(Boolean).sort();
   }
 
   function listMonthFiles() {
-    let names = [];
-    try {
-      names = fs.readdirSync(monthsDir);
-    } catch {
-      return [];
-    }
+    const { names } = listDirStrict(monthsDir);
     return names.map((n) => MONTH_RE.exec(n)?.[1]).filter(Boolean).sort();
   }
 
@@ -744,11 +1000,46 @@ export function createMemoryStore(options = {}) {
   // 档案与检索
   // -------------------------------------------------------------------------
 
-  function readProfile() {
-    return ensureProfile(readJsonFile(profileFile, null));
+  // 档案读取的两种降级状态：只要它们非空，就拒绝写回（否则会用空档案覆盖原文件）。
+  let profileCorrupt = false;   // profile.json 解析失败（已备份坏文件）
+  let profileReadError = null;  // 最近一次读档案的 IO 错误（EIO/EACCES/...）
+
+  /**
+   * 读档案。
+   *
+   * strict=true 时读取失败直接抛错 —— 写路径（读→改→写）必须用它，
+   * 因为「读失败」和「档案是空的」在写回时是天壤之别。
+   * 非严格调用（注入、展示）读不到就先用空档案，但仍然会点起写保护，
+   * 所以调用方即使把空档案传回 writeProfile 也不会覆盖磁盘。
+   */
+  function readProfile({ strict = false } = {}) {
+    // 区分「文件不存在」和「暂时读不到」：两者都返回 null，但只有前者能清掉写保护。
+    let ioError = null;
+    const raw = readJsonFile(profileFile, null, {
+      strict,
+      onCorrupt: () => { profileCorrupt = true; },
+      onIOError: (error) => { ioError = error; profileReadError = error; },
+    });
+    if (raw === null) {
+      // ENOENT → ioError 为 null，写保护自动解除；IO 失败 → 保持写保护。
+      profileReadError = ioError;
+      return ensureProfile(null);
+    }
+    profileCorrupt = false;
+    profileReadError = null;
+    return ensureProfile(raw);
   }
 
-  function writeProfile(profile) {
+  function writeProfile(profile, { force = false } = {}) {
+    if (!force && (profileCorrupt || profileReadError)) {
+      console.error(
+        `[memory] 拒绝写档案：${profileCorrupt
+          ? 'profile.json 解析失败（坏文件已备份）'
+          : `读取失败（${profileReadError && (profileReadError.code || profileReadError.message || profileReadError)}）`}。`
+        + '为避免用空档案覆盖原文件，本次写入跳过；修好文件/权限后下一次成功读取会自动恢复。',
+      );
+      return false;
+    }
     const p = pruneProfile(ensureProfile(profile));
     try {
       writeJsonFile(profileFile, p);
@@ -759,20 +1050,59 @@ export function createMemoryStore(options = {}) {
     }
   }
 
+  /** 运维修好文件后可以显式解除写保护（修复脚本用）。 */
+  function clearProfileGuards() {
+    profileCorrupt = false;
+    profileReadError = null;
+  }
+
+  /**
+   * 档案读取状态：ok / corrupt（解析失败已备份）/ io-error（暂时读不到）。
+   * 管理层要能看到它，否则「档案读不到」在接口上长得和「档案是空的」一样。
+   */
+  function readState() {
+    return {
+      corrupt: profileCorrupt,
+      readError: profileReadError ? String(profileReadError.code || profileReadError.message || profileReadError) : null,
+      writable: !profileCorrupt && !profileReadError,
+    };
+  }
+
+  /**
+   * 本库目录下当前读不出来的文件（模块级登记按 root 过滤）。
+   *
+   * 清理过期登记只在「确定不存在」（ENOENT）时做：文件被删/归档后 health 不该
+   * 一直假红，但 EACCES/EIO 时文件其实还在，清了就等于把故障藏起来。
+   */
+  function readFailureFilesInRoot() {
+    const prefix = root.endsWith(path.sep) ? root : root + path.sep;
+    const out = [];
+    for (const file of [...readFailureFiles.keys()]) {
+      if (!String(file).startsWith(prefix)) continue;
+      if (isDefinitelyMissing(file)) { readFailureFiles.delete(file); continue; }
+      out.push(file);
+    }
+    return out;
+  }
+
+  /** 本库目录下解析失败的文件与行数（清理规则同上：只有 ENOENT 才清）。 */
+  function parseFailureFilesInRoot() {
+    const prefix = root.endsWith(path.sep) ? root : root + path.sep;
+    const out = [];
+    for (const [file, info] of [...parseFailureFiles.entries()]) {
+      if (!String(file).startsWith(prefix)) continue;
+      if (isDefinitelyMissing(file)) { parseFailureFiles.delete(file); continue; }
+      out.push([file, info]);
+    }
+    return out;
+  }
+
   /** 读 S3 独立副本（最近的在前），给「重要的事」展示用。 */
   function readSalient({ limit = 50 } = {}) {
-    const out = [];
-    try {
-      for (const line of fs.readFileSync(salientFile, 'utf8').split('\n')) {
-        if (!line.trim()) continue;
-        try {
-          out.push(JSON.parse(line));
-        } catch {}
-      }
-    } catch {
-      return [];
-    }
-    return out.slice(-Math.max(1, Number(limit) || 50)).reverse();
+    const { text } = readTextStrict(salientFile);
+    if (text === null) return [];
+    const { rows } = parseJsonl(text, salientFile);
+    return rows.slice(-Math.max(1, Number(limit) || 50)).reverse();
   }
 
   // -------------------------------------------------------------------------
@@ -898,7 +1228,8 @@ export function createMemoryStore(options = {}) {
     const scopeKey = String(opts.key ?? '').trim();
 
     let scopedEvents = readEvents({ days, now });
-    if (scopeKey) scopedEvents = scopedEvents.filter((e) => !e.k || e.k === scopeKey);
+    // 严格匹配：无 k 的旧事件在 isolated 下不可见（和摘要层、档案层同一默认值）。
+    if (scopeKey) scopedEvents = scopedEvents.filter((e) => e && String(e.k ?? '') === scopeKey);
     const eventDocs = scopedEvents.map((e) => {
       const who = e.kind === 'self' ? '你' : String(e.who || '人');
       const text = `${who}：${String(e.text || '')}`;
@@ -927,8 +1258,16 @@ export function createMemoryStore(options = {}) {
       if (!Array.isArray(keys) || !keys.length) return false; // 没有会话标记的旧摘要，保守跳过
       return keys.includes(scopeKey);
     };
+    // 行级过滤：isolated 时只保留「这一行明确来自当前会话」的摘要行。
+    // 关键：来源未知（旧摘要行没有 k）必须 fail-closed —— 安全隔离不能靠「默认放行」，
+    // 否则只要历史数据存在，isolated 就只是 best-effort。
+    const filterLines = (raw) => (Array.isArray(raw) ? raw : []).filter((l) => {
+      if (!scopeKey) return true;
+      if (!l || typeof l !== 'object' || !l.k) return false;
+      return l.k === scopeKey;
+    });
     const dayDocs = readSummaries({ days, now }).filter((s) => summaryAllowed(s.keys)).map((s) => {
-      const lines = (s.lines || []).map(lineText).filter(Boolean);
+      const lines = filterLines(s.lines).map(lineText).filter(Boolean);
       const maxTier = Math.max(1, ...(Array.isArray(s.tiers) && s.tiers[1] ? [2] : [1]),
         ...(s.lines || []).map((l) => (l && typeof l === 'object' && Number.isInteger(l.s) ? l.s : 1)));
       const id = `d:${s.day}`;
@@ -958,7 +1297,7 @@ export function createMemoryStore(options = {}) {
         usageHits: usageOf(id),
         // 用「；」而不是空格拼接：周要点是多句话，空格拼起来会变成
         // 「私聊 私聊：… 私聊 私聊：…」这种读不通的长行，注入时既费 token 又难懂。
-        text: (w.lines || []).map(lineText).filter(Boolean).join('；'),
+        text: filterLines(w.lines).map(lineText).filter(Boolean).join('；'),
       };
     });
 
@@ -974,7 +1313,7 @@ export function createMemoryStore(options = {}) {
         salience: 3,
         weight: 1.35,
         usageHits: usageOf(id),
-        text: (m.lines || []).map(lineText).filter(Boolean).join('；'),
+        text: filterLines(m.lines).map(lineText).filter(Boolean).join('；'),
       };
     });
 
@@ -1030,15 +1369,17 @@ export function createMemoryStore(options = {}) {
     }
     const diverse = applyDiversity(merged, topK);
     recordHits(diverse);
-    appendRecallLog(q, diverse, now);
+    appendRecallLog(q, diverse, now, opts.key);
     return diverse;
   }
 
   /** 检索质量日志（纯追加，供离线看漏检/调权重，不参与任何决策）。 */
-  function appendRecallLog(q, hits, now) {
+  function appendRecallLog(q, hits, now, sourceKey = '') {
     try {
       const line = JSON.stringify({
         t: now,
+        // 检索词原文属于会话隐私：isolated 下只让本会话看到自己的检索历史。
+        k: String(sourceKey ?? '').trim(),
         q: String(q).slice(0, 120),
         n: hits.length,
         echo: hits.filter((h) => h.echo).length,
@@ -1053,7 +1394,7 @@ export function createMemoryStore(options = {}) {
   }
 
   /** 读最近若干条检索日志（给 inspect / 控制台看）。 */
-  function readRecallLog({ limit = 20 } = {}) {
+  function readRecallLog({ limit = 20, sourceKey = '' } = {}) {
     const file = path.join(root, 'recall-log.jsonl');
     let lines = [];
     try {
@@ -1067,39 +1408,112 @@ export function createMemoryStore(options = {}) {
       } catch {
         return null;
       }
-    }).filter(Boolean).reverse();
+    }).filter(Boolean)
+      // isolated 时只看本会话的检索历史：日志里有查询原文，跨会话等于内容泄漏。
+      .filter((x) => !sourceKey || String(x.k ?? '') === sourceKey)
+      .reverse();
+  }
+
+  /**
+   * 会话级统计：只数本会话的事件，活动日文件与归档月文件都算。
+   * 不能复用 stats()：它带 root 路径、整份配置、待恢复失败计数——
+   * 那些是管理面信息，会话不需要，也不该看到别的会话的活动量。
+   */
+  function computeSessionStats(wanted, now) {
+    let events = 0;
+    const tiers = [0, 0, 0, 0];
+    const daysSeen = new Set();
+    const take = (r) => {
+      events += 1;
+      const tier = Number.isInteger(r.s) ? r.s : salience(r);
+      tiers[Math.min(3, Math.max(0, tier))] += 1;
+      // 归档行带 srcDay，活动日文件的行用文件名；旧归档行没 srcDay 就从 t 反推。
+      const d = String(r.srcDay ?? '').trim() || (Number(r.t) ? dayString(Number(r.t)) : '');
+      if (d) daysSeen.add(d);
+    };
+    for (const day of listEventDays()) {
+      for (const r of readDayEvents(day)) if (String(r.k ?? '') === wanted) take(r);
+    }
+    // 归档月文件也是 L1 历史：只数活动日会让「只有归档期记录」的会话显示 0 条，
+    // 而大窗口检索又能查到它们——统计和检索自相矛盾，等于告诉用户「记忆没了」。
+    for (const month of listArchiveMonths()) {
+      for (const r of readArchiveMonth(month)) if (String(r.k ?? '') === wanted) take(r);
+    }
+    const days = [...daysSeen].sort();
+    return {
+      scope: 'session',
+      activeOnly: false,
+      archivedIncluded: true,
+      events,
+      eventDays: days.length,
+      firstDay: days[0] || null,
+      lastDay: days[days.length - 1] || null,
+      tiers,
+      salience: {
+        S0: tiers[0], S1: tiers[1], S2: tiers[2], S3: tiers[3],
+        寒暄占比: events ? `${Math.round((tiers[0] / events) * 100)}%` : '0%',
+      },
+      today: dayString(now),
+    };
   }
 
   /**
    * 自省：把「记忆库现状 + 最近检索 + 档案规模」一次给出来。
    * 对应 dsh-memory-local 的 memory_inspect —— 让她能自己看到「我记得些什么」。
    */
-  function inspect({ now = Date.now(), recallLimit = 10 } = {}) {
-    const s = stats({ now });
-    const p = readProfile();
+  function inspect({ now = Date.now(), recallLimit = 10, sourceKey = '' } = {}) {
+    const fullProfile = readProfile();
+    const wanted = String(sourceKey ?? '').trim();
+    // 给了 sourceKey 就用会话级投影：检索历史、人物统计、事件统计都只看本会话。
+    const p = wanted ? filterProfileForSession(fullProfile, wanted) : fullProfile;
+    const profile = {
+      people: Object.entries(p.people).map(([name, v]) => ({
+        name,
+        facts: (v.facts || []).length,
+        lastSeen: v.lastSeen,
+      })),
+      openThreads: p.threads.filter((t) => t.state === 'open').length,
+      doneThreads: p.threads.filter((t) => t.state === 'done').length,
+      selfNotes: p.self.length,
+    };
+    if (wanted) {
+      return {
+        // scope 明示：这一份是会话级视图，全局统计与工具使用量不下发。
+        scope: 'session',
+        // 时间口径要和 memory-profile 保持一致：profile.lastSeen 是会话内序数，
+        // 不是时间戳，调用方不能把 7 当成「7 分钟前」。
+        clock: p.clock === 'session-rank' ? 'session-rank' : 'epoch-ms',
+        clockNote: '时间字段是会话内序数（越大越新，0=未知），不是时间戳',
+        stats: computeSessionStats(wanted, now),
+        usage: null,
+        omitted: ['globalStats', 'config', 'paths', 'pendingFailures', 'usage'],
+        recentRecalls: readRecallLog({ limit: recallLimit, sourceKey: wanted }),
+        profile,
+        profileRead: readState(),
+      };
+    }
     return {
-      stats: s,
+      scope: 'global',
+      clock: 'epoch-ms',
+      stats: stats({ now }),
       usage: usageStats(),
-      recentRecalls: readRecallLog({ limit: recallLimit }),
-      profile: {
-        people: Object.entries(p.people).map(([name, v]) => ({
-          name,
-          facts: (v.facts || []).length,
-          lastSeen: v.lastSeen,
-        })),
-        openThreads: p.threads.filter((t) => t.state === 'open').length,
-        doneThreads: p.threads.filter((t) => t.state === 'done').length,
-        selfNotes: p.self.length,
-      },
+      recentRecalls: readRecallLog({ limit: recallLimit, sourceKey: wanted }),
+      profile,
     };
   }
 
   /** 主动纠错：把某人的一条旧事实换成新说法（旧文本留 previous 可追溯）。 */
-  function correctFact(name, content, { now = Date.now(), uid = '' } = {}) {
-    const p = readProfile();
-    const out = correctPersonFact(p, name, content, { now, uid });
-    if (out.changed) writeProfile(out.profile);
-    return out;
+  /**
+   * 主动纠错：**只改内存、不落盘**，返回改后的 profile 交给调用方写一次。
+   *
+   * 以前这里先写一次盘、路由补完 audit 再写第二次。第二次失败时路由返回 503
+   * 说「本次改动没有落盘」，可实际上纠错内容已经在磁盘上了 —— 重试会再纠一次，
+   * 而 audit 永远补不上。写盘统一交给调用方（一次），语义才准确。
+   */
+  function correctFact(name, content, { now = Date.now(), uid = '', sourceKey = '', visibilityKey = '' } = {}) {
+    // 写路径严格读：读失败就抛错，绝不拿空档案继续改再写回
+    const p = readProfile({ strict: true });
+    return correctPersonFact(p, name, content, { now, uid, sourceKey, visibilityKey });
   }
 
   /** 把检索结果格式化成给模型看的文本（受 maxChars 约束）。 */
@@ -1210,7 +1624,17 @@ export function createMemoryStore(options = {}) {
       let info = null;
       try { info = JSON.parse(fs.readFileSync(lockFile, 'utf8')); } catch { /* 锁文件损坏按过期处理 */ }
       const age = Date.now() - (Number(info && info.at) || 0);
-      if (info && age < 5 * 60 * 1000) return false; // 活锁，放弃本轮
+      // 「持锁进程还活着吗」比时间更可靠：崩溃残留的锁里 pid 已经是死进程，
+      // 只看 age 会让运维干等 5 分钟才敢重跑（归档恢复这种秒级任务尤其难受）。
+      // pid 被别的进程复用时仍判活，退回按 age 保守处理。
+      const ownerPid = Number(info && info.pid) || 0;
+      let ownerAlive = false;
+      if (ownerPid > 0) {
+        try { process.kill(ownerPid, 0); ownerAlive = true; }
+        catch (probeError) { ownerAlive = Boolean(probeError && probeError.code === 'EPERM'); }
+      }
+      const stale = !info || !ownerAlive || age >= 5 * 60 * 1000;
+      if (!stale) return false; // 活锁，放弃本轮
       const staleFile = `${lockFile}.stale-${process.pid}-${crypto.randomUUID().slice(0, 6)}`;
       try {
         fs.renameSync(lockFile, staleFile); // 原子抢占：只有一个人成功
@@ -1230,6 +1654,20 @@ export function createMemoryStore(options = {}) {
         try { fs.unlinkSync(staleFile); } catch {}
       }
     }
+  }
+
+  /**
+   * 确认锁文件当前仍属于自己。
+   *
+   * rename 抢占不是「条件删除」：A 移走过期锁并建好新锁后，B 仍可能把 A 的新锁
+   * rename 走（B 用的是它更早读到的过期判断）。所以持锁进程必须在处理中和提交前
+   * 反复确认「锁文件里的 owner 还是我」——不是就说明被抢了，立即停手。
+   */
+  function ownsLock(lockFile, owner) {
+    try {
+      const info = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
+      return Boolean(info && info.owner === owner);
+    } catch { return false; }
   }
 
   /** 只释放自己持有的锁，避免删掉接管者的锁。 */
@@ -1290,7 +1728,7 @@ export function createMemoryStore(options = {}) {
     try {
       // 遗留快照（上一次 replay 在 rename 后崩溃留下的）：必须和新快照一起处理。
       // 以前 rename 到固定名 .processing 会把它覆盖掉，旧事件就永远丢了。
-      const leftovers = listPendingSnapshots();
+      const leftovers = listFailureSnapshots();
       // 唯一名快照：不会覆盖任何遗留文件。
       const snapshotFile = `${writeFailFile}.processing-${Date.now()}-${crypto.randomUUID().slice(0, 6)}`;
       if (!dryRun) {
@@ -1326,11 +1764,20 @@ export function createMemoryStore(options = {}) {
       const bad = [];
       let lastRenew = Date.now();
       const seenIds = new Set();
+      let processed = 0;
       for (const line of lines) {
+        processed += 1;
         // 按时间续租（不是按行数）：单行 IO 慢时也能及时告诉别人「我还活着」。
-        if (lockHeld && Date.now() - lastRenew > 60_000) {
-          renewReplayLock(lockFile, owner);
-          lastRenew = Date.now();
+        if (lockHeld) {
+          // 每 100 条确认一次锁还是自己的：被抢就立刻停手，避免双写 L1。
+          if (processed % 100 === 0 && !ownsLock(lockFile, owner)) {
+            lastWriteFailure = { at: Date.now(), error: 'replay 锁已被其他进程接管，本轮中止', phase: 'lock' };
+            return { replayed, skipped, failed: remaining.length, quarantined, dryRun, lockLost: true };
+          }
+          if (Date.now() - lastRenew > 60_000) {
+            renewReplayLock(lockFile, owner);
+            lastRenew = Date.now();
+          }
         }
         let item;
         try { item = JSON.parse(line); } catch { bad.push(line); quarantined += 1; continue; }
@@ -1378,6 +1825,10 @@ export function createMemoryStore(options = {}) {
         }
       }
       if (typeof onBeforeCommit === 'function') onBeforeCommit();
+      // 提交前最后确认锁：如果被接管了，不写回清单（快照留着，下次还能处理）。
+      if (lockHeld && !ownsLock(lockFile, owner)) {
+        return { replayed, skipped, failed: remaining.length, quarantined, dryRun, lockLost: true };
+      }
       if (!dryRun) {
         try {
           // 处理失败/隔离的行追加回主清单（桥接期间写的新行已经在主清单里了，不动它们）。
@@ -1416,16 +1867,223 @@ export function createMemoryStore(options = {}) {
    * 上一次 replay 可能在 rename 之后、处理完成之前崩溃，留下快照；
    * 下一次 replay 必须先把它当待处理数据读掉，绝不能覆盖。
    */
-  function listPendingSnapshots() {
+  /**
+   * 失败清单快照（.processing-* / .migrate-*）：每行是 {at, phase, id, row, error}。
+   * 只有这种快照能被 replay 当失败记录消费。
+   */
+  function listFailureSnapshots() {
     const dir = path.dirname(writeFailFile);
     const base = path.basename(writeFailFile);
     const out = [];
-    try {
-      for (const name of fs.readdirSync(dir)) {
-        if (name.startsWith(`${base}.processing`)) out.push(path.join(dir, name));
+    // 走统一原语：目录读不到（而不是不存在）要登记，别让失败清单在故障时静默变空。
+    for (const name of listDirStrict(dir).names) {
+      if (name.startsWith(`${base}.processing`) || name.startsWith(`${base}.migrate-`)) {
+        out.push(path.join(dir, name));
       }
-    } catch { /* 目录不存在 */ }
+    }
     return out;
+  }
+
+  /**
+   * 归档迁移快照（events-archive/YYYY-MM.jsonl.migrate-*）：每行是普通 L1 事件，
+   * 格式和失败清单完全不同 —— 绝不能交给 replay 当失败记录消费
+   * （那会把归档事件 quarantine 掉再删快照，等于把 L1 降级成人工隔离数据）。
+   */
+  function listArchiveSnapshots() {
+    // 返回 { files, error }：ENOENT 才是「确实没有归档」（还没归档过），
+    // 其余错误（EACCES / EPERM / EIO / ENOTDIR）说明目录存在但读不到，
+    // 里面可能还躺着待恢复快照 —— 当成空数组就是 fail-open，健康页会假绿。
+    const { names, error } = listDirStrict(archiveDir);
+    const files = [];
+    for (const name of names) {
+      if (name.includes('.jsonl.migrate-')) files.push(path.join(archiveDir, name));
+    }
+    return { files, error };
+  }
+
+  /**
+   * 键排序的稳定序列化：同一份内容无论字段顺序如何都得到同一个字符串。
+   */
+  function stableStringify(value) {
+    if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+    if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+    const keys = Object.keys(value).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(',')}}`;
+  }
+
+  /**
+   * 归档恢复的幂等键：优先用事件 id（稳定唯一）；旧行没有 id 就用**整行内容**的
+   * 稳定哈希。绝不能用「时间 + 文本前缀」——同一毫秒、前 40 字相同的两条不同消息
+   * 会被判成同一条，恢复时静默丢掉其中一条，而旧库恰恰是最需要恢复、又没有 id 的数据。
+   * srcDay 是迁移阶段补的伪字段（同一行在不同阶段可能带也可能不带），先剔掉再比。
+   */
+  function archiveRowKey(line) {
+    try {
+      const row = JSON.parse(line);
+      if (!row || typeof row !== 'object' || Array.isArray(row)) return `raw:${line}`;
+      const id = String(row.id ?? '').trim();
+      if (id) return `id:${id}`;
+      const { srcDay, ...rest } = row;
+      return `row:${stableStringify(rest)}`;
+    } catch { /* 坏行用整行原文当指纹 */ }
+    return `raw:${line}`;
+  }
+
+  /**
+   * 恢复归档迁移快照：把快照里目标还没有的行 append 回 YYYY-MM.jsonl，然后删快照。
+   * 用 append 而不是 rename 覆盖：期间桥接可能已经重建了该归档文件，
+   * rename 会把它覆盖掉。append 与 unlink 之间存在崩溃窗口，所以按 archiveRowKey
+   * 去重，重复调用不会重复写入。
+   */
+  function recoverArchiveSnapshots({ dryRun = false } = {}) {
+    // 失败不再是「静默跳过」：读目录失败、单个快照读写失败都要累计，
+    // 否则磁盘满/权限变化时会返回 restored:0 而调用方以为一切正常。
+    const result = { restored: 0, lines: 0, duplicates: 0, failed: 0, errors: [], dryRun };
+    const fail = (message) => {
+      result.failed += 1;
+      if (result.errors.length < 20) result.errors.push(message);
+    };
+    const firstScan = listArchiveSnapshots();
+    if (firstScan.error) {
+      return {
+        ...result,
+        archiveDirError: firstScan.error,
+        error: `无法读取归档目录 events-archive（${firstScan.error}）：里面可能还有待恢复快照，先修目录权限/挂载再重试`,
+      };
+    }
+    // 没有快照就别建锁：events-archive 目录可能还不存在（归档 0 个月），
+    // 盲目建锁会 ENOENT → 被当成「另一个恢复在跑」，健康页/CLI 都会误报。
+    if (!firstScan.files.length) {
+      return { ...result, noSnapshots: true };
+    }
+    // 归档恢复以前完全没有锁：两个 --apply 会同时读到同一份旧状态，然后各追加一遍。
+    // replay / migrate 的 fencing 锁只覆盖失败清单，这个写者也要有自己的锁。
+    const lockFile = path.join(archiveDir, '.recover.lock');
+    const owner = `recover-archive:${process.pid}:${crypto.randomUUID().slice(0, 8)}`;
+    let lockHeld = false;
+    if (!dryRun) {
+      try { fs.mkdirSync(archiveDir, { recursive: true }); } catch { /* 下面建锁会失败并报出来 */ }
+      lockHeld = acquireReplayLock(lockFile, owner);
+    }
+    if (!dryRun && !lockHeld) {
+      // 区分「别人正持锁」和「根本建不了锁」：两种情况都不写，但提示必须不一样。
+      let heldByOther = false;
+      try {
+        const info = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
+        heldByOther = Boolean(info && info.owner);
+      } catch { /* 锁文件不存在 = 建锁失败 */ }
+      return {
+        ...result, locked: heldByOther,
+        error: heldByOther
+          ? '另一个归档恢复正在进行（锁超过 5 分钟且持锁进程不在才会被接管），本次未执行'
+          : '无法创建归档恢复锁（events-archive 目录不可写？），本次未执行',
+      };
+    }
+    try {
+      const scan = listArchiveSnapshots();
+      if (scan.error) {
+        return {
+          ...result,
+          archiveDirError: scan.error,
+          error: `无法读取归档目录 events-archive（${scan.error}）：本次未执行`,
+        };
+      }
+      for (const snap of scan.files) {
+        // 快照之间也续租：单个恢复任务处理多个快照时不能被误判成僵锁。
+        if (lockHeld) renewReplayLock(lockFile, owner);
+        const snapName = path.basename(snap);
+        // 2026-09.jsonl.migrate-123 → 2026-09.jsonl
+        const target = path.join(archiveDir, snapName.split('.migrate-')[0]);
+        let content = '';
+        try {
+          content = fs.readFileSync(snap, 'utf8');
+        } catch (error) {
+          fail(`读不出快照 ${snapName}：${(error && error.code) || error}`);
+          continue;
+        }
+        const rows = content.split('\n').filter(Boolean);
+        if (!rows.length) {
+          if (!dryRun) {
+            try { fs.unlinkSync(snap); } catch (error) {
+              fail(`删除空快照 ${snapName} 失败：${(error && error.code) || error}`);
+              continue;
+            }
+          }
+          result.restored += 1;
+          continue;
+        }
+        // 目标已有行的指纹 → 剩余可抵消次数。用多重计数而不是 Set：
+        // 目标里合法存在两条完全相同的事件时，快照里的第二条仍然要补回来。
+        //
+        // 读目标失败时绝不能当成「空文件」：existing 为空 → 所有行都算 missing →
+        // 全量重写后再删快照，原归档和新写的就重复了，而命令还报成功。
+        // 只有 ENOENT 才是「目标确实还不存在」这个唯一安全的空基线。
+        const existing = new Map();
+        try {
+          for (const line of fs.readFileSync(target, 'utf8').split('\n').filter(Boolean)) {
+            const k = archiveRowKey(line);
+            existing.set(k, (existing.get(k) || 0) + 1);
+          }
+        } catch (error) {
+          if (!error || error.code !== 'ENOENT') {
+            fail(`读不出目标归档 ${path.basename(target)}（${(error && error.code) || error}）：跳过 ${snapName}，快照保留`);
+            continue;
+          }
+          // ENOENT：目标确实还不存在，空基线是对的
+        }
+        const missing = [];
+        let scannedRows = 0;
+        for (const line of rows) {
+          const k = archiveRowKey(line);
+          const left = existing.get(k) || 0;
+          if (left > 0) {
+            existing.set(k, left - 1);
+            result.duplicates += 1;
+          } else {
+            missing.push(line);
+          }
+          scannedRows += 1;
+          // 大快照可能跑过 5 分钟租约：边处理边续租，避免被另一个恢复者当成僵锁接管。
+          if (lockHeld && scannedRows % 20000 === 0) renewReplayLock(lockFile, owner);
+        }
+        if (dryRun) {
+          result.restored += 1;
+          result.lines += missing.length;
+          continue;
+        }
+        // 写之前再确认锁还在自己手里：被接管后继续追加会让两份恢复互相叠加。
+        if (lockHeld && !ownsLock(lockFile, owner)) {
+          return {
+            ...result, locked: false, lostLock: true,
+            error: '归档恢复锁被接管，已停止（快照保留，可重跑）',
+          };
+        }
+        try {
+          if (missing.length) {
+            fs.appendFileSync(target, missing.join('\n') + '\n', 'utf8');
+          }
+          // append 成功后才删快照；即使这里崩了，下次也只会补 missing（幂等）。
+          fs.unlinkSync(snap);
+          result.restored += 1;
+          result.lines += missing.length;
+        } catch (error) {
+          // 写不进去（ENOSPC / EACCES / EIO）必须记下来：快照保留、可重跑，
+          // 但调用方要能据此以非零退出，而不是看到 restored:0 就当没事。
+          fail(`恢复 ${snapName} 失败：${(error && error.code) || error} ${(error && error.message) || ''}`.trim());
+        }
+      }
+      // 收尾再扫一次：CLI 用它决定退出码（还有快照没恢复完就不能报成功）。
+      const finalScan = listArchiveSnapshots();
+      if (finalScan.error) {
+        result.archiveDirError = finalScan.error;
+        result.error = `恢复结束后无法确认归档目录状态（${finalScan.error}）`;
+      } else {
+        result.remaining = finalScan.files.length;
+      }
+      return result;
+    } finally {
+      if (lockHeld) releaseReplayLock(lockFile, owner);
+    }
   }
 
   /**
@@ -1441,14 +2099,21 @@ export function createMemoryStore(options = {}) {
     let records = 0;
     let unreadable = 0;
     try { records += fs.readFileSync(writeFailFile, 'utf8').split('\n').filter(Boolean).length; } catch { /* 主清单不存在 */ }
-    for (const file of listPendingSnapshots()) {
+    for (const file of listFailureSnapshots()) {
       try {
         records += fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).length;
       } catch {
         unreadable += 1;
       }
     }
-    return { records, unreadable, overflow, total: records + overflow };
+    // 归档快照是另一种格式，单独计数、单独恢复，不能混进 pendingRecoverable。
+    const archiveScan = listArchiveSnapshots();
+    const archiveSnapshotError = archiveScan.error || null;
+    const archiveSnapshots = archiveSnapshotError ? 0 : archiveScan.files.length;
+    return {
+      records, unreadable, overflow, archiveSnapshots, archiveSnapshotError,
+      total: records + overflow,
+    };
   }
 
   /** 兼容旧调用点：只取记录数。 */
@@ -1484,7 +2149,17 @@ export function createMemoryStore(options = {}) {
       let sourceFile = writeFailFile;
       if (!dryRun) {
         sourceFile = `${writeFailFile}.migrate-${Date.now()}-${crypto.randomUUID().slice(0, 6)}`;
-        try { fs.renameSync(writeFailFile, sourceFile); } catch { sourceFile = writeFailFile; }
+        try {
+          fs.renameSync(writeFailFile, sourceFile);
+        } catch (error) {
+          // 只有「文件不存在」才能退回原路径；EBUSY/EACCES 等必须 fail-closed，
+          // 否则会读原文件再把整份 append 回原文件 —— 一条记录变两条。
+          if (error && error.code === 'ENOENT') {
+            sourceFile = writeFailFile;
+          } else {
+            return { ...result, error: `rename-failed: ${error?.message ?? error}` };
+          }
+        }
       }
       const lines = fs.readFileSync(sourceFile, 'utf8').split('\n').filter(Boolean);
       let changed = 0;
@@ -1504,16 +2179,26 @@ export function createMemoryStore(options = {}) {
         changed += 1;
         return JSON.stringify(item);
       });
+      // 关键：不管有没有改动，都要把处理过的行写回主清单再删快照。
+      // 之前只在 changed>0 时 append，第二次幂等迁移（changed=0）会删掉源快照却
+      // 什么都不写回 —— 整份失败清单直接消失（审查复现过）。
+      if (!dryRun) {
+        // 破坏性操作前检查锁：如果已被抢，立即停手（此时什么都还没写）。
+        if (lockHeld && !ownsLock(lockFile, owner)) {
+          // 失锁：把已 rename 走的快照恢复回原路径，不能把数据藏成 .migrate-*。
+          if (sourceFile !== writeFailFile) {
+            try { fs.renameSync(sourceFile, writeFailFile); } catch {}
+          }
+          return { ...result, lockLost: true };
+        }
+        fs.appendFileSync(writeFailFile, out.join('\n') + '\n', 'utf8');
+        if (sourceFile !== writeFailFile) {
+          try { fs.unlinkSync(sourceFile); } catch {}
+        }
+      }
       if (changed) {
         result.failureIdsAdded = changed;
         result.filesTouched += 1;
-        if (!dryRun) {
-          // append 回主清单：不改动期间桥接新写入的行（rename 快照已经隔离了旧内容）。
-          fs.appendFileSync(writeFailFile, out.join('\n') + '\n', 'utf8');
-        }
-      }
-      if (!dryRun && sourceFile !== writeFailFile) {
-        try { fs.unlinkSync(sourceFile); } catch {}
       }
     } catch { /* 没有失败清单 */ }
 
@@ -1522,8 +2207,24 @@ export function createMemoryStore(options = {}) {
     try { archiveFiles = fs.readdirSync(archiveDir).filter((f) => f.endsWith('.jsonl')); } catch { /* 无归档 */ }
     for (const name of archiveFiles) {
       const full = path.join(archiveDir, name);
+      // 和失败清单同样的协议：先把文件 rename 成快照（原子），
+      // 处理快照后 append 回原文件；期间桥接新 append 的事件不会被覆盖。
+      let sourceFile = full;
+      if (!dryRun) {
+        const snap = `${full}.migrate-${Date.now()}-${crypto.randomUUID().slice(0, 6)}`;
+        try {
+          fs.renameSync(full, snap);
+          sourceFile = snap;
+        } catch (error) {
+          if (error && error.code === 'ENOENT') {
+            sourceFile = full;
+          } else {
+            return { ...result, error: `rename-failed: ${error?.message ?? error}` };
+          }
+        }
+      }
       let lines = [];
-      try { lines = fs.readFileSync(full, 'utf8').split('\n').filter(Boolean); } catch { continue; }
+      try { lines = fs.readFileSync(sourceFile, 'utf8').split('\n').filter(Boolean); } catch { continue; }
       let changed = 0;
       const out = lines.map((line) => {
         let row;
@@ -1535,14 +2236,23 @@ export function createMemoryStore(options = {}) {
         changed += 1;
         return JSON.stringify(row);
       });
+      if (!dryRun) {
+        if (lockHeld && !ownsLock(lockFile, owner)) {
+          // 归档同理：先恢复快照，再返回。
+          if (sourceFile !== full) {
+            try { fs.renameSync(sourceFile, full); } catch {}
+          }
+          return { ...result, lockLost: true };
+        }
+        // 不管有没有改动都写回（否则 changed=0 时删快照就丢了整份归档）
+        fs.appendFileSync(full, out.join('\n') + '\n', 'utf8');
+        if (sourceFile !== full) {
+          try { fs.unlinkSync(sourceFile); } catch {}
+        }
+      }
       if (changed) {
         result.archiveSrcDaysAdded += changed;
         result.filesTouched += 1;
-        if (!dryRun) {
-          const tmp = full + '.migrate-tmp';
-          fs.writeFileSync(tmp, out.join('\n') + '\n', 'utf8');
-          fs.renameSync(tmp, full);
-        }
       }
     }
     return result;
@@ -1576,10 +2286,14 @@ export function createMemoryStore(options = {}) {
     let events = 0;
     let bytes = 0;
     const tiers = [0, 0, 0, 0];
+    // 无来源事件：isolated 下它们对任何会话都不可见（fail-closed），
+    // 健康页必须让人看见这个数字，否则「迁移后一半记忆消失」会被当成 bug 而不是策略。
+    let eventsWithoutSource = 0;
     for (const day of days) {
       const rows = readDayEvents(day);
       events += rows.length;
       for (const r of rows) {
+        if (!String(r.k ?? '').trim()) eventsWithoutSource += 1;
         const tier = Number.isInteger(r.s) ? r.s : salience(r);
         tiers[Math.min(3, Math.max(0, tier))] += 1;
       }
@@ -1587,31 +2301,69 @@ export function createMemoryStore(options = {}) {
         bytes += fs.statSync(path.join(eventsDir, `${day}.jsonl`)).size;
       } catch {}
     }
-    let dayFiles = 0;
-    try {
-      dayFiles = fs.readdirSync(daysDir).filter((n) => n.endsWith('.json')).length;
-    } catch {}
-    let salientBytes = 0;
-    let salientCount = 0;
-    try {
-      salientBytes = fs.statSync(salientFile).size;
-      salientCount = readSalient({ limit: 1_000_000 }).length;
-    } catch {}
+    // 归档月文件同样是历史数据：isolated 检索看不到它们，
+    // 健康页必须把「无来源事件」的数量算上，否则会显示 0 让人以为没受影响。
+    let archivedEvents = 0;
+    for (const month of listArchiveMonths()) {
+      for (const r of readArchiveMonth(month)) {
+        archivedEvents += 1;
+        if (!String(r.k ?? '').trim()) eventsWithoutSource += 1;
+      }
+    }
+    const dayFiles = listDirStrict(daysDir).names.filter((n) => n.endsWith('.json')).length;
+    // 以前这里是一个 try 包住 stat + 读文件：stat 一失败就直接跳过读，
+    // S3 层于是既不登记也不报错（健康页显示 0 条，实际是读不到）。
+    const salientStat = statStrict(salientFile);
+    const salientRows = readSalient({ limit: 1_000_000 });
+    const salientBytes = salientStat ? salientStat.size : 0;
+    const salientCount = salientRows.length;
     const profile = readProfile();
+    const pending = pendingFailureStats();
+    // 先把还剩下的读取都做掉，再快照 readErrors：
+    // 对象字面量的属性是按定义顺序求值的，若 readErrors 写在 weekFiles 之前，
+    // 周/月目录的失败会漏进快照（这一轮真实踩到过）。
+    const weekFilesCount = listWeekFiles().length;
+    const monthFilesCount = listMonthFiles().length;
+    const readFailureSnapshot = readFailureFilesInRoot();
+    const parseFailureSnapshot = parseFailureFilesInRoot();
+    const parseErrorLines = parseFailureSnapshot
+      .filter(([, v]) => v.kind !== 'json')
+      .reduce((sum, [, v]) => sum + v.errors, 0);
+    const corruptJsonFiles = parseFailureSnapshot
+      .filter(([, v]) => v.kind === 'json')
+      .slice(0, 10).map(([file]) => path.basename(file));
+    const corruptFilesSnapshot = parseFailureSnapshot.slice(0, 10).map(([file]) => path.basename(file));
     return {
       root,
       eventDays: days.length,
       firstDay: days[0] || null,
       lastDay: days[days.length - 1] || null,
       events,
+      // 当前进程内读不出来的记忆文件（IO 错误，下次请求会自动重试）。
+      // 有值时健康页必须红：这不是「没有数据」，而是「暂时看不见数据」。
+      // 只统计本库目录下的文件：readFailureFiles 是模块级登记，同一进程里的
+      // 其它 store（测试、副本、迁移脚本）不该出现在这份健康报告里。
+      readErrors: readFailureSnapshot.length,
+      unreadableFiles: readFailureSnapshot.slice(0, 10).map((f) => path.basename(f)),
+      // 读到了字节但解析不了的内容。拆成两档：
+      //   parseErrorLines   = JSONL 里的坏行（一条记忆用不了，文件其余部分照常）
+      //   corruptJsonFiles  = 整份 JSON 档案损坏（如某天的摘要读不出来）
+      parseErrorLines,
+      corruptJsonFiles,
+      parseErrors: parseErrorLines + corruptJsonFiles.length,
+      // 兼容旧字段：所有解析失败的文件名
+      corruptFiles: corruptFilesSnapshot,
+      // 无来源事件数（活动日 + 归档月都算，「受影响的历史数据」才是完整口径）
+      eventsWithoutSource,
+      archivedEvents,
       tiers,
       salience: {
         S0: tiers[0], S1: tiers[1], S2: tiers[2], S3: tiers[3],
         寒暄占比: events ? `${Math.round((tiers[0] / events) * 100)}%` : '0%',
       },
       summaryFiles: dayFiles,
-      weekFiles: listWeekFiles().length,
-      monthFiles: listMonthFiles().length,
+      weekFiles: weekFilesCount,
+      monthFiles: monthFilesCount,
       usage: usageStats(),
       salient: { count: salientCount, bytes: salientBytes, file: salientFile },
       eventBytes: bytes,
@@ -1620,17 +2372,23 @@ export function createMemoryStore(options = {}) {
         openThreads: profile.threads.filter((t) => t.state === 'open').length,
         selfNotes: profile.self.length,
       },
+      // 档案读不到 ≠ 档案是空的：写保护生效时这里会告诉运维为什么没写进去。
+      profileRead: readState(),
       config: getConfig(),
       today: dayString(now),
       // 写入失败：>0 说明有事件没落进 L1（聊天看起来正常，但记忆已经缺了）
       // 计数要包含遗留快照：否则上一次 replay 崩溃后，健康页会显示「没有失败」，
       // 而实际上还有一批记录躺在 .processing-* 里没恢复。
       // 四个明确指标：用户要能分清「还能恢复」和「永久丢了明细」。
-      pendingRecoverable: pendingFailureStats().records,
-      unrecoverableOverflow: pendingFailureStats().overflow,
-      unreadableSnapshots: pendingFailureStats().unreadable,
+      pendingRecoverable: pending.records,
+      unrecoverableOverflow: pending.overflow,
+      unreadableSnapshots: pending.unreadable,
+      // 归档迁移快照：单独一类，需要 recoverArchiveSnapshots() 恢复
+      archiveSnapshots: pending.archiveSnapshots,
+      // 归档目录读不到 ≠ 没有快照：这一项非空时健康页必须红，不能报「没有待恢复数据」。
+      archiveSnapshotError: pending.archiveSnapshotError,
       // writeFailures 保留为总和（兼容旧调用点/健康页）
-      writeFailures: Math.max(writeFailureCount, pendingFailureStats().total),
+      writeFailures: Math.max(writeFailureCount, pending.total),
       lastWriteFailure,
       // 坏行（无法解析 / 缺 id）被隔离后的数量：这些也是「没恢复的数据」，
       // 不进 writeFailures 会让人误以为处理完了。
@@ -1646,6 +2404,14 @@ export function createMemoryStore(options = {}) {
     root,
     replayWriteFailures,
     migrateLegacyRecords,
+    clearProfileGuards,
+    readState,
+    readErrorCount: () => readFailureFilesInRoot().length,
+    parseErrorCount: () => parseFailureFilesInRoot()
+      .reduce((sum, [, v]) => sum + (v.kind === 'json' ? 1 : (Number(v.errors) || 0)), 0),
+    recoverArchiveSnapshots,
+    // 会话级事件统计：memory-stats 在 isolated 下要返回它，而不是全局管理面统计。
+    sessionStats: (sourceKey, { now = Date.now() } = {}) => computeSessionStats(String(sourceKey ?? '').trim(), now),
     eventsDir,
     daysDir,
     weeksDir,

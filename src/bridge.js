@@ -67,7 +67,7 @@ import {
   isSleepingConfig, preSleepWaitBlocked,
   isDirectedAtAi, isTimeBasedWakeV2, isWakeableV2, WAKE_PRIORITY,
 } from './core/socialv2-wake.mjs';
-import { auditProfile, buildInjection, buildMemoryGraph, buildMemoryUniverse, groupSelfNotes, mergePersonFact, mergeSelfNote, mergeThread, profileDigestForRefine, threadClosureHints, verifyMemoryClaim } from './core/memory-lib.mjs';
+import { auditProfile, filterProfileBySource, buildInjection, buildMemoryGraph, buildMemoryUniverse, groupSelfNotes, mergePersonFact, mergeSelfNote, mergeThread, profileDigestForRefine, threadClosureHints, verifyMemoryClaim, buildWriteScope, eventsVisibleToSession } from './core/memory-lib.mjs';
 import { handleMemoryApiRequest } from './routes/memory-api.mjs';
 import { handleRoleApiRequest } from './routes/roles-api.mjs';
 import { handleTokensApiRequest } from './routes/tokens-api.mjs';
@@ -4055,7 +4055,9 @@ async function main() {
           agentTokenOk, v2SessionAllowed, v2ToolEnabled,
           memoryStore, redactKnownTokensOnly,
           mergePersonFact, mergeThread, mergeSelfNote, verifyMemoryClaim,
+          buildWriteScope, eventsVisibleToSession,
           auditProfile, groupSelfNotes, memoryQueryV3, formatMemoryInjectionV3,
+          filterProfileBySource,
         })) return;
         // ── 二代黑话学习（reserved2）：AI 查询/提交黑话候选 ─────────────────
         if (req.method === 'POST' && url.pathname === '/api/authorize/read') {
@@ -5667,7 +5669,10 @@ async function main() {
         impressions: st?.memberImpressions && typeof st.memberImpressions === 'object' ? st.memberImpressions : {}
       };
       return buildInjection({
-        profile: memoryStore.readProfile(),
+        // isolated 时档案也要按会话裁剪：自动唤醒不能把别的会话的人物事实带进来。
+        profile: isolateInjection
+          ? filterProfileBySource(memoryStore.readProfile(), key)
+          : memoryStore.readProfile(),
         hits,
         hot,
         query,

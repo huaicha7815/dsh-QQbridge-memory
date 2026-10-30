@@ -159,6 +159,9 @@ export function handleMemoryApiRequest({
             ok: true,
             time: nowMs,
             stats: memoryStore.stats({ now: nowMs }),
+            // 档案读不到时这里是 writable:false：控制台要能区分「档案是空的」和「暂时看不见」，
+            // 否则一次 IO 抖动会让人以为记忆被清空了（实际是写保护生效、数据还在磁盘上）。
+            profileRead: memoryStore.readState(),
             people: Object.entries(profile.people)
               .sort((a, b) => (Number(b[1].lastSeen) || 0) - (Number(a[1].lastSeen) || 0))
               .map(([name, v]) => ({

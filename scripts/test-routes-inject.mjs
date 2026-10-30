@@ -60,10 +60,17 @@ const st = {
 const memoryStoreMock = {
   readProfile: () => ({ version: 3, people: {}, threads: [], self: [], audit: [] }),
   writeProfile: () => true,
+  // 新增的档案读取状态：路由会用 readState() 判断「档案读不到 vs 档案是空的」。
+  // mock 里必须给出完整形状，否则 memory-profile 这类端点会直接 TypeError。
+  readState: () => ({ corrupt: false, readError: null, writable: true }),
+  // 会话级事件统计：memory-stats 在 isolated 下会调它。
+  sessionStats: () => ({ scope: 'session', events: 0, eventDays: 0, firstDay: null, lastDay: null, tiers: [0, 0, 0, 0] }),
   stats: () => ({
     events: 0, eventDays: 0, firstDay: null, lastDay: null, tiers: [0, 0, 0, 0],
     salience: { S0: 0, S1: 0, S2: 0, S3: 0 }, summaryFiles: 0, weekFiles: 0, monthFiles: 0,
     profile: { people: 0, openThreads: 0, selfNotes: 0 }, writeFailures: 0,
+    readErrors: 0, unreadableFiles: [], profileRead: { corrupt: false, readError: null, writable: true },
+    eventsWithoutSource: 0, archivedEvents: 0,
   }),
   getConfig: () => ({}),
   search: () => [],

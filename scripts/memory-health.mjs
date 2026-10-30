@@ -39,6 +39,23 @@ const store = createMemoryStore({ dir: memDir, config: {} });
 // 恢复入口：以前只打印「可以用 replayWriteFailures()」但没有任何可执行入口，
 // 用户修好权限后还得自己写 Node 脚本。这里给一个真能用的一行命令。
 const argv = process.argv.slice(2);
+
+/**
+ * 桥接是否正在运行（读 state/bridge.lock）。返回 pid 或 null。
+ * 锁里可能是纯 PID 字符串，也可能是 {"pid":...}，两种都要认。
+ */
+function runningBridgePid() {
+  try {
+    const raw = fs.readFileSync(path.join(root, 'state', 'bridge.lock'), 'utf8').trim();
+    let pid = null;
+    try {
+      const parsed = JSON.parse(raw);
+      pid = Number(parsed && typeof parsed === 'object' ? parsed.pid : parsed);
+    } catch { pid = Number(raw); }
+    if (Number.isFinite(pid) && pid > 0) { process.kill(pid, 0); return pid; }
+  } catch { /* 锁不存在或进程不在，视为没在跑 */ }
+  return null;
+}
 // 旧格式迁移入口：给旧失败记录补 id、给旧归档行补 srcDay。
 // 默认只预览（dry-run），--apply 才真正写回。
 if (argv.includes('--migrate')) {
@@ -51,28 +68,68 @@ if (argv.includes('--migrate')) {
   process.exit(0);
 }
 
+// 归档迁移快照恢复入口：migrate 期间崩溃会在 events-archive/ 留下
+// *.jsonl.migrate-* 快照，里面是还没并回归档月度文件的事件。以前健康页只会
+// 提示「调用 recoverArchiveSnapshots()」，同样没有可执行入口。
+// 恢复是幂等的（按事件 id / 整行内容的稳定指纹去重），可以重复跑；
+if (argv.includes('--recover-archive')) {
+  const applyArchive = argv.includes('--apply');
+  if (applyArchive) {
+    const pid = runningBridgePid();
+    if (pid) {
+      console.warn(`⚠️ 桥接正在运行（PID ${pid}）：归档恢复会往 events-archive/ 追加，` +
+        '建议先停桥接再 --apply。');
+      console.warn('   （不强制阻止：恢复是幂等的，按整行内容去重，重复跑不会重复写入。）');
+    }
+  }
+  const result = store.recoverArchiveSnapshots({ dryRun: !applyArchive });
+  console.log(JSON.stringify(result, null, 2));
+  const ioErrors = Array.isArray(result.errors) ? result.errors : [];
+  // 目录读不到 = 可能还有看不见的快照，绝不能当成功。
+  if (result.archiveDirError) {
+    console.error(`❌ 读不到归档目录 events-archive（${result.archiveDirError}）`);
+    console.error('   里面可能还有待恢复快照；先修目录权限/挂载再重跑，别把它当成「没有数据」。');
+    process.exit(2);
+  }
+  if (result.locked || result.lostLock || result.error) {
+    console.error(`❌ 归档恢复未执行：${result.error || '锁被占用'}`);
+    console.error('   等另一个恢复结束后重跑；崩溃残留的锁（PID 已不存在）会被自动接管。');
+    process.exit(1);
+  }
+  if (!applyArchive) {
+    console.log('（上面是预览：restored=快照数，lines=需要补写的事件数，duplicates=归档里已有的重复行。确认后加 --apply 真正写回）');
+    if (ioErrors.length) {
+      console.error(`❌ 有 ${result.failed} 个快照读不出来：`);
+      for (const line of ioErrors) console.error('   ' + line);
+      process.exit(1);
+    }
+  } else {
+    if (result.duplicates > 0) {
+      console.log(`已跳过 ${result.duplicates} 条归档里已存在的重复行（按整行内容去重，不是按文本前缀）。`);
+    }
+    if (result.failed > 0) {
+      console.error(`❌ 有 ${result.failed} 个快照没能恢复（快照已保留，可修好原因后重跑）：`);
+      for (const line of ioErrors) console.error('   ' + line);
+    }
+    // 最终判断只看「还剩几个快照」：写失败、锁问题、崩溃都会体现在这里。
+    if (Number(result.remaining) > 0) {
+      console.error(`❌ 仍有 ${result.remaining} 个归档快照未恢复（restored=${result.restored}）`);
+      process.exit(1);
+    }
+    if (result.failed > 0) process.exit(1);
+  }
+  process.exit(0);
+}
+
 if (argv.includes('--replay')) {
   const apply = argv.includes('--apply');
   // 桥接本身也是失败清单的写者：它在跑的时候 replay 可能和它抢同一份清单。
   // （清单提交已改成「只删处理过的行」，不会吞新行，但停写窗口仍然更安全。）
-  if (apply) {
-    let bridgeRunning = false;
-    try {
-      const lockFile = path.join(root, 'state', 'bridge.lock');
-      const raw = fs.readFileSync(lockFile, 'utf8').trim();
-      // 桥接写的是纯 PID 字符串（不是 JSON）。以前这里 JSON.parse 失败，
-      // 导致「桥接正在跑」的警告永远不出现。两种格式都要认。
-      let pid = null;
-      try {
-        const parsed = JSON.parse(raw);
-        pid = Number(parsed && typeof parsed === 'object' ? parsed.pid : parsed);
-      } catch { pid = Number(raw); }
-      if (Number.isFinite(pid) && pid > 0) { process.kill(pid, 0); bridgeRunning = true; }
-    } catch { /* 锁不存在或进程不在，视为没在跑 */ }
-    if (bridgeRunning) {
-      console.warn('⚠️ 桥接似乎正在运行：建议先停桥接再 --apply，避免恢复期间它继续写失败清单。');
-      console.warn('   （不强制阻止：清单提交只删本轮处理过的行，不会吞新行，但停写窗口更稳。）');
-    }
+  if (apply && runningBridgePid()) {
+    // 桥接本身也是失败清单的写者：它在跑的时候 replay 可能和它抢同一份清单。
+    // （清单提交已改成「只删处理过的行」，不会吞新行，但停写窗口仍然更安全。）
+    console.warn('⚠️ 桥接似乎正在运行：建议先停桥接再 --apply，避免恢复期间它继续写失败清单。');
+    console.warn('   （不强制阻止：清单提交只删本轮处理过的行，不会吞新行，但停写窗口更稳。）');
   }
   const result = store.replayWriteFailures({ dryRun: !apply });
   console.log(JSON.stringify(result, null, 2));
@@ -117,12 +174,44 @@ if (st.unreadableSnapshots > 0) {
   say(`  ⚠️ 有 ${st.unreadableSnapshots} 个待恢复快照读不出来（权限问题或目录冒充文件）`);
   say('     这些快照里可能有还没恢复的事件；health 看不到内容，不等于没有数据。');
 }
+if (st.archiveSnapshotError) {
+  // 读不到目录 ≠ 没有快照：必须报红，否则修权限这件事永远不会被发现。
+  say(`  🔴 归档目录读不出来（${st.archiveSnapshotError}）：里面可能还有待恢复快照`);
+  say('     先修 events-archive/ 的权限或挂载，再跑 node scripts/memory-health.mjs --recover-archive。');
+}
+if (st.archiveSnapshots > 0) {
+  say(`  ⚠️ 有 ${st.archiveSnapshots} 个归档迁移快照待恢复（events-archive/*.migrate-*）`);
+  say('     它们不是失败记录，不能交给 replay；用 node scripts/memory-health.mjs --recover-archive 预览，加 --apply 写回（幂等，可重复跑）。');
+}
+if (st.readErrors > 0) {
+  say(`  🔴 有 ${st.readErrors} 个记忆文件现在读不出来（${(st.unreadableFiles || []).join('、') || '-'}）`);
+  say('     这不是「没有数据」，是「暂时看不见」：修好权限/磁盘后下一次请求会自动重试（读失败不会写进缓存）。');
+  say('     这期间档案写入会被拒绝，避免用空档案覆盖原文件；health 的数字也会偏小，先修 IO。');
+}
+if (st.parseErrorLines > 0) {
+  say(`  🔴 有 ${st.parseErrorLines} 条记忆记录解析失败（坏行 / 截断行 / 类型不对）`);
+  say('     坏行保持原样没有删（可以人工修复）；它们不进入检索，也不能当证据。');
+  say('     注意：语法合法但结构不对的行（null、数组、空对象）同样算坏行，不会被当正常记录用。');
+}
+if (Array.isArray(st.corruptJsonFiles) && st.corruptJsonFiles.length) {
+  say(`  🔴 有 ${st.corruptJsonFiles.length} 个 JSON 档案损坏：${st.corruptJsonFiles.join('、')}`);
+  say('     已另存为 *.corrupt（同名只备份一次，不会越积越多）；修复后下一次读取会自动恢复。');
+}
+if (st.profileRead && (st.profileRead.corrupt || st.profileRead.readError)) {
+  say(`  🔴 长期档案处于写保护：${st.profileRead.corrupt ? 'profile.json 解析失败（坏文件已备份）' : `读取失败 ${st.profileRead.readError}`}`);
+  say('     期间所有档案写入都会被拒绝（避免用空档案覆盖原文件）；修好后下一次成功读取会自动解除。');
+}
+if (st.eventsWithoutSource > 0) {
+  say(`  ⚠️ 有 ${st.eventsWithoutSource} 条事件没有来源会话标签（k，含已归档）`);
+  say('     open 模式仍能检索；isolated 下它们对任何会话都不可见（fail-closed），也不能当证据。');
+  say('     不能靠猜补标签——要么在 open 模式查看，要么人工按可靠元数据修，不要为了「看起来都能用」放宽隔离。');
+}
 if (st.quarantined > 0) {
   say(`  ⚠️ 失败清单里有 ${st.quarantined} 条坏行（已隔离到 write-failures.jsonl.quarantine）`);
   say('     这些行是 JSON 损坏或缺少 id，无法自动恢复，需要人工查看；它们不计入上面的 writeFailures。');
 }
 say(`  事件：${st.events} 条 / 覆盖 ${st.eventDays} 天（${st.firstDay || '-'} ~ ${st.lastDay || '-'}）`);
-say(`  （注：以上只算活动日文件；另有 ${archiveMonths} 个月归档文件未计入，历史规模更大）`);
+say(`  （注：以上只算活动日文件；另有 ${archiveMonths} 个月归档、${st.archivedEvents || 0} 条已归档事件未计入，历史规模更大）`);
 say(`  体积：事件 ${(st.eventBytes / 1024).toFixed(0)} KB · S3 档案 ${(st.salient.bytes / 1024).toFixed(1)} KB`);
 say(`  压缩层：日摘要 ${st.summaryFiles} / 周要点 ${st.weekFiles} / 月要点 ${st.monthFiles}`);
 say(`  归档：${store.listArchiveMonths().length} 个月`);
@@ -248,7 +337,23 @@ const advice = [];
 if (baseBad.length) advice.push(`基线变坏：${baseBad.map((r) => r.label).join('、')}（对比上一版；先看上面数值，再查归档/档案）。`);
 if (problems) advice.push(`档案有 ${problems} 处一致性问题（同人分裂/重复线/已了结还挂着），用 node scripts/repair-memory-profile.mjs --apply 修掉。`);
 const shard = st.events ? tiers[0] / st.events : 0;
+// 容量：isolated 只在可见范围内淘汰，混合档位会暂时超限——提示，不自动删。
+const overLimitPeople = Object.values(profile.people)
+  .filter((v) => (Array.isArray(v.facts) ? v.facts.length : 0) > PROFILE_LIMITS.maxFactsPerPerson).length;
+if (overLimitPeople > 0) {
+  say(`  ℹ️ 有 ${overLimitPeople} 个人物档位的事实数超过上限 ${PROFILE_LIMITS.maxFactsPerPerson}（isolated 只在可见范围内淘汰，不算异常）`);
+}
 if (st.eventDays >= 3 && st.events < 50) advice.push('事件量偏少：桥接可能没在跑，或最近很安静。');
+if (st.parseErrorLines > 0) advice.push(`有 ${st.parseErrorLines} 条记忆记录解析失败：坏行还在原文件里，人工修好后重新读取会自动恢复计数。`);
+if (Array.isArray(st.corruptJsonFiles) && st.corruptJsonFiles.length) advice.push(`有 ${st.corruptJsonFiles.length} 个 JSON 档案损坏（${st.corruptJsonFiles.join('、')}）：已备份为 *.corrupt，修好后下次读取自动恢复。`);
+if (st.readErrors > 0) advice.push(`有 ${st.readErrors} 个记忆文件读不出来（${(st.unreadableFiles || []).join('、') || '-'}）：先修权限/磁盘，别当成「没有数据」。`);
+if (st.profileRead && !st.profileRead.writable) advice.push('长期档案处于写保护（读不到或解析失败）：修好 profile.json 后下一次成功读取会自动恢复写入。');
+if (st.eventsWithoutSource > 0) advice.push(`有 ${st.eventsWithoutSource} 条事件没有来源标签：isolated 下不可见、也不能当证据；需要的话按可靠元数据补 k，别用「无来源即公共」绕过隔离。`);
+// 「有待恢复的数据」必须是建议，否则正文报警了、结尾还写「一切正常」，读的人只会看结尾。
+if (st.archiveSnapshotError) advice.push(`归档目录读不出来，里面可能还有待恢复快照（${st.archiveSnapshotError}）：先修 events-archive/ 的权限或挂载。`);
+else if (st.archiveSnapshots > 0) advice.push(`有 ${st.archiveSnapshots} 个归档迁移快照待恢复：node scripts/memory-health.mjs --recover-archive --apply。`);
+if (st.pendingRecoverable > 0 || st.unrecoverableOverflow > 0) advice.push(`还有未恢复的写入失败（可恢复 ${st.pendingRecoverable} 条 / 溢出 ${st.unrecoverableOverflow} 条）：先看上面【写入失败】再跑 --replay --apply。`);
+if (st.unreadableSnapshots > 0) advice.push(`有 ${st.unreadableSnapshots} 个待恢复快照读不出来：先修权限，别当成没有数据。`);
 if (shard > 0.45) advice.push(`寒暄占比 ${Math.round(shard * 100)}% 偏高：重要度阈值可能太松，可调 socialV2.memory.weekMinSalience。`);
 if (recalls.length >= 20) {
   const empty = recalls.filter((r) => !r.n).length / recalls.length;
