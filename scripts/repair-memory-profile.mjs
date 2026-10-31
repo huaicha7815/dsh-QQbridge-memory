@@ -17,10 +17,10 @@ import { createMemoryStore } from '../src/core/memory-store.mjs';
 import { repairProfile } from '../src/core/memory-lib.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-import { enterMaintenanceForScript, leaveMaintenance } from './lib/maintenance-run.mjs';
+import { scriptWriteMode, enterMaintenanceForScript, finishMaintenance } from './lib/maintenance-run.mjs';
 // --dir 支持：维护命令可以指向别的库（gate 也跟着目标库走）。
 const argv = process.argv.slice(2);
-const apply = argv.includes('--apply');
+const { apply } = scriptWriteMode(argv);
 // 写 profile 会覆盖 bridge 正在改的同一份档案（last-writer-wins）。
 // gate 必须覆盖「读取旧档案 → 计算 → 写回」整段：只包写回会让 bridge 在扫描期间
 // 改写同一份档案，随后用旧快照覆盖新内容。
@@ -34,7 +34,7 @@ if (apply) {
     forceUnlocked: process.argv.includes('--force-unlocked'),
   });
 }
-const store = createMemoryStore({ dir: path.join(root, 'state', 'memory'), config: {} });
+const store = createMemoryStore({ dir: MEMORY_DIR, config: {} });
 const now = Date.now();
 
 const before = store.readProfile();
@@ -64,7 +64,7 @@ if (!out.changes.length) {
 }
 
 if (apply && out.changes.length) {
-  const file = path.join(root, 'state', 'memory', 'profile.json');
+  const file = path.join(MEMORY_DIR, 'profile.json');
   const backup = `${file}.bak-${now}`;
   try {
     if (fs.existsSync(file)) fs.copyFileSync(file, backup);
@@ -83,4 +83,4 @@ if (apply && out.changes.length) {
 }
 
 console.log(lines.join('\n'));
-if (maintenance) leaveMaintenance(maintenance);
+if (maintenance) { const code = finishMaintenance(maintenance); if (code) process.exitCode = code; }

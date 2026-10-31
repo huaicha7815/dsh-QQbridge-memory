@@ -13,7 +13,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { salience } from '../src/core/memory-lib.mjs';
 import { createMemoryStore } from '../src/core/memory-store.mjs';
-import { scriptWriteMode, enterMaintenanceForScript, leaveMaintenance } from './lib/maintenance-run.mjs';
+import { scriptWriteMode, enterMaintenanceForScript, finishMaintenance } from './lib/maintenance-run.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const argv = process.argv.slice(2);
@@ -21,6 +21,9 @@ const dirArg = (() => { const i = argv.indexOf('--dir'); return i >= 0 ? argv[i 
 const MEMORY_DIR = dirArg ? path.resolve(dirArg) : path.join(root, 'state', 'memory');
 // 写模式契约：默认只预览，--apply 才写盘；--dry-run 保留为兼容别名。
 const { apply: APPLY, dryRun: DRY_RUN } = scriptWriteMode(process.argv.slice(2));
+// 契约变化提示：旧版本默认写盘，现在必须显式 --apply。
+console.log(APPLY ? '[模式] 应用（已获取维护门）' : '[模式] 预览（不写盘）');
+if (!APPLY) console.log('[提示] 旧版本默认写盘；现在必须显式添加 --apply。');
 
 // gate 覆盖「扫描事件 → 计算档位 → 写回事件/S3/压缩层」整段。
 let maintenance = null;
@@ -114,4 +117,4 @@ console.log(`压缩层补齐：日 ${d} / 周 ${weeks} / 月 ${months}`);
 const st = store.stats({});
 console.log(`\n分档：S0 ${st.salience.S0} / S1 ${st.salience.S1} / S2 ${st.salience.S2} / S3 ${st.salience.S3}（寒暄占比 ${st.salience.寒暄占比}）`);
 console.log(`S3 独立副本：${st.salient.count} 条，${(st.salient.bytes / 1024).toFixed(1)} KB`);
-if (maintenance) leaveMaintenance(maintenance);
+if (maintenance) { const code = finishMaintenance(maintenance); if (code) process.exitCode = code; }

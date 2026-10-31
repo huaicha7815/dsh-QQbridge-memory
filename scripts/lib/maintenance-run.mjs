@@ -52,6 +52,25 @@ export function leaveMaintenance({ lockPath, gate }) {
   return releaseMaintenanceGate(lockPath, gate);
 }
 
+/**
+ * 脚本收尾：检查 release 结果（不能像以前一样忽略返回值）。
+ *   missing / replaced → 互斥证据已丢失，本次结果不可信 → 2
+ *   retryable          → gate 可能残留到下次 stale 接管，只警告 → 0
+ * @returns {number} 需要叠加到退出码上的值（0 或 2）
+ */
+export function finishMaintenance({ lockPath, gate } = {}) {
+  if (!lockPath || !gate) return 0;
+  const release = releaseMaintenanceGate(lockPath, gate);
+  if (release.replaced || release.missing) {
+    console.error('❌ 维护门在操作期间丢失/被替换：本次结果不可信。');
+    return 2;
+  }
+  if (release.retryable) {
+    console.error(`⚠️ 维护门释放失败（${release.error || '未知'}）：将留给下一次 stale 接管。`);
+  }
+  return 0;
+}
+
 /** 脚本通用：是否真的写盘。默认预览，只有 --apply 才写；--dry-run 保留为兼容别名。 */
 export function scriptWriteMode(argv = process.argv.slice(2)) {
   const apply = argv.includes('--apply');

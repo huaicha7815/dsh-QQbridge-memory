@@ -358,3 +358,77 @@ test('gate：独立脚本默认预览、不拿门（隔离库）', () => {
   assert.equal(fs.existsSync(path.join(base, 'state', 'maintenance.lock')), false, '预览不拿门');
   fs.rmSync(base, { recursive: true, force: true });
 });
+
+test('--dir 作用域：repair/migrate/who 只动目标库，默认库一字节不变', () => {
+  const PROJECT_ROOT = path.resolve(SCRIPT_DIR, '..');
+  const base = tmpDir('gate-scope-apply-');
+  const stateDir = path.join(base, 'state');
+  const memDir = path.join(stateDir, 'memory');
+  fs.mkdirSync(path.join(memDir, 'events'), { recursive: true });
+  // 目标项目 config（ownerQQ 与默认项目不同）
+  fs.writeFileSync(path.join(base, 'config.json'), JSON.stringify({ ownerQQ: '999' }), 'utf8');
+  // 目标 state 的源数据：migrate 必须读这里，而不是默认项目
+  fs.writeFileSync(path.join(stateDir, 'social-v2.json'), JSON.stringify({
+    conversations: { 'private:999': { recentMessages: [{ time: Date.now(), isSelf: false, sender: '目标', text: 'TARGET_SOURCE_MESSAGE', messageId: 'm1' }] } },
+  }), 'utf8');
+  // 目标库 profile（可合并）
+  fs.writeFileSync(path.join(memDir, 'profile.json'), JSON.stringify({
+    people: { '爸爸（凉州词）': { facts: [{ t: 'f1', at: 1 }] }, '爸爸': { facts: [{ t: 'f2', at: 1 }] } },
+    threads: [],
+  }), 'utf8');
+  // 目标库 who 事件
+  fs.writeFileSync(path.join(memDir, 'events', '2026-01-05.jsonl'),
+    JSON.stringify({ t: Date.now(), k: 'private:999', kind: 'msg', who: '私聊', uid: '999', text: 'who 测试', s: 1 }) + '\n', 'utf8');
+
+  const defaultProfile = path.join(PROJECT_ROOT, 'state', 'memory', 'profile.json');
+  const defaultBefore = fs.existsSync(defaultProfile) ? fs.readFileSync(defaultProfile, 'utf8') : null;
+
+  // 1) repair：只改目标库
+  let run = spawnSync(process.execPath, [path.join(SCRIPT_DIR, 'repair-memory-profile.mjs'), '--dir', memDir, '--apply'], { encoding: 'utf8', timeout: 60000 });
+  assert.equal(run.status, 0, 'repair 应成功：' + (run.stdout || run.stderr || '').slice(0, 400));
+  const profileAfter = JSON.parse(fs.readFileSync(path.join(memDir, 'profile.json'), 'utf8'));
+  assert.equal(Object.keys(profileAfter.people).length, 1, '目标库应被合并成 1 人');
+  const defaultAfterRepair = fs.existsSync(defaultProfile) ? fs.readFileSync(defaultProfile, 'utf8') : null;
+  assert.equal(defaultAfterRepair, defaultBefore, '默认库 profile 不能被 --dir 目标的操作改掉');
+
+  // 2) migrate：源数据来自目标 state
+  run = spawnSync(process.execPath, [path.join(SCRIPT_DIR, 'migrate-memory-v3.mjs'), '--dir', memDir, '--apply'], { encoding: 'utf8', timeout: 120000 });
+  assert.equal(run.status, 0, 'migrate 应成功：' + (run.stdout || run.stderr || '').slice(0, 400));
+  const targetEvents = fs.readdirSync(path.join(memDir, 'events'))
+    .filter((n) => n.endsWith('.jsonl'))
+    .map((n) => fs.readFileSync(path.join(memDir, 'events', n), 'utf8')).join('\n');
+  assert.ok(targetEvents.includes('TARGET_SOURCE_MESSAGE'), '目标库自己的 social-v2 源数据应被迁移进来');
+
+  // 3) who：config 用目标项目（ownerQQ=999）
+  run = spawnSync(process.execPath, [path.join(SCRIPT_DIR, 'backfill-private-who.mjs'), '--dir', memDir, '--name', '目标', '--apply'], { encoding: 'utf8', timeout: 60000 });
+  assert.equal(run.status, 0, 'who 应成功：' + (run.stdout || run.stderr || '').slice(0, 400));
+  const whoEvents = fs.readFileSync(path.join(memDir, 'events', '2026-01-05.jsonl'), 'utf8');
+  assert.ok(whoEvents.includes('"who":"目标"'), '目标库事件应按目标 config 的 ownerQQ 回填');
+
+  const defaultFinal = fs.existsSync(defaultProfile) ? fs.readFileSync(defaultProfile, 'utf8') : null;
+  assert.equal(defaultFinal, defaultBefore, '三个脚本都不能改默认库');
+  fs.rmSync(base, { recursive: true, force: true });
+});
+
+test('--dry-run --apply 组合必须零写盘（repair / who）', () => {
+  const base = tmpDir('gate-dry-apply-');
+  const memDir = path.join(base, 'state', 'memory');
+  fs.mkdirSync(path.join(memDir, 'events'), { recursive: true });
+  fs.writeFileSync(path.join(memDir, 'profile.json'), JSON.stringify({
+    people: { '爸爸（凉州词）': { facts: [{ t: 'f1', at: 1 }] }, '爸爸': { facts: [{ t: 'f2', at: 1 }] } },
+    threads: [],
+  }), 'utf8');
+  fs.writeFileSync(path.join(memDir, 'events', '2026-01-05.jsonl'),
+    JSON.stringify({ t: Date.now(), k: 'private:1', kind: 'msg', who: '私聊', uid: '1', text: 'x', s: 1 }) + '\n', 'utf8');
+  const profileBefore = fs.readFileSync(path.join(memDir, 'profile.json'), 'utf8');
+  const eventsBefore = fs.readFileSync(path.join(memDir, 'events', '2026-01-05.jsonl'), 'utf8');
+
+  let run = spawnSync(process.execPath, [path.join(SCRIPT_DIR, 'repair-memory-profile.mjs'), '--dir', memDir, '--dry-run', '--apply'], { encoding: 'utf8', timeout: 60000 });
+  assert.equal(run.status, 0);
+  assert.equal(fs.readFileSync(path.join(memDir, 'profile.json'), 'utf8'), profileBefore, '--dry-run 必须压过 --apply');
+
+  run = spawnSync(process.execPath, [path.join(SCRIPT_DIR, 'backfill-private-who.mjs'), '--dir', memDir, '--name', 'X', '--all', '--dry-run', '--apply'], { encoding: 'utf8', timeout: 60000 });
+  assert.equal(run.status, 0);
+  assert.equal(fs.readFileSync(path.join(memDir, 'events', '2026-01-05.jsonl'), 'utf8'), eventsBefore, 'who 的 --dry-run 必须压过 --apply');
+  fs.rmSync(base, { recursive: true, force: true });
+});

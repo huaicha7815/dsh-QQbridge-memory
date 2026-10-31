@@ -14,17 +14,22 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createMemoryStore } from '../src/core/memory-store.mjs';
 import { mergePersonFact, ensureProfile } from '../src/core/memory-lib.mjs';
-import { scriptWriteMode, enterMaintenanceForScript, leaveMaintenance } from './lib/maintenance-run.mjs';
+import { scriptWriteMode, enterMaintenanceForScript, finishMaintenance } from './lib/maintenance-run.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const STATE_DIR = path.join(root, 'state');
+const dirArg = (() => { const i = process.argv.indexOf('--dir'); return i >= 0 ? process.argv[i + 1] : null; })();
+const MEMORY_DIR = dirArg ? path.resolve(dirArg) : path.join(root, 'state', 'memory');
+// 源数据必须跟随目标库：--dir 指向别的库时，从目标 <project>/state 读取
+// social-v2 / diary。用默认项目的源数据迁进目标库是作用域错误（审查复现过）。
+const STATE_DIR = path.dirname(MEMORY_DIR);
 const SOCIAL_V2_FILE = path.join(STATE_DIR, 'social-v2.json');
 const DIARY_DIR = path.join(STATE_DIR, 'diary');
-const dirArg = (() => { const i = process.argv.indexOf('--dir'); return i >= 0 ? process.argv[i + 1] : null; })();
-const MEMORY_DIR = dirArg ? path.resolve(dirArg) : path.join(STATE_DIR, 'memory');
 // 写模式契约（和其他维护命令一致）：默认只预览，--apply 才写盘；
 // --dry-run 保留为兼容别名。旧版本默认写盘，无参数调用会绕过维护门 —— 已修正。
 const { apply: APPLY, dryRun: DRY_RUN } = scriptWriteMode(process.argv.slice(2));
+// 契约变化提示：旧版本默认写盘，现在必须显式 --apply。
+console.log(APPLY ? '[模式] 应用（已获取维护门）' : '[模式] 预览（不写盘）');
+if (!APPLY) console.log('[提示] 旧版本默认写盘；现在必须显式添加 --apply。');
 
 // gate 覆盖「读取旧状态 → 计算 → 写回」整段：只包写回会让 bridge 在扫描期间
 // 改写同一批记忆，随后用旧快照覆盖新内容。
@@ -198,4 +203,4 @@ console.log(`[migrate] 已写入事件 ${written} 条，生成日摘要 ${summar
 
 const st = store.stats({});
 console.log(`[migrate] 记忆库现状：覆盖 ${st.eventDays} 天（${st.firstDay} ~ ${st.lastDay}），共 ${st.events} 条事件，档案 ${st.profile.people} 人 / 未完结的线 ${st.profile.openThreads} 条`);
-if (maintenance) leaveMaintenance(maintenance);
+if (maintenance) { const code = finishMaintenance(maintenance); if (code) process.exitCode = code; }

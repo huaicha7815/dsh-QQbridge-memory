@@ -21,7 +21,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { enterMaintenanceForScript, leaveMaintenance } from './lib/maintenance-run.mjs';
+import { scriptWriteMode, enterMaintenanceForScript, finishMaintenance } from './lib/maintenance-run.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -33,10 +33,12 @@ const opt = (name) => {
 const dirArg = (() => { const i = args.indexOf('--dir'); return i >= 0 ? args[i + 1] : null; })();
 const MEMORY_DIR_WHO = dirArg ? path.resolve(dirArg) : path.join(ROOT, 'state', 'memory');
 const EVENTS_DIR = path.join(MEMORY_DIR_WHO, 'events');
-const CONFIG_FILE = path.join(ROOT, 'config.json');
+// 目标库的配置（标准结构 <project>/state/memory → <project>/config.json）。
+// --dir 指向别的库时，绝不能用默认项目的 ownerQQ 解释目标库事件。
+const CONFIG_FILE = path.join(path.dirname(MEMORY_DIR_WHO), '..', 'config.json');
 
 const name = String(opt('name') || '').trim();
-const apply = args.includes('--apply');
+const { apply } = scriptWriteMode(args);
 // 回填会重写事件日文件：bridge 正在 append 同一天的事件时，整体重写会丢新行。
 // gate 覆盖「扫描事件 → 计算 who → 备份 + 写回」整段（备份与写回必须同一把门）。
 let maintenance = null;
@@ -119,4 +121,4 @@ for (const t of touched) {
 }
 console.log(`\n已写回 ${touched.length} 个文件，备份后缀 .bak-${stamp}`);
 console.log('提示：重启桥接后新事件会正常记录发送者；历史检索结果立刻可见。');
-if (maintenance) leaveMaintenance(maintenance);
+if (maintenance) { const code = finishMaintenance(maintenance); if (code) process.exitCode = code; }
