@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createMemoryStore } from '../src/core/memory-store.mjs';
 import { handleSocialV2MemoryApi } from '../src/routes/socialv2-memory-api.mjs';
 import { mergePersonFact, mergeThread, mergeSelfNote, verifyMemoryClaim, buildWriteScope, eventsVisibleToSession } from '../src/core/memory-lib.mjs';
@@ -1894,4 +1895,20 @@ test('损坏 JSON 总数不会被展示列表截断，auditSummaries 能主动�
   assert.equal(st.corruptJsonFiles.length, 10, '展示名单可以截断');
   assert.equal(st.parseErrors, 12, 'parseErrors 用完整计数');
   cleanup(dir);
+});
+
+test('memory-store 里读记忆数据必须走统一原语（禁止手写 JSON 解析）', () => {
+  // Codex 的风险点：schema 校验已经有了，但只要有一处手写 JSON.parse(fs.readFileSync(...))，
+  // 「合法 JSON、错误结构」就会从那条路径重新渗回来（ensure* 就绕过过一次）。
+  // 唯一的豁免是锁文件：它是控制面数据，损坏按过期处理，本来就不走 schema。
+  const file = fileURLToPath(new URL('../src/core/memory-store.mjs', import.meta.url));
+  const offenders = fs.readFileSync(file, 'utf8')
+    .split('\n')
+    .map((line, i) => ({ text: line.trim(), no: i + 1 }))
+    .filter(({ text }) => /JSON\.parse\(\s*fs\.readFileSync/.test(text) && !/lockFile/.test(text));
+  assert.deepEqual(
+    offenders,
+    [],
+    '记忆数据的读取必须走 readJsonFile / parseJsonl（含 schema 与故障登记）；只有锁文件可以手写解析',
+  );
 });
