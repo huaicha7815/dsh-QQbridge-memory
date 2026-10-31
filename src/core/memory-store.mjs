@@ -497,30 +497,52 @@ export function createMemoryStore(options = {}) {
   // 启动时必须读回替代诊断文件：memory-health 每次都是新进程，
   // 只靠内存字段它永远看不到「上个进程连清单都写不进去」这件事。
   const manifestErrorFile = path.join(root, 'write-failures.manifest-error.jsonl');
-  let failureManifestWriteError = (() => {
-    const { text } = readTextStrict(manifestErrorFile);
-    if (!text) return null;
+  /**
+   * 读「连清单都写不进去」的诊断文件。三种状态必须分开：
+   *   ENOENT（text===null 且无 error）→ 没有诊断文件，正常（返回 null）
+   *   读失败（EACCES/EIO）→ 未知：不知道有没有未记录失败，不能当 0
+   *   存在但为空 / 有坏行 → 未知：半写或损坏，真实数量不可信
+   */
+  function readManifestDiagnostics() {
+    const { text, error: readError } = readTextStrict(manifestErrorFile);
+    if (text === null && !readError) return null;
+    if (text === null) {
+      return {
+        at: 0, phase: '', code: 'IO', error: `读不到诊断文件：${readError}`,
+        history: 0, byPhase: { event: 0, salient: 0 }, unknown: true,
+        reason: `诊断文件读不到（${readError}）`,
+      };
+    }
     const lines = text.split('\n').filter(Boolean);
-    if (!lines.length) return null;
+    if (!lines.length) {
+      return {
+        at: 0, phase: '', code: 'IO', error: '诊断文件存在但为空（半写/损坏）',
+        history: 0, byPhase: { event: 0, salient: 0 }, unknown: true,
+        reason: '诊断文件存在但为空（半写/损坏）',
+      };
+    }
     const byPhase = { event: 0, salient: 0 };
     let last = null;
+    let badLines = 0;
     for (const line of lines) {
-      try { last = JSON.parse(line); } catch { last = null; continue; }
-      const ph = last?.phase === 'salient' ? 'salient' : 'event';
+      let item = null;
+      try { item = JSON.parse(line); } catch { badLines += 1; continue; }
+      last = item;
+      const ph = item?.phase === 'salient' ? 'salient' : 'event';
       byPhase[ph] += 1;
     }
     return {
       at: Number(last?.at) || 0,
       phase: String(last?.phase ?? ''),
       code: String(last?.code ?? 'IO'),
-      error: String(last?.error ?? (last ? '' : '替代诊断文件内容损坏')),
+      error: String(last?.error ?? ''),
       history: lines.length,
       byPhase,
-      // 只有 event 阶段才更接近「事件没落盘」；salient 阶段失败时 L1 通常还在，
-      // 所以不能把总行数直接叫「丢失的可恢复记录数」。
-      unknown: false,
+      unknown: badLines > 0,
+      reason: badLines > 0 ? `诊断文件有 ${badLines} 行解析失败，计数不完整` : '',
     };
-  })();
+  }
+  let failureManifestWriteError = readManifestDiagnostics();
   let lastWriteFailure = (() => {
     // 重启后也要能说清「最近一次失败是什么」：从清单最后一行还原。
     const last = initialFailLines[initialFailLines.length - 1];
@@ -2501,7 +2523,14 @@ export function createMemoryStore(options = {}) {
     if (text === null) return { ok: true, acknowledged: 0, note: '没有诊断文件' };
     const lines = text.split('\n').filter(Boolean);
     if (!lines.length) return { ok: true, acknowledged: 0 };
-    const ackFile = `${manifestErrorFile}.ack-${Date.now()}`;
+    // rename 前再确认一次：bridge 可能在两次读之间又追加了新的诊断行
+    // （gate 落地后这一步变成兜底，但先做没有坏处）。
+    const { text: again } = readTextStrict(manifestErrorFile);
+    if (again !== null && again !== text) {
+      return { ok: false, error: 'diagnosis-changed-during-ack', note: '诊断文件在确认期间又变了，已中止（重跑一次即可）' };
+    }
+    // nonce：同一毫秒重复 ack 时也不会撞名。
+    const ackFile = `${manifestErrorFile}.ack-${Date.now()}-${crypto.randomUUID().slice(0, 6)}`;
     try {
       fs.renameSync(manifestErrorFile, ackFile);
       failureManifestWriteError = null;
@@ -2760,6 +2789,11 @@ export function createMemoryStore(options = {}) {
     // usage.json 也是 readJsonFile 的调用方（可能 schema 损坏），必须先读再做快照，
     // 否则它的 corruptJsonFiles 登记会漏进这份统计（属性求值顺序的坑已踩过两次）。
     const usageSnapshot = usageStats();
+    // 诊断文件可能在进程生命周期里出现/变化（bridge 追写），stats 不能只用启动时快照。
+    // 但文件写不进去时（磁盘满），本次进程内的错误仍要可见：文件优先，内存兜底。
+    const diagNow = readManifestDiagnostics();
+    const diagState = diagNow || failureManifestWriteError || null;
+    failureManifestWriteError = diagState;
     const quarantineRead = readTextStrict(`${writeFailFile}.quarantine`);
     const quarantinedCount = (quarantineRead.text || '').split('\n').filter(Boolean).length;
     // quarantine 读不到 = 隔离区内容未知：pending 数字同样不可信。
@@ -2843,7 +2877,7 @@ export function createMemoryStore(options = {}) {
         quarantine: Boolean(quarantineUnreadable),
       },
       // 连失败清单都写不进去时的最近一次错误（进程内；重启后靠替代诊断文件）。
-      failureManifestWriteError: failureManifestWriteError
+      failureManifestWriteError: diagState
         ? {
           at: failureManifestWriteError.at,
           phase: failureManifestWriteError.phase,
@@ -2855,9 +2889,12 @@ export function createMemoryStore(options = {}) {
       // 未记录的失败：补偿动作的元数据留下了，但消息明细已经丢失，replay 无法消费。
       // 不叫 lostRecoverableCount —— 同一 ID 可能多次失败（行数≠唯一记录数），
       // 且只有 event 阶段才更接近「事件没落盘」。
-      unrecordedFailureCount: Number(failureManifestWriteError?.history) || 0,
-      unrecordedByPhase: failureManifestWriteError?.byPhase || { event: 0, salient: 0 },
-      unrecordedFailureCountUnknown: false,
+      unrecordedFailureCount: Number(diagState?.history) || 0,
+      unrecordedByPhase: diagState?.byPhase || { event: 0, salient: 0 },
+      unrecordedFailureCountUnknown: Boolean(diagState?.unknown),
+      unrecordedFailureUnknownReason: diagState?.unknown
+        ? String(diagState.reason || diagState.error || '')
+        : '',
       // 归档迁移快照：单独一类，需要 recoverArchiveSnapshots() 恢复
       archiveSnapshots: pending.archiveSnapshots,
       // 归档目录读不到 ≠ 没有快照：这一项非空时健康页必须红，不能报「没有待恢复数据」。

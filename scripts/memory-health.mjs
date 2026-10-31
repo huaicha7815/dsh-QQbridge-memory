@@ -68,8 +68,11 @@ const store = createMemoryStore({ dir: memDir, config: {} });
 // 确认（ack）诊断文件里的「未记录失败」：明细确实丢了，但归档保留审计线索，
 // 之后 health 不再把它当当前阻断（否则它会永久红、replay 永远失败）。
 if (argv.includes('--ack-manifest-errors')) {
+  // ack 是写操作（rename 诊断文件）：bridge 正在追加诊断时归档会把新行一起搬走。
+  // 这里先做 bridge idle 检查；维护 gate 落地后会再套一层 withMaintenanceGate。
+  requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked });
   const result = store.ackManifestErrors();
-  console.log(JSON.stringify(result, null, 2));
+  reportMaintenance(result);
   process.exit(result.ok ? 0 : 1);
 }
 
@@ -82,7 +85,16 @@ if (argv.includes('--migrate')) {
   reportMaintenance(result, {
     previewHint: applyMigrate ? '' : '（上面是预览。确认无误后加 --apply 真正写回）',
   });
-  if (!applyMigrate) process.exit(0);
+  // dry-run 也要看 locked/error：预览阶段就失败时不能 exit 0 假装没事。
+  if (!applyMigrate) {
+    const previewProblems = maintenanceProblems(result);
+    if (previewProblems.length) {
+      console.error('❌ 预览失败：');
+      for (const p of previewProblems) console.error(`   · ${p}`);
+      process.exit(1);
+    }
+    process.exit(0);
+  }
   // migrate 只补 ID，不清空清单：完成后置条件是「迁移操作成功」，不是 pending 归零。
   const problems = maintenanceProblems(result);
   if (problems.length) {
@@ -152,7 +164,15 @@ if (argv.includes('--replay')) {
   reportMaintenance(result, {
     previewHint: applyReplay ? '' : '（上面是预览。确认无误后加 --apply 真正写回）',
   });
-  if (!applyReplay) process.exit(0);
+  if (!applyReplay) {
+    const previewProblems = maintenanceProblems(result);
+    if (previewProblems.length) {
+      console.error('❌ 预览失败：');
+      for (const p of previewProblems) console.error('   · ' + p);
+      process.exit(1);
+    }
+    process.exit(0);
+  }
   // 统一判定：不能只看 pendingRecoverable（overflow / 账本不可读同样是「没恢复完」）。
   const problems = maintenanceProblems(result, { statsAfter: store.stats(), requireDrained: true });
   if (problems.length) {
@@ -212,7 +232,12 @@ if (st.readErrors > 0) {
   say('     这不是「没有数据」，是「暂时看不见」：修好权限/磁盘后下一次请求会自动重试（读失败不会写进缓存）。');
   say('     这期间档案写入会被拒绝，避免用空档案覆盖原文件；health 的数字也会偏小，先修 IO。');
 }
-if (st.failureManifestWriteError) {
+if (st.unrecordedFailureCountUnknown) {
+  say('  🔴 未记录失败的诊断文件读不到/损坏：真实丢失量未知');
+  say(`     原因：${st.unrecordedFailureUnknownReason || st.failureManifestWriteError?.error || '状态未知'}`);
+  say('     不能把它当成 0；修好文件后重跑，或确认丢失范围后用 --ack-manifest-errors 归档。');
+}
+if (st.failureManifestWriteError && !st.unrecordedFailureCountUnknown) {
   const d = st.failureManifestWriteError;
   say(`  🔴 上次运行连失败清单都写不进去（${d.code}，${d.phase || 'unknown'}，历史 ${d.history || 1} 条）`);
   say(`     ${d.error || ''}`);

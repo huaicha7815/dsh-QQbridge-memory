@@ -2491,3 +2491,13 @@ test('replay --apply 在存在未记录失败（未 ack）时 exit 1', () => {
   assert.ok(String(`${run.stdout || ''}${run.stderr || ''}`).includes('连清单都没写进去'), '要说明原因');
   cleanup(base);
 });
+
+
+test('零字节诊断文件也算 unknown（不能当 0）', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'diag-empty-'));
+  fs.writeFileSync(path.join(dir, 'write-failures.manifest-error.jsonl'), '', 'utf8');
+  const store = createMemoryStore({ dir });
+  const st = store.stats();
+  assert.equal(st.unrecordedFailureCountUnknown, true);
+  cleanup(dir);
+});

@@ -128,6 +128,10 @@ function assertMetric(stats, metric, label) {
     }
     return;
   }
+  if (field === 'unrecordedFailureCountUnknown') {
+    assert.equal(stats.unrecordedFailureCountUnknown, true, `${label}：unrecordedFailureCountUnknown 应为 true`);
+    return;
+  }
   if (field === 'failureManifestWriteError') {
     assert.ok(stats.failureManifestWriteError, `${label}：failureManifestWriteError 为空（恢复线索丢失但不可见）`);
     return;
@@ -571,6 +575,24 @@ scenario('quarantine 读 EACCES → pendingUnreadable', {
   inject: (dir) => injectIoFailure('readFileSync', path.join(dir, 'write-failures.jsonl.quarantine'), 'EACCES'),
   entries: [['stats', (s) => s.stats()]],
   expectMetric: { field: 'pendingUnreadable', reason: 'quarantine' },
+});
+
+scenario('诊断文件 EACCES → unrecordedFailureCountUnknown', {
+  seed: (dir) => fs.writeFileSync(
+    path.join(dir, 'write-failures.manifest-error.jsonl'),
+    JSON.stringify({ at: TS, phase: 'event', id: 'lost-1', code: 'ENOSPC', error: 'no space' }) + '\n',
+    'utf8',
+  ),
+  inject: (dir) => injectIoFailure('readFileSync', path.join(dir, 'write-failures.manifest-error.jsonl'), 'EACCES'),
+  entries: [['stats', (s) => s.stats()]],
+  expectMetric: { field: 'unrecordedFailureCountUnknown' },
+});
+
+scenario('诊断文件零字节 → unrecordedFailureCountUnknown', {
+  seed: (dir) => fs.writeFileSync(path.join(dir, 'write-failures.manifest-error.jsonl'), '', 'utf8'),
+  inject: () => {},
+  entries: [['stats', (s) => s.stats()]],
+  expectMetric: { field: 'unrecordedFailureCountUnknown' },
 });
 
 // ── 锁层（直接测共享库，不依赖 CLI） ────────────────────────────────

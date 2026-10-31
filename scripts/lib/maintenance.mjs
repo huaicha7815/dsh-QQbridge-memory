@@ -155,7 +155,9 @@ export function maintenanceProblems(result, { statsAfter = null, requireDrained 
     if (statsAfter.pendingUnreadable) {
       problems.push('恢复账本读不到（pending 数字不可信）');
     }
-    if ((Number(statsAfter.unrecordedFailureCount) || 0) > 0) {
+    if (statsAfter.unrecordedFailureCountUnknown) {
+      problems.push(`未记录失败的诊断文件读不到/损坏（${statsAfter.unrecordedFailureUnknownReason || '状态未知'}）：真实丢失量未知，不能当成功；修文件或 --ack-manifest-errors 归档后再判`);
+    } else if ((Number(statsAfter.unrecordedFailureCount) || 0) > 0) {
       problems.push(`有 ${statsAfter.unrecordedFailureCount} 条失败连清单都没写进去（明细已丢失，见 write-failures.manifest-error.jsonl；确认后可用 --ack-manifest-errors 归档）`);
     }
   }
