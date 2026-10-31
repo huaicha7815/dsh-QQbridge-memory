@@ -19,7 +19,7 @@ import { PROFILE_LIMITS, auditProfile, buildMemoryGraph } from '../src/core/memo
 // 维护命令的共享契约（默认只读、--apply、目标库锁四态）都在这里，四个写入口共用一份。
 import {
   bridgeLockState, requireBridgeIdle, resolveBridgeLockForMemoryDir,
-  parseMaintenanceArgs, reportMaintenance,
+  parseMaintenanceArgs, reportMaintenance, maintenanceProblems,
 } from './lib/maintenance.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -70,10 +70,19 @@ if (argv.includes('--migrate')) {
   if (applyMigrate) {
     requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked });
   }
+  if (applyMigrate) {
+    requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked });
+  }
   const result = store.migrateLegacyRecords({ dryRun: !applyMigrate });
-  console.log(JSON.stringify(result, null, 2));
-  if (!applyMigrate) {
-    console.log('（上面是预览。确认无误后加 --apply 真正写回）');
+  reportMaintenance(result, {
+    previewHint: applyMigrate ? '' : '（上面是预览。确认无误后加 --apply 真正写回）',
+  });
+  if (!applyMigrate) process.exit(0);
+  const problems = maintenanceProblems(result, store.stats());
+  if (problems.length) {
+    console.error('❌ 迁移没有完全成功：');
+    for (const p of problems) console.error(`   · ${p}`);
+    process.exit(1);
   }
   process.exit(0);
 }
@@ -138,16 +147,8 @@ if (argv.includes('--replay')) {
     previewHint: applyReplay ? '' : '（上面是预览。确认无误后加 --apply 真正写回）',
   });
   if (!applyReplay) process.exit(0);
-  // 退出码要如实反映「有没有真的恢复」：自动化脚本会把 0 当成成功。
-  const problems = [];
-  if (result.locked) problems.push('另一个进程持有 replay 锁');
-  if (result.lockLost) problems.push('replay 锁被接管');
-  if (result.error) problems.push(`错误：${result.error}`);
-  if (result.commitError) problems.push(`回填失败：${result.commitError.error}`);
-  if ((result.failed || 0) > 0) problems.push(`${result.failed} 条处理失败（已保留待下次重试）`);
-  if ((result.unreadable || 0) > 0) problems.push(`${result.unreadable} 个快照读不到`);
-  const pendingAfter = store.stats().pendingRecoverable;
-  if (pendingAfter > 0) problems.push(`仍有 ${pendingAfter} 条待恢复`);
+  // 统一判定：不能只看 pendingRecoverable（overflow / 账本不可读同样是「没恢复完」）。
+  const problems = maintenanceProblems(result, store.stats());
   if (problems.length) {
     console.error('❌ replay 没有完全成功：');
     for (const p of problems) console.error(`   · ${p}`);
@@ -204,6 +205,13 @@ if (st.readErrors > 0) {
   say(`  🔴 有 ${st.readErrors} 个记忆文件现在读不出来（${(st.unreadableFiles || []).join('、') || '-'}）`);
   say('     这不是「没有数据」，是「暂时看不见」：修好权限/磁盘后下一次请求会自动重试（读失败不会写进缓存）。');
   say('     这期间档案写入会被拒绝，避免用空档案覆盖原文件；health 的数字也会偏小，先修 IO。');
+}
+if (st.failureManifestWriteError) {
+  const d = st.failureManifestWriteError;
+  say(`  🔴 上次运行连失败清单都写不进去（${d.code}，${d.phase || 'unknown'}，历史 ${d.history || 1} 条）`);
+  say(`     ${d.error || ''}`);
+  say('     这些失败记录只留在 write-failures.manifest-error.jsonl 里（或已彻底丢失）：pending 数字不可信。');
+  say('     先修磁盘/权限，再人工确认丢了哪些；不要把它当成「没有失败」。');
 }
 if (st.pendingUnreadable) {
   say('  🔴 失败清单 write-failures.jsonl 读不到（权限/IO）：下面的 pending 数字不可信，不能当成「没有待恢复」。');
@@ -417,7 +425,8 @@ if (overLimitPeople > 0) {
   say(`  ℹ️ 有 ${overLimitPeople} 个人物档位的事实数超过上限 ${PROFILE_LIMITS.maxFactsPerPerson}（isolated 只在可见范围内淘汰，不算异常）`);
 }
 if (st.eventDays >= 3 && st.events < 50) advice.push('事件量偏少：桥接可能没在跑，或最近很安静。');
-if (st.pendingUnreadable) advice.push('失败清单 write-failures.jsonl 读不到：pendingRecoverable 不可信，先修权限再判断是否需要 replay。');
+if (st.failureManifestWriteError) advice.push('上次运行连失败清单都写不进去：检查 write-failures.manifest-error.jsonl，确认磁盘/权限恢复后再评估丢失范围。');
+if (st.pendingUnreadable) advice.push('恢复账本读不到（或隔离区不可读）：pendingRecoverable 不可信，先修权限再判断是否需要 replay。');
 if (st.parseErrorLines > 0) advice.push(`有 ${st.parseErrorLines} 条记忆记录解析失败：坏行还在原文件里，人工修好后重新读取会自动恢复计数。`);
 if (typeof summaryAudit !== 'undefined' && summaryAudit && summaryAudit.corrupt.length) {
   advice.push(`有 ${summaryAudit.corrupt.length} 个摘要文件不可用：可自动重建 ${summaryAudit.repairable.length} 个，需人工 ${summaryAudit.unrepairable.length} 个。先跑 --repair-summaries 预览，停桥接后加 --apply 修复。`);

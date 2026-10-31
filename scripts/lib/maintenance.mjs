@@ -114,6 +114,41 @@ export function parseMaintenanceArgs(argv) {
 }
 
 /**
+ * 统一成功判定：所有维护命令都用它决定退出码。
+ *
+ * 规则来自审查：不能把「返回了结果对象」当成「命令成功」，也不能只查一个字段。
+ * 覆盖：锁冲突、锁被接管、显式错误、回填失败、失败项、读不到的快照、
+ * 以及执行后仍然存在的待恢复账本（pendingRecoverable / overflow / 账本不可读）。
+ *
+ * @returns {string[]} 问题列表；空数组 = 成功
+ */
+export function maintenanceProblems(result, statsAfter) {
+  const problems = [];
+  if (!result || typeof result !== 'object') return ['没有返回结果对象'];
+  if (result.locked) problems.push('另一个进程持有锁（本次什么也没做）');
+  if (result.lockLost) problems.push('锁被其他进程接管（本轮中止）');
+  if (result.error) problems.push(`错误：${result.error}`);
+  if (result.commitError) {
+    problems.push(`回填失败：${result.commitError.error || JSON.stringify(result.commitError)}`);
+  }
+  const failedCount = Array.isArray(result.failed) ? result.failed.length : (Number(result.failed) || 0);
+  if (failedCount > 0) problems.push(`${failedCount} 项处理失败（已保留待下次重试）`);
+  if ((Number(result.unreadable) || 0) > 0) problems.push(`${result.unreadable} 个快照读不到`);
+  if (statsAfter) {
+    if ((Number(statsAfter.pendingRecoverable) || 0) > 0) {
+      problems.push(`仍有 ${statsAfter.pendingRecoverable} 条待恢复记录`);
+    }
+    if ((Number(statsAfter.unrecoverableOverflow) || 0) > 0) {
+      problems.push(`另有 ${statsAfter.unrecoverableOverflow} 条失败没有明细（overflow），无法自动恢复`);
+    }
+    if (statsAfter.pendingUnreadable) {
+      problems.push('恢复账本读不到（pending 数字不可信）');
+    }
+  }
+  return problems;
+}
+
+/**
  * 统一的「计划/执行」输出。所有维护命令都用同一形状，方便脚本消费：
  *   { dryRun, checked, planned/written, failed, ... }
  */

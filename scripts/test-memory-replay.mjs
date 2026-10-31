@@ -2289,3 +2289,121 @@ test('health --replay --apply 在 replay 锁被占用时 exit 1（不能把没�
   assert.ok(fs.existsSync(path.join(memDir, 'write-failures.jsonl')), '待恢复清单要还在');
   cleanup(base);
 });
+
+test('同 ID 的 salient 和 event 两阶段必须都执行（不能跳过 event）', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fold-stages-'));
+  const store = createMemoryStore({ dir });
+  const row = { id: 'same', t: Date.now(), k: 'group:111', kind: 'msg', text: '两阶段记录', s: 3 };
+  // 失败清单里先 salient 后 event（同一 id、同一 row）
+  fs.writeFileSync(
+    path.join(dir, 'write-failures.jsonl'),
+    [
+      JSON.stringify({ at: Date.now(), phase: 'salient', id: 'same', row }),
+      JSON.stringify({ at: Date.now(), phase: 'event', id: 'same', row }),
+    ].join('\n') + '\n',
+    'utf8',
+  );
+  const result = store.replayWriteFailures({ dryRun: false });
+  assert.equal(result.replayed, 1, '同 id 只算一次恢复');
+  const dayFile = path.join(dir, 'events', `${day()}.jsonl`);
+  assert.ok(fs.existsSync(dayFile), 'L1 必须被写入（event 阶段不能被跳过）');
+  const lines = fs.readFileSync(dayFile, 'utf8').split('\n').filter(Boolean);
+  assert.equal(lines.length, 1, 'L1 里只应有一条');
+  assert.equal(JSON.parse(lines[0]).id, 'same');
+  cleanup(dir);
+});
+
+test('失败清单写失败后，重启仍能看到诊断（不能只是内存字段）', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'manifest-restart-'));
+  const store = createMemoryStore({ dir });
+  const origAppend = fs.appendFileSync;
+  fs.appendFileSync = (p, ...rest) => {
+    const target = String(p);
+    if (target.includes('write-failures.jsonl') && !target.includes('manifest-error')) {
+      const e = new Error('ENOSPC: no space left on device'); e.code = 'ENOSPC'; throw e;
+    }
+    return origAppend(p, ...rest);
+  };
+  try {
+    // 让 L1 写失败（触发 recordWriteFailure），同时清单 append 也失败
+    const row = { id: 'lost-1', t: Date.now(), k: 'g:1', kind: 'msg', text: '丢掉的', s: 2 };
+    const origWrite = fs.appendFileSync;
+    fs.appendFileSync = (p, ...rest) => {
+      const target = String(p);
+      if (target.includes('write-failures.jsonl') && !target.includes('manifest-error')) {
+        const e = new Error('ENOSPC'); e.code = 'ENOSPC'; throw e;
+      }
+      if (target.includes(`${path.sep}events${path.sep}`)) {
+        const e = new Error('ENOSPC'); e.code = 'ENOSPC'; throw e;
+      }
+      return origWrite(p, ...rest);
+    };
+    try { store.appendEvent(row); } finally { fs.appendFileSync = origWrite; }
+  } finally {
+    fs.appendFileSync = origAppend;
+  }
+  assert.ok(fs.existsSync(path.join(dir, 'write-failures.manifest-error.jsonl')), '要写替代诊断文件');
+
+  // 新进程（新 store）必须读回它
+  const fresh = createMemoryStore({ dir });
+  const st = fresh.stats();
+  assert.ok(st.failureManifestWriteError, '重启后 stats 必须能看到上次的清单写失败');
+  assert.ok(st.failureManifestWriteError.history >= 1);
+  assert.equal(st.failureManifestWriteError.code, 'ENOSPC');
+  cleanup(dir);
+});
+
+test('migrate 归档目录 readdir 失败要返回错误（不能当成没有归档）', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'migrate-archive-err-'));
+  const store = createMemoryStore({ dir });
+  fs.mkdirSync(path.join(dir, 'events-archive'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'events-archive', '2026-01.jsonl'), JSON.stringify({ id: 'a1', t: Date.now(), k: 'g:1', kind: 'msg', text: '归档', s: 2 }) + '\n', 'utf8');
+  const origReaddir = fs.readdirSync;
+  fs.readdirSync = (p, ...rest) => {
+    if (String(p) === path.join(dir, 'events-archive')) {
+      const e = new Error('EACCES'); e.code = 'EACCES'; throw e;
+    }
+    return origReaddir(p, ...rest);
+  };
+  let result;
+  try {
+    result = store.migrateLegacyRecords({ dryRun: false });
+  } finally {
+    fs.readdirSync = origReaddir;
+  }
+  assert.ok(String(result.error || '').includes('archive-readdir-failed'), '必须返回 archive-readdir-failed：' + JSON.stringify(result));
+  cleanup(dir);
+});
+
+test('migrate --apply 在锁被占用时 exit 1（不能报成功）', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'migrate-cli-lock-'));
+  const memDir = path.join(base, 'state', 'memory');
+  fs.mkdirSync(memDir, { recursive: true });
+  fs.writeFileSync(path.join(memDir, 'write-failures.jsonl'), JSON.stringify({ at: Date.now(), phase: 'event', row: { t: Date.now(), k: 'g:1', kind: 'msg', text: '旧格式' } }) + '\n', 'utf8');
+  fs.writeFileSync(
+    path.join(memDir, 'write-failures.jsonl.lock'),
+    JSON.stringify({ owner: 'other', pid: process.pid, at: Date.now() }),
+    'utf8',
+  );
+  const dead = spawnSync(process.execPath, ['-e', '0'], { timeout: 10000 });
+  fs.writeFileSync(path.join(base, 'state', 'bridge.lock'), String(dead.pid), 'utf8');
+
+  const run = runHealth(['--dir', memDir, '--migrate', '--apply']);
+  assert.equal(run.status, 1, '锁冲突时 migrate 必须 exit 1：' + (run.stdout || run.stderr || '').slice(0, 400));
+  assert.ok(fs.existsSync(path.join(memDir, 'write-failures.jsonl.lock')), '不能删别人的锁');
+  cleanup(base);
+});
+
+test('replay --apply 有 overflow 残留时 exit 1（已知不可恢复数据不能当成功）', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'replay-overflow-'));
+  const memDir = path.join(base, 'state', 'memory');
+  fs.mkdirSync(memDir, { recursive: true });
+  fs.writeFileSync(path.join(memDir, 'write-failures.jsonl'), '', 'utf8');
+  fs.writeFileSync(path.join(memDir, 'write-failures.jsonl.overflow'), '2\n3\n', 'utf8');
+  const dead = spawnSync(process.execPath, ['-e', '0'], { timeout: 10000 });
+  fs.writeFileSync(path.join(base, 'state', 'bridge.lock'), String(dead.pid), 'utf8');
+
+  const run = runHealth(['--dir', memDir, '--replay', '--apply']);
+  assert.equal(run.status, 1, 'overflow 残留时 replay 必须 exit 1：' + (run.stdout || run.stderr || '').slice(0, 400));
+  cleanup(base);
+});

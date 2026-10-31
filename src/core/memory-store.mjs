@@ -494,7 +494,24 @@ export function createMemoryStore(options = {}) {
   let writeFailureCount = initialFailLines.length + readOverflowCount();
   // 最近一次「连失败清单都写不进去」的错误：进程内可观测，重启后（磁盘恢复时）
   // 替代诊断文件还能作为线索。不持久化在清单里（那时清单本身已不可写）。
-  let failureManifestWriteError = null;
+  // 启动时必须读回替代诊断文件：memory-health 每次都是新进程，
+  // 只靠内存字段它永远看不到「上个进程连清单都写不进去」这件事。
+  const manifestErrorFile = path.join(root, 'write-failures.manifest-error.jsonl');
+  let failureManifestWriteError = (() => {
+    const { text } = readTextStrict(manifestErrorFile);
+    if (!text) return null;
+    const lines = text.split('\n').filter(Boolean);
+    if (!lines.length) return null;
+    let last = null;
+    try { last = JSON.parse(lines[lines.length - 1]); } catch { last = null; }
+    return {
+      at: Number(last?.at) || 0,
+      phase: String(last?.phase ?? ''),
+      code: String(last?.code ?? 'IO'),
+      error: String(last?.error ?? (last ? '' : '替代诊断文件内容损坏')),
+      history: lines.length,
+    };
+  })();
   let lastWriteFailure = (() => {
     // 重启后也要能说清「最近一次失败是什么」：从清单最后一行还原。
     const last = initialFailLines[initialFailLines.length - 1];
@@ -706,6 +723,7 @@ export function createMemoryStore(options = {}) {
       try {
         fs.appendFileSync(path.join(root, 'write-failures.manifest-error.jsonl'), JSON.stringify({
           at: Date.now(), phase, id: row?.id ?? null,
+          code: String(manifestError?.code ?? 'IO'),
           error: String(manifestError?.message ?? manifestError).slice(0, 300),
         }) + '\n', 'utf8');
       } catch { /* 磁盘完全不可写：只能靠内存状态 + console */ }
@@ -2017,9 +2035,26 @@ export function createMemoryStore(options = {}) {
       const remaining = [];
       const bad = [];
       let lastRenew = Date.now();
-      const seenIds = new Set();
-      let processed = 0;
+      // 折叠：同一个 id 可能同时有 salient 和 event 两条恢复记录。
+      // 只处理第一条会把 event 阶段跳过（先处理 salient 的话），L1 永远补不回来。
+      // 这里按「最高阶段」折叠：event > salient，保留原始行交给下面写。
+      const stageRank = (p) => (p === 'event' ? 2 : 1);
+      const foldedById = new Map();
       for (const line of lines) {
+        let item;
+        try { item = JSON.parse(line); } catch { bad.push(line); quarantined += 1; continue; }
+        const row = item && item.row;
+        const id = String((item && item.id) ?? (row && row.id) ?? '');
+        if (!row || !id) { bad.push(line); quarantined += 1; continue; }
+        const phase = item.phase === 'salient' ? 'salient' : 'event';
+        const rank = stageRank(phase);
+        const prev = foldedById.get(id);
+        if (!prev || rank > prev.rank) {
+          foldedById.set(id, { line, id, row, phase, rank, day: dayString(Number(row.t) || Date.now()), tier: Number(row.s) || 0 });
+        }
+      }
+      let processed = 0;
+      for (const entry of foldedById.values()) {
         processed += 1;
         // 按时间续租（不是按行数）：单行 IO 慢时也能及时告诉别人「我还活着」。
         if (lockHeld) {
@@ -2033,18 +2068,10 @@ export function createMemoryStore(options = {}) {
             lastRenew = Date.now();
           }
         }
-        let item;
-        try { item = JSON.parse(line); } catch { bad.push(line); quarantined += 1; continue; }
-        const row = item && item.row;
-        const id = String((item && item.id) ?? (row && row.id) ?? '');
-        if (!row || !id) { bad.push(line); quarantined += 1; continue; }
-        let phase = item.phase === 'salient' ? 'salient' : 'event';
-        const day = dayString(Number(row.t) || Date.now());
-        const tier = Number(row.s) || 0;
-        // 本轮去重：同一个 id 出现在多个快照里时，dry-run 不能重复计数，
-        // 否则预览会比 apply 高（审查指出过）。
-        if (seenIds.has(id)) { skipped += 1; continue; }
-        seenIds.add(id);
+        const { line, id, row } = entry;
+        let phase = entry.phase;
+        const day = entry.day;
+        const tier = entry.tier;
         // 幂等判断要覆盖「该 id 的两个阶段都完成」：
         // 只看 L1 有 id 就 skip，会漏掉「L1 已有但 S3 副本缺失」的情况。
         if (phase === 'event') {
@@ -2153,17 +2180,27 @@ export function createMemoryStore(options = {}) {
    * 失败清单快照（.processing-* / .migrate-*）：每行是 {at, phase, id, row, error}。
    * 只有这种快照能被 replay 当失败记录消费。
    */
-  function listFailureSnapshots() {
+  /**
+   * 失败清单快照扫描：返回 { files, error }。
+   * 目录枚举失败（EACCES/EIO）不能当成「没有快照」——那会让 pending 与 replay
+   * 都以为没东西可恢复，而根目录里的 .processing-* 其实还在。
+   */
+  function scanFailureSnapshots() {
     const dir = path.dirname(writeFailFile);
     const base = path.basename(writeFailFile);
-    const out = [];
-    // 走统一原语：目录读不到（而不是不存在）要登记，别让失败清单在故障时静默变空。
-    for (const name of listDirStrict(dir).names) {
+    const scan = listDirStrict(dir);
+    const files = [];
+    for (const name of scan.names) {
       if (name.startsWith(`${base}.processing`) || name.startsWith(`${base}.migrate-`)) {
-        out.push(path.join(dir, name));
+        files.push(path.join(dir, name));
       }
     }
-    return out;
+    return { files, error: scan.error };
+  }
+
+  /** 兼容旧调用点：只要文件列表。 */
+  function listFailureSnapshots() {
+    return scanFailureSnapshots().files;
   }
 
   /**
@@ -2391,7 +2428,9 @@ export function createMemoryStore(options = {}) {
     // overflow 账本读不到时，unrecoverableOverflow 的数字同样不可信。
     const overflowRead = readTextStrict(overflowFile);
     const overflowUnreadable = Boolean(overflowRead.error);
-    for (const file of listFailureSnapshots()) {
+    const snapshotScan = scanFailureSnapshots();
+    const snapshotsEnumerationError = snapshotScan.error || null;
+    for (const file of snapshotScan.files) {
       const { text } = readTextStrict(file);
       if (text === null) {
         if (!isDefinitelyMissing(file)) unreadable += 1;
@@ -2411,8 +2450,9 @@ export function createMemoryStore(options = {}) {
       archiveSnapshotError,
       manifestUnreadable,
       overflowUnreadable,
+      snapshotsEnumerationError,
       // 任一账本读不到，pending 数字就不可信（health 必须红）。
-      pendingUnreadable: Boolean(manifestUnreadable || overflowUnreadable || unreadable > 0),
+      pendingUnreadable: Boolean(manifestUnreadable || overflowUnreadable || unreadable > 0 || snapshotsEnumerationError),
       total: records + overflow,
     };
   }
@@ -2519,8 +2559,11 @@ export function createMemoryStore(options = {}) {
     }
 
     // 2) 归档月文件
-    let archiveFiles = [];
-    try { archiveFiles = fs.readdirSync(archiveDir).filter((f) => f.endsWith('.jsonl')); } catch { /* 无归档 */ }
+    const archiveScan = listDirStrict(archiveDir);
+    if (archiveScan.error) {
+      return { ...result, error: `archive-readdir-failed: ${archiveScan.error}` };
+    }
+    const archiveFiles = archiveScan.names.filter((f) => f.endsWith('.jsonl'));
     for (const name of archiveFiles) {
       const full = path.join(archiveDir, name);
       // 和失败清单同样的协议：先把文件 rename 成快照（原子），
@@ -2663,6 +2706,10 @@ export function createMemoryStore(options = {}) {
     // usage.json 也是 readJsonFile 的调用方（可能 schema 损坏），必须先读再做快照，
     // 否则它的 corruptJsonFiles 登记会漏进这份统计（属性求值顺序的坑已踩过两次）。
     const usageSnapshot = usageStats();
+    const quarantineRead = readTextStrict(`${writeFailFile}.quarantine`);
+    const quarantinedCount = (quarantineRead.text || '').split('\n').filter(Boolean).length;
+    // quarantine 读不到 = 隔离区内容未知：pending 数字同样不可信。
+    const quarantineUnreadable = Boolean(quarantineRead.error);
     const readFailureSnapshot = readFailureFilesInRoot();
     const parseFailureSnapshot = parseFailureFilesInRoot();
     const parseErrorLines = parseFailureSnapshot
@@ -2733,15 +2780,23 @@ export function createMemoryStore(options = {}) {
       unrecoverableOverflow: pending.overflow,
       unreadableSnapshots: pending.unreadable,
       // 主失败清单（write-failures.jsonl）读不到：pending 数字不可信，health 必须红。
-      pendingUnreadable: Boolean(pending.pendingUnreadable),
+      pendingUnreadable: Boolean(pending.pendingUnreadable || quarantineUnreadable),
       pendingUnreadableReasons: {
         manifest: Boolean(pending.manifestUnreadable),
         overflow: Boolean(pending.overflowUnreadable),
         snapshots: Number(pending.unreadable) || 0,
+        snapshotsEnumeration: Boolean(pending.snapshotsEnumerationError),
+        quarantine: Boolean(quarantineUnreadable),
       },
       // 连失败清单都写不进去时的最近一次错误（进程内；重启后靠替代诊断文件）。
       failureManifestWriteError: failureManifestWriteError
-        ? { at: failureManifestWriteError.at, phase: failureManifestWriteError.phase, code: failureManifestWriteError.code }
+        ? {
+          at: failureManifestWriteError.at,
+          phase: failureManifestWriteError.phase,
+          code: failureManifestWriteError.code,
+          error: failureManifestWriteError.error,
+          history: Number(failureManifestWriteError.history) || 0,
+        }
         : null,
       // 归档迁移快照：单独一类，需要 recoverArchiveSnapshots() 恢复
       archiveSnapshots: pending.archiveSnapshots,
@@ -2752,11 +2807,7 @@ export function createMemoryStore(options = {}) {
       lastWriteFailure,
       // 坏行（无法解析 / 缺 id）被隔离后的数量：这些也是「没恢复的数据」，
       // 不进 writeFailures 会让人误以为处理完了。
-      quarantined: (() => {
-        try {
-          return fs.readFileSync(writeFailFile + '.quarantine', 'utf8').split('\n').filter(Boolean).length;
-        } catch { return 0; }
-      })(),
+      quarantined: quarantinedCount,
     };
   }
 
