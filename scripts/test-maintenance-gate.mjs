@@ -16,6 +16,7 @@ import {
 
 const GATE_URL = new URL('../src/lib/maintenance-gate.mjs', import.meta.url).href;
 const HEALTH = fileURLToPath(new URL('./memory-health.mjs', import.meta.url));
+const SCRIPT_DIR = fileURLToPath(new URL('.', import.meta.url));
 
 function tmpDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -310,5 +311,50 @@ test('gate：recover/repair 也已进入命令表（门被占用时 exit 2）', 
     assert.equal(run.status, 2, `${argv.join(' ')} 应 exit 2：${out.slice(0, 300)}`);
     assert.ok(out.includes('维护门被占用'), `${argv.join(' ')} 要报告门被占用`);
   }
+  fs.rmSync(base, { recursive: true, force: true });
+});
+
+test('gate：四个独立脚本在门被占用时 exit 2（隔离库、零写盘）', () => {
+  const base = tmpDir('gate-scripts-');
+  const memDir = path.join(base, 'state', 'memory');
+  fs.mkdirSync(path.join(memDir, 'events'), { recursive: true });
+  fs.mkdirSync(path.join(base, 'state', 'diary'), { recursive: true });
+  fs.writeFileSync(path.join(memDir, 'profile.json'), JSON.stringify({ people: {}, threads: [] }), 'utf8');
+  fs.writeFileSync(path.join(memDir, 'events', '2026-01-05.jsonl'), JSON.stringify({ id: 'e1', t: Date.now(), k: 'group:1', kind: 'msg', text: 'x', s: 2 }) + '\n', 'utf8');
+  writeGate(path.join(base, 'state', 'maintenance.lock'), {
+    version: 1, owner: 'other', pid: process.pid, kind: 'maintenance',
+    command: 'blocker', acquiredAt: Date.now(), nonce: 'blocker3',
+  });
+  fs.writeFileSync(path.join(base, 'state', 'bridge.lock'), String(deadPid()), 'utf8');
+  const before = fs.readFileSync(path.join(memDir, 'events', '2026-01-05.jsonl'), 'utf8');
+
+  const scripts = [
+    ['repair-memory-profile.mjs', ['--dir', memDir, '--apply']],
+    ['migrate-memory-v3.mjs', ['--dir', memDir, '--apply']],
+    ['backfill-private-who.mjs', ['--dir', memDir, '--name', '测试', '--all', '--apply']],
+    ['backfill-memory-salience.mjs', ['--dir', memDir, '--apply']],
+  ];
+  for (const [script, argv] of scripts) {
+    const run = spawnSync(process.execPath, [path.join(SCRIPT_DIR, script), ...argv], { encoding: 'utf8', timeout: 120000 });
+    const out = `${run.stdout || ''}${run.stderr || ''}`;
+    assert.equal(run.status, 2, `${script} 在门被占用时应 exit 2：${out.slice(0, 300)}`);
+    assert.ok(out.includes('维护门被占用'), `${script} 要报告门被占用：${out.slice(0, 300)}`);
+  }
+  assert.equal(fs.readFileSync(path.join(memDir, 'events', '2026-01-05.jsonl'), 'utf8'), before, '零写盘');
+  fs.rmSync(base, { recursive: true, force: true });
+});
+
+test('gate：独立脚本默认预览、不拿门（隔离库）', () => {
+  const base = tmpDir('gate-preview-');
+  const memDir = path.join(base, 'state', 'memory');
+  fs.mkdirSync(path.join(memDir, 'events'), { recursive: true });
+  fs.writeFileSync(path.join(memDir, 'profile.json'), JSON.stringify({ people: {}, threads: [] }), 'utf8');
+  const before = fs.readFileSync(path.join(memDir, 'profile.json'), 'utf8');
+
+  const run = spawnSync(process.execPath, [path.join(SCRIPT_DIR, 'migrate-memory-v3.mjs'), '--dir', memDir], { encoding: 'utf8', timeout: 120000 });
+  assert.equal(run.status, 0, '默认预览应 exit 0：' + `${run.stdout || ''}${run.stderr || ''}`.slice(0, 300));
+  assert.ok(`${run.stdout || ''}`.includes('没有写入任何文件'), '要明确说明没有写盘');
+  assert.equal(fs.readFileSync(path.join(memDir, 'profile.json'), 'utf8'), before, '预览不能改档案');
+  assert.equal(fs.existsSync(path.join(base, 'state', 'maintenance.lock')), false, '预览不拿门');
   fs.rmSync(base, { recursive: true, force: true });
 });

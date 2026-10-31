@@ -17,13 +17,20 @@ import { createMemoryStore } from '../src/core/memory-store.mjs';
 import { repairProfile } from '../src/core/memory-lib.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-import { bridgeLockState, requireBridgeIdle, resolveBridgeLockForMemoryDir } from './lib/maintenance.mjs';
-const apply = process.argv.includes('--apply');
-// 写 profile 会覆盖 bridge 正在改的同一份档案（last-writer-wins），
-// 所以 --apply 前必须确认目标库的 bridge 没在运行（锁状态四态，unknown 也算不安全）。
-const MEMORY_DIR = path.join(root, 'state', 'memory');
+import { enterMaintenanceForScript, leaveMaintenance } from './lib/maintenance-run.mjs';
+// --dir 支持：维护命令可以指向别的库（gate 也跟着目标库走）。
+const argv = process.argv.slice(2);
+const apply = argv.includes('--apply');
+// 写 profile 会覆盖 bridge 正在改的同一份档案（last-writer-wins）。
+// gate 必须覆盖「读取旧档案 → 计算 → 写回」整段：只包写回会让 bridge 在扫描期间
+// 改写同一份档案，随后用旧快照覆盖新内容。
+const dirArg = (() => { const i = argv.indexOf('--dir'); return i >= 0 ? argv[i + 1] : null; })();
+const MEMORY_DIR = dirArg ? path.resolve(dirArg) : path.join(root, 'state', 'memory');
+let maintenance = null;
 if (apply) {
-  requireBridgeIdle(resolveBridgeLockForMemoryDir(MEMORY_DIR), {
+  maintenance = enterMaintenanceForScript({
+    memoryDir: MEMORY_DIR,
+    command: 'repair-profile',
     forceUnlocked: process.argv.includes('--force-unlocked'),
   });
 }
@@ -76,3 +83,4 @@ if (apply && out.changes.length) {
 }
 
 console.log(lines.join('\n'));
+if (maintenance) leaveMaintenance(maintenance);

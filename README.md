@@ -250,6 +250,15 @@ npm run memory-health              # 只读：看真实库的规模、检索质�
 ```bash
 node scripts/memory-health.mjs --repair-summaries            # 预览可修复的摘要，不写盘
 node scripts/memory-health.mjs --repair-summaries --apply    # 真正修复（需先停桥接）
+node scripts/repair-memory-profile.mjs                      # 预览档案自愈（默认只读）
+node scripts/repair-memory-profile.mjs --apply              # 写回（gate + 先备份）
+node scripts/migrate-memory-v3.mjs                          # 预览 V3 迁移（默认只读）
+node scripts/migrate-memory-v3.mjs --apply                  # 导入历史（gate）
+node scripts/backfill-memory-salience.mjs                   # 预览补档位（默认只读）
+node scripts/backfill-memory-salience.mjs --apply           # 写回（gate）
+node scripts/backfill-private-who.mjs --name 爸爸 --apply   # 回填发送者（gate）
+# 四个脚本都支持 --dir 指向别的库；写模式统一为「默认预览，--apply 才写」，
+# --dry-run 保留为兼容别名，任何写路径都必须先拿 state/maintenance.lock。
 ```
 
 写入口统一走 `scripts/lib/maintenance.mjs` 的契约：默认 dry-run、`--apply` 才写、锁状态四态

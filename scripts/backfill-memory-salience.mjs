@@ -13,18 +13,26 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { salience } from '../src/core/memory-lib.mjs';
 import { createMemoryStore } from '../src/core/memory-store.mjs';
-import { bridgeLockState, requireBridgeIdle, resolveBridgeLockForMemoryDir } from './lib/maintenance.mjs';
+import { scriptWriteMode, enterMaintenanceForScript, leaveMaintenance } from './lib/maintenance-run.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const MEMORY_DIR = path.join(root, 'state', 'memory');
-const DRY_RUN = process.argv.includes('--dry-run');
+const argv = process.argv.slice(2);
+const dirArg = (() => { const i = argv.indexOf('--dir'); return i >= 0 ? argv[i + 1] : null; })();
+const MEMORY_DIR = dirArg ? path.resolve(dirArg) : path.join(root, 'state', 'memory');
+// 写模式契约：默认只预览，--apply 才写盘；--dry-run 保留为兼容别名。
+const { apply: APPLY, dryRun: DRY_RUN } = scriptWriteMode(process.argv.slice(2));
 
-const store = createMemoryStore({ dir: MEMORY_DIR });
-if (process.argv.includes('--apply')) {
-  requireBridgeIdle(resolveBridgeLockForMemoryDir(MEMORY_DIR), {
+// gate 覆盖「扫描事件 → 计算档位 → 写回事件/S3/压缩层」整段。
+let maintenance = null;
+if (APPLY) {
+  maintenance = enterMaintenanceForScript({
+    memoryDir: MEMORY_DIR,
+    command: 'backfill-salience',
     forceUnlocked: process.argv.includes('--force-unlocked'),
   });
 }
+
+const store = createMemoryStore({ dir: MEMORY_DIR });
 const eventsDir = path.join(MEMORY_DIR, 'events');
 const salientFile = path.join(MEMORY_DIR, 'salient.jsonl');
 
@@ -106,3 +114,4 @@ console.log(`压缩层补齐：日 ${d} / 周 ${weeks} / 月 ${months}`);
 const st = store.stats({});
 console.log(`\n分档：S0 ${st.salience.S0} / S1 ${st.salience.S1} / S2 ${st.salience.S2} / S3 ${st.salience.S3}（寒暄占比 ${st.salience.寒暄占比}）`);
 console.log(`S3 独立副本：${st.salient.count} 条，${(st.salient.bytes / 1024).toFixed(1)} KB`);
+if (maintenance) leaveMaintenance(maintenance);

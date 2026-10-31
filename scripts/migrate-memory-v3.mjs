@@ -14,23 +14,30 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createMemoryStore } from '../src/core/memory-store.mjs';
 import { mergePersonFact, ensureProfile } from '../src/core/memory-lib.mjs';
-import { bridgeLockState, requireBridgeIdle, resolveBridgeLockForMemoryDir } from './lib/maintenance.mjs';
+import { scriptWriteMode, enterMaintenanceForScript, leaveMaintenance } from './lib/maintenance-run.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const STATE_DIR = path.join(root, 'state');
 const SOCIAL_V2_FILE = path.join(STATE_DIR, 'social-v2.json');
 const DIARY_DIR = path.join(STATE_DIR, 'diary');
-const MEMORY_DIR = path.join(STATE_DIR, 'memory');
-const DRY_RUN = process.argv.includes('--dry-run');
+const dirArg = (() => { const i = process.argv.indexOf('--dir'); return i >= 0 ? process.argv[i + 1] : null; })();
+const MEMORY_DIR = dirArg ? path.resolve(dirArg) : path.join(STATE_DIR, 'memory');
+// 写模式契约（和其他维护命令一致）：默认只预览，--apply 才写盘；
+// --dry-run 保留为兼容别名。旧版本默认写盘，无参数调用会绕过维护门 —— 已修正。
+const { apply: APPLY, dryRun: DRY_RUN } = scriptWriteMode(process.argv.slice(2));
 
-const store = createMemoryStore({ dir: MEMORY_DIR });
-// 迁移会 appendEvent + writeProfile：bridge 在跑时是 last-writer-wins，
-// 可能把它们刚写进档案的新事实冲掉。
-if (process.argv.includes('--apply')) {
-  requireBridgeIdle(resolveBridgeLockForMemoryDir(MEMORY_DIR), {
+// gate 覆盖「读取旧状态 → 计算 → 写回」整段：只包写回会让 bridge 在扫描期间
+// 改写同一批记忆，随后用旧快照覆盖新内容。
+let maintenance = null;
+if (APPLY) {
+  maintenance = enterMaintenanceForScript({
+    memoryDir: MEMORY_DIR,
+    command: 'migrate-v3',
     forceUnlocked: process.argv.includes('--force-unlocked'),
   });
 }
+
+const store = createMemoryStore({ dir: MEMORY_DIR });
 
 function readJson(file, fallback) {
   try {
@@ -191,3 +198,4 @@ console.log(`[migrate] 已写入事件 ${written} 条，生成日摘要 ${summar
 
 const st = store.stats({});
 console.log(`[migrate] 记忆库现状：覆盖 ${st.eventDays} 天（${st.firstDay} ~ ${st.lastDay}），共 ${st.events} 条事件，档案 ${st.profile.people} 人 / 未完结的线 ${st.profile.openThreads} 条`);
+if (maintenance) leaveMaintenance(maintenance);
