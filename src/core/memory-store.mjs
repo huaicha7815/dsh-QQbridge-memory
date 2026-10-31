@@ -916,6 +916,26 @@ export function createMemoryStore(options = {}) {
     return created;
   }
 
+  /**
+   * 取某一天的事件：优先活动日文件；事件已归档时从 events-archive/YYYY-MM.jsonl
+   * 按 srcDay（旧行没有就按 t 反推）捞回来。
+   *
+   * 为什么需要：归档只删 events/YYYY-MM-DD.jsonl，**不删** days/YYYY-MM-DD.json。
+   * 日摘要活得比事件日文件长，所以「用事件日文件反推要重建哪些摘要」会漏掉它们。
+   */
+  function eventsForDay(day) {
+    const live = readDayEvents(day);
+    if (live.length) return live;
+    const month = String(day).slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(month)) return [];
+    return readArchiveMonth(month).filter((row) => {
+      if (!row || typeof row !== 'object') return false;
+      const srcDay = String(row.srcDay ?? '').trim();
+      if (srcDay) return srcDay === day;
+      return dayString(Number(row.t) || 0) === day;
+    });
+  }
+
   function readDaySummary(day) {
     const file = path.join(daysDir, `${day}.json`);
     const val = readJsonFile(file, null, { validate: isSummaryPayload });
@@ -1031,24 +1051,55 @@ export function createMemoryStore(options = {}) {
    */
   function auditSummaries({ limit = 400 } = {}) {
     const max = Math.max(1, Number(limit) || 400);
-    const targets = [];
-    for (const day of listEventDays().slice(-max)) targets.push({ file: path.join(daysDir, `${day}.json`), kind: 'day' });
-    for (const week of listWeekFiles().slice(-max)) targets.push({ file: path.join(weeksDir, `${week}.json`), kind: 'week' });
-    for (const month of listMonthFiles().slice(-max)) targets.push({ file: path.join(monthsDir, `${month}.json`), kind: 'month' });
+    // 枚举源必须是**实际存在的摘要文件**，不能从事件日反推：
+    // 归档只删 events/*.jsonl、保留 days/*.json，用事件日当源会漏掉这些 orphan 日摘要。
+    const dayNames = listDirStrict(daysDir).names.filter((n) => n.endsWith('.json')).sort();
+    const weekNames = listDirStrict(weeksDir).names.filter((n) => n.endsWith('.json')).sort();
+    const monthNames = listDirStrict(monthsDir).names.filter((n) => n.endsWith('.json')).sort();
+    const totalFiles = dayNames.length + weekNames.length + monthNames.length;
+    const picks = [
+      ...dayNames.slice(-max).map((n) => ({ file: path.join(daysDir, n), kind: 'day' })),
+      ...weekNames.slice(-max).map((n) => ({ file: path.join(weeksDir, n), kind: 'week' })),
+      ...monthNames.slice(-max).map((n) => ({ file: path.join(monthsDir, n), kind: 'month' })),
+    ];
+    const skippedByLimit = Math.max(0, totalFiles - picks.length);
     let checked = 0;
+    let repaired = 0;
     const corrupt = [];
-    for (const { file, kind } of targets) {
-      if (isDefinitelyMissing(file)) continue; // 这一天/周/月本来就没有摘要，不算故障
+    for (const { file, kind } of picks) {
+      if (isDefinitelyMissing(file)) continue;
       checked += 1;
       const val = readJsonFile(file, null, { validate: isSummaryPayload });
-      if (val === null) {
-        const failure = parseFailureFiles.get(file);
-        if (failure) {
-          corrupt.push({ file: path.basename(file), kind, reason: failure.reason || 'schema' });
+      if (val !== null) continue;
+      const failure = parseFailureFiles.get(file);
+      if (!failure) continue; // 读不出来但没有解析登记 = 别的状态，交给 readErrors 报
+      const reason = failure.reason || 'schema';
+
+      // orphan 日摘要：事件日文件已归档删掉，但归档月里还能按 srcDay 找回原始事件，
+      // 那就顺手重建（而不是留一份只能人工处理的坏文件）。
+      if (kind === 'day') {
+        const day = path.basename(file, '.json');
+        const events = eventsForDay(day);
+        const summary = events.length ? summarizeDay(events, day) : null;
+        if (summary && Number(summary.count) > 0) {
+          try {
+            writeJsonFile(file, { ...summary, srcFingerprint: dayFingerprint(day) });
+            noteParseFailure(file, 0);
+            repaired += 1;
+            continue;
+          } catch { /* 写不进去就按损坏上报 */ }
         }
       }
+      corrupt.push({ file: path.basename(file), kind, reason });
     }
-    return { checked, corrupt };
+    return {
+      checked,
+      corrupt,
+      repaired,
+      totalFiles,
+      skippedByLimit,
+      sampled: skippedByLimit > 0,
+    };
   }
 
   /** ISO 周对应的周一 0 点时间戳。 */

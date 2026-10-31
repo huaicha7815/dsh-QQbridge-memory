@@ -1912,3 +1912,65 @@ test('memory-store 里读记忆数据必须走统一原语（禁止手写 JSON �
     '记忆数据的读取必须走 readJsonFile / parseJsonl（含 schema 与故障登记）；只有锁文件可以手写解析',
   );
 });
+
+test('auditSummaries 以摘要文件为枚举源：归档后的 orphan 日摘要也能发现/重建', () => {
+  // case A：没有任何事件来源的 orphan 损坏日摘要 —— 必须被报告（不能 checked:0）
+  const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'orphan-audit-a-'));
+  fs.mkdirSync(path.join(dirA, 'days'), { recursive: true });
+  const storeA = createMemoryStore({ dir: dirA });
+  fs.writeFileSync(
+    path.join(dirA, 'days', '2026-01-05.json'),
+    JSON.stringify({ day: '2026-01-05', count: 1, lines: '结构损坏的旧日摘要' }),
+    'utf8',
+  );
+  const auditA = storeA.auditSummaries({ limit: 400 });
+  assert.equal(auditA.checked, 1, '没有事件日文件也要检查已存在的日摘要');
+  assert.equal(auditA.corrupt.length, 1);
+  assert.equal(auditA.corrupt[0].reason, 'schema');
+  assert.ok(fs.existsSync(path.join(dirA, 'days', '2026-01-05.json.corrupt')), '要备份');
+  cleanup(dirA);
+
+  // case B：归档里还有该天的事件 → 应能按 srcDay 自动重建
+  const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'orphan-audit-b-'));
+  fs.mkdirSync(path.join(dirB, 'days'), { recursive: true });
+  fs.mkdirSync(path.join(dirB, 'events-archive'), { recursive: true });
+  const storeB = createMemoryStore({ dir: dirB });
+  const orphanDay = '2026-01-05';
+  const ts = new Date('2026-01-05T12:00:00').getTime();
+  fs.writeFileSync(
+    path.join(dirB, 'events-archive', '2026-01.jsonl'),
+    [1, 2, 3].map((i) => JSON.stringify({ id: `e${i}`, t: ts + i * 1000, k: 'group:111', kind: 'msg', text: `归档事件${i}`, s: 2, srcDay: orphanDay })).join('\n') + '\n',
+    'utf8',
+  );
+  fs.writeFileSync(path.join(dirB, 'days', `${orphanDay}.json`), JSON.stringify({ day: orphanDay, count: 1, lines: '坏的' }), 'utf8');
+  const auditB = storeB.auditSummaries({ limit: 400 });
+  assert.equal(auditB.repaired, 1, '归档事件还在，应该自动重建');
+  assert.equal(auditB.corrupt.length, 0);
+  const fixed = JSON.parse(fs.readFileSync(path.join(dirB, 'days', `${orphanDay}.json`), 'utf8'));
+  assert.ok(Array.isArray(fixed.lines), '重建后要恢复成数组');
+  cleanup(dirB);
+});
+
+test('auditSummaries 明确区分抽样与全量', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-sample-'));
+  fs.mkdirSync(path.join(dir, 'days'), { recursive: true });
+  const store = createMemoryStore({ dir });
+  for (let i = 1; i <= 5; i += 1) {
+    fs.writeFileSync(
+      path.join(dir, 'days', `2026-02-0${i}.json`),
+      JSON.stringify({ day: `2026-02-0${i}`, count: 1, lines: [{ t: 'x', s: 1 }] }),
+      'utf8',
+    );
+  }
+  const sampled = store.auditSummaries({ limit: 2 });
+  assert.equal(sampled.totalFiles, 5);
+  assert.equal(sampled.checked, 2);
+  assert.equal(sampled.skippedByLimit, 3);
+  assert.equal(sampled.sampled, true, '有跳过时要明确标记为抽样');
+
+  const full = store.auditSummaries({ limit: 400 });
+  assert.equal(full.checked, 5);
+  assert.equal(full.skippedByLimit, 0);
+  assert.equal(full.sampled, false);
+  cleanup(dir);
+});

@@ -225,14 +225,22 @@ say(`  归档：${store.listArchiveMonths().length} 个月`);
 const summaryAudit = (() => {
   try { return store.auditSummaries({ limit: 400 }); } catch { return null; }
 })();
-if (summaryAudit && summaryAudit.corrupt.length) {
-  const detail = summaryAudit.corrupt
-    .slice(0, 5)
-    .map((c) => `${c.file}（${c.reason === 'schema' ? '结构' : '语法'}）`)
-    .join('、');
-  say(`  🔴 主动校验：${summaryAudit.checked} 个摘要里有 ${summaryAudit.corrupt.length} 个不可用`);
-  say(`     ${detail}${summaryAudit.corrupt.length > 5 ? ' 等' : ''}`);
-  say('     已备份成 *.corrupt；下一次 consolidation 会用下层数据重建（health 本身不删数据）。');
+if (summaryAudit && (summaryAudit.corrupt.length || summaryAudit.repaired > 0)) {
+  const scope = summaryAudit.sampled
+    ? `抽样 ${summaryAudit.checked}/${summaryAudit.totalFiles} 个摘要`
+    : `全部 ${summaryAudit.checked} 个摘要`;
+  if (summaryAudit.repaired > 0) {
+    say(`  ℹ️ 主动校验：${scope}，从归档事件重建了 ${summaryAudit.repaired} 个损坏的日摘要`);
+  }
+  if (summaryAudit.corrupt.length) {
+    const detail = summaryAudit.corrupt
+      .slice(0, 5)
+      .map((c) => `${c.file}（${c.reason === 'schema' ? '结构' : '语法'}）`)
+      .join('、');
+    say(`  🔴 主动校验：${scope}，其中 ${summaryAudit.corrupt.length} 个不可用`);
+    say(`     ${detail}${summaryAudit.corrupt.length > 5 ? ' 等' : ''}`);
+    say('     已备份成 *.corrupt；日摘要能按归档事件重建的已自动重建，剩下的需要人工确认。');
+  }
 }
 say('');
 
@@ -364,7 +372,9 @@ if (overLimitPeople > 0) {
 }
 if (st.eventDays >= 3 && st.events < 50) advice.push('事件量偏少：桥接可能没在跑，或最近很安静。');
 if (st.parseErrorLines > 0) advice.push(`有 ${st.parseErrorLines} 条记忆记录解析失败：坏行还在原文件里，人工修好后重新读取会自动恢复计数。`);
-if (typeof summaryAudit !== 'undefined' && summaryAudit && summaryAudit.corrupt.length) advice.push(`有 ${summaryAudit.corrupt.length} 个摘要文件不可用：下一次 consolidation 会尝试重建，若一直重建不出来说明下层数据也缺。`);
+if (typeof summaryAudit !== 'undefined' && summaryAudit && summaryAudit.corrupt.length) {
+  advice.push(`有 ${summaryAudit.corrupt.length} 个摘要文件不可用（${summaryAudit.sampled ? '抽样检查，可用 --limit 扩大范围' : '已全量检查'}）：能按归档事件重建的会自动重建，剩下的说明下层数据也缺。`);
+}
 if (Array.isArray(st.corruptJsonFiles) && st.corruptJsonFiles.length) advice.push(`有 ${st.corruptJsonFiles.length} 个 JSON 档案不可用（${st.corruptJsonFiles.join('、')}）：已备份为 *.corrupt，修好后下次读取自动恢复。`);
 if (st.readErrors > 0) advice.push(`有 ${st.readErrors} 个记忆文件读不出来（${(st.unreadableFiles || []).join('、') || '-'}）：先修权限/磁盘，别当成「没有数据」。`);
 if (st.profileRead && !st.profileRead.writable) advice.push('长期档案处于写保护（读不到或解析失败）：修好 profile.json 后下一次成功读取会自动恢复写入。');
