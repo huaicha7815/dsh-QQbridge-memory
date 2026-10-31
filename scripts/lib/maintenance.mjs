@@ -96,20 +96,19 @@ export class MaintenanceBlockedError extends Error {
  */
 export function requireBridgeIdle(lockFile, { explicit = false, forceUnlocked = false, throwOnBlock = false } = {}) {
   const lock = bridgeLockState(lockFile, { explicit });
-  const block = (message) => {
-    if (throwOnBlock) throw new MaintenanceBlockedError(message, 2);
-    process.exit(2);
-  };
   if (lock.state === 'running') {
+    // throw 模式下只抛错（CLI 层统一打印一次），避免和 runGated 的 catch 重复输出。
+    if (throwOnBlock) throw new MaintenanceBlockedError(`桥接正在运行（PID ${lock.pid}）`, 2);
     console.error(`❌ 桥接正在运行（PID ${lock.pid}）：先停桥接再 --apply。`);
     console.error('   （bridge 和 consolidation 会写同一批记忆文件，没有共享锁。）');
-    block(`桥接正在运行（PID ${lock.pid}）`);
+    process.exit(2);
   }
   if (lock.state === 'unknown') {
     if (!forceUnlocked) {
+      if (throwOnBlock) throw new MaintenanceBlockedError(`锁状态未知（${lock.reason || '读不到/内容损坏'}）`, 2);
       console.error(`❌ 锁状态未知（${lock.reason || '读不到/内容损坏'}）：不能假定桥接没在跑。`);
       console.error('   修好锁文件，或确认桥接已停后加 --force-unlocked 明确越过这项检查。');
-      block(`锁状态未知（${lock.reason || '读不到/内容损坏'}）`);
+      process.exit(2);
     }
     console.warn(`⚠️ 锁状态未知（${lock.reason || '读不到/内容损坏'}），但已指定 --force-unlocked：继续执行。`);
   }

@@ -1188,7 +1188,9 @@ function acquireLock() {
   // gate owner 校验：写 bridge.lock 之后确认维护门仍是自己的，
   // 否则说明启动期间被维护命令接管过，本次启动必须退出。
   const inspect = inspectMaintenanceGate(gatePath);
-  if (inspect.state !== 'held' || inspect.gate.owner !== gate.gate.owner) {
+  if (inspect.state !== 'held'
+      || inspect.gate.owner !== gate.gate.owner
+      || inspect.gate.nonce !== gate.gate.nonce) {
     return rollback(2, '维护门在启动期间被其他进程接管：本次启动退出（避免与维护写操作并发）。');
   }
   const released = releaseMaintenanceGate(gatePath, gate.gate);

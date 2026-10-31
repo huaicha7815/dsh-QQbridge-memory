@@ -95,6 +95,12 @@ const suite = [
     expect: 0,
   },
   {
+    // 路由文档一致性：避免「daily 全绿但 docs/ROUTES.md 已过期」。
+    name: '文档一致性（ROUTES.md）',
+    args: ['scripts/gen-routes-doc.mjs', '--check'],
+    expect: 0,
+  },
+  {
     name: '记忆库端到端',
     args: ['--test', 'scripts/test-memory-e2e.mjs'],
     expect: 0,

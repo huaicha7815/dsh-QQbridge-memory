@@ -273,3 +273,42 @@ test('gate：callback 内 requireBridgeIdle 抛错 → gate 释放、CLI exit 2'
   assert.equal(fs.existsSync(path.join(base, 'state', 'maintenance.lock')), false, 'gate 必须已释放');
   fs.rmSync(base, { recursive: true, force: true });
 });
+
+test('gate：--force-unlocked 只越过 unknown，不能越过 running', () => {
+  const base = tmpDir('gate-force-');
+  const memDir = path.join(base, 'state', 'memory');
+  fs.mkdirSync(memDir, { recursive: true });
+  fs.writeFileSync(path.join(memDir, 'write-failures.jsonl'), '', 'utf8');
+  // 锁内容损坏 = unknown
+  fs.writeFileSync(path.join(base, 'state', 'bridge.lock'), 'garbage', 'utf8');
+
+  const without = spawnSync(process.execPath, [HEALTH, '--dir', memDir, '--ack-manifest-errors'], { encoding: 'utf8', timeout: 60000 });
+  assert.equal(without.status, 2, 'unknown 不带 --force-unlocked 必须 exit 2');
+
+  const withForce = spawnSync(process.execPath, [HEALTH, '--dir', memDir, '--ack-manifest-errors', '--force-unlocked'], { encoding: 'utf8', timeout: 60000 });
+  assert.equal(withForce.status, 0, 'unknown + --force-unlocked 应允许执行：' + `${withForce.stdout || ''}${withForce.stderr || ''}`.slice(0, 300));
+
+  // running 即使 --force-unlocked 也必须拒绝
+  fs.writeFileSync(path.join(base, 'state', 'bridge.lock'), JSON.stringify({ version: 1, pid: process.pid, owner: 'b', startedAt: Date.now() }), 'utf8');
+  const runningForced = spawnSync(process.execPath, [HEALTH, '--dir', memDir, '--ack-manifest-errors', '--force-unlocked'], { encoding: 'utf8', timeout: 60000 });
+  assert.equal(runningForced.status, 2, 'running 不能被 --force-unlocked 越过');
+  fs.rmSync(base, { recursive: true, force: true });
+});
+
+test('gate：recover/repair 也已进入命令表（门被占用时 exit 2）', () => {
+  const base = tmpDir('gate-cmdtable2-');
+  const memDir = path.join(base, 'state', 'memory');
+  fs.mkdirSync(memDir, { recursive: true });
+  writeGate(path.join(base, 'state', 'maintenance.lock'), {
+    version: 1, owner: 'other', pid: process.pid, kind: 'maintenance',
+    command: 'blocker', acquiredAt: Date.now(), nonce: 'blocker2',
+  });
+  fs.writeFileSync(path.join(base, 'state', 'bridge.lock'), String(deadPid()), 'utf8');
+  for (const argv of [['--repair-summaries', '--apply'], ['--recover-archive', '--apply']]) {
+    const run = spawnSync(process.execPath, [HEALTH, '--dir', memDir, ...argv], { encoding: 'utf8', timeout: 60000 });
+    const out = `${run.stdout || ''}${run.stderr || ''}`;
+    assert.equal(run.status, 2, `${argv.join(' ')} 应 exit 2：${out.slice(0, 300)}`);
+    assert.ok(out.includes('维护门被占用'), `${argv.join(' ')} 要报告门被占用`);
+  }
+  fs.rmSync(base, { recursive: true, force: true });
+});

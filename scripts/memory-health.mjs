@@ -151,33 +151,40 @@ if (argv.includes('--migrate')) {
 // *.jsonl.migrate-* 快照，里面是还没并回归档月度文件的事件。以前健康页只会
 // 提示「调用 recoverArchiveSnapshots()」，同样没有可执行入口。
 // 恢复是幂等的（按事件 id / 整行内容的稳定指纹去重），可以重复跑；
+// 归档迁移快照恢复入口：migrate 期间崩溃会在 events-archive/ 留下
+// *.jsonl.migrate-* 快照，里面是还没并回归档月度文件的事件。以前健康页只会
+// 提示「调用 recoverArchiveSnapshots()」，同样没有可执行入口。
+// 恢复是幂等的（按事件 id / 整行内容的稳定指纹去重），可以重复跑；
 if (argv.includes('--recover-archive')) {
   const applyArchive = apply;
-  if (applyArchive) {
-    requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked });
-  }
-  const result = store.recoverArchiveSnapshots({ dryRun: !applyArchive });
-  console.log(JSON.stringify(result, null, 2));
-  const ioErrors = Array.isArray(result.errors) ? result.errors : [];
-  // 目录读不到 = 可能还有看不见的快照，绝不能当成功。
-  if (result.archiveDirError) {
-    console.error(`❌ 读不到归档目录 events-archive（${result.archiveDirError}）`);
-    console.error('   里面可能还有待恢复快照；先修目录权限/挂载再重跑，别把它当成「没有数据」。');
-    process.exit(2);
-  }
-  if (result.locked || result.lostLock || result.error) {
-    console.error(`❌ 归档恢复未执行：${result.error || '锁被占用'}`);
-    console.error('   等另一个恢复结束后重跑；崩溃残留的锁（PID 已不存在）会被自动接管。');
-    process.exit(1);
-  }
-  if (!applyArchive) {
-    console.log('（上面是预览：restored=快照数，lines=需要补写的事件数，duplicates=归档里已有的重复行。确认后加 --apply 真正写回）');
-    if (ioErrors.length) {
-      console.error(`❌ 有 ${result.failed} 个快照读不出来：`);
-      for (const line of ioErrors) console.error('   ' + line);
-      process.exit(1);
+  const runRecover = () => {
+    if (applyArchive) {
+      // 在 gate 内：阻塞时抛错（throwOnBlock），由 runGated 统一翻译成退出码。
+      requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked, throwOnBlock: true });
     }
-  } else {
+    const result = store.recoverArchiveSnapshots({ dryRun: !applyArchive });
+    console.log(JSON.stringify(result, null, 2));
+    const ioErrors = Array.isArray(result.errors) ? result.errors : [];
+    // 目录读不到 = 可能还有看不见的快照，绝不能当成功。
+    if (result.archiveDirError) {
+      console.error(`❌ 读不到归档目录 events-archive（${result.archiveDirError}）`);
+      console.error('   里面可能还有待恢复快照；先修目录权限/挂载再重跑，别把它当成「没有数据」。');
+      return 2;
+    }
+    if (result.locked || result.lostLock || result.error) {
+      console.error(`❌ 归档恢复未执行：${result.error || '锁被占用'}`);
+      console.error('   等另一个恢复结束后重跑；崩溃残留的锁（PID 已不存在）会被自动接管。');
+      return 1;
+    }
+    if (!applyArchive) {
+      console.log('（上面是预览：restored=快照数，lines=需要补写的事件数，duplicates=归档里已有的重复行。确认后加 --apply 真正写回）');
+      if (ioErrors.length) {
+        console.error(`❌ 有 ${result.failed} 个快照读不出来：`);
+        for (const line of ioErrors) console.error('   ' + line);
+        return 1;
+      }
+      return 0;
+    }
     if (result.duplicates > 0) {
       console.log(`已跳过 ${result.duplicates} 条归档里已存在的重复行（按整行内容去重，不是按文本前缀）。`);
     }
@@ -188,11 +195,12 @@ if (argv.includes('--recover-archive')) {
     // 最终判断只看「还剩几个快照」：写失败、锁问题、崩溃都会体现在这里。
     if (Number(result.remaining) > 0) {
       console.error(`❌ 仍有 ${result.remaining} 个归档快照未恢复（restored=${result.restored}）`);
-      process.exit(1);
+      return 1;
     }
-    if (result.failed > 0) process.exit(1);
-  }
-  process.exit(0);
+    if (result.failed > 0) return 1;
+    return 0;
+  };
+  process.exit(applyArchive ? runGated('recover-archive', runRecover) : runRecover());
 }
 
 if (argv.includes('--replay')) {
@@ -359,29 +367,40 @@ if (summaryAudit && summaryAudit.corrupt.length) {
 // 显式修复入口：默认 dry-run 预览；--apply 才写，且拒绝在桥接运行时执行。
 if (argv.includes('--repair-summaries')) {
   const applyRepair = apply;
-  if (applyRepair) {
-    requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked });
-  }
-  const result = store.repairSummaries({
-    limit: 400,
-    dryRun: !applyRepair,
-    // check-then-write 竞态：清点完可能桥接立刻启动，所以每个文件写之前再查一次。
-    beforeWrite: applyRepair
-      ? () => {
-        const lock = bridgeLockState(bridgeLockFile, { explicit: Boolean(bridgeLockArg) });
-        if (lock.state === 'running') {
-          throw new Error(`写前复查发现桥接在运行（PID ${lock.pid}），已停止修复`);
+  const runRepair = () => {
+    if (applyRepair) {
+      requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked, throwOnBlock: true });
+    }
+    const result = store.repairSummaries({
+      limit: 400,
+      dryRun: !applyRepair,
+      // check-then-write 竞态：清点完可能桥接立刻启动，所以每个文件写之前再查一次。
+      beforeWrite: applyRepair
+        ? () => {
+          const lock = bridgeLockState(bridgeLockFile, { explicit: Boolean(bridgeLockArg) });
+          if (lock.state === 'running') {
+            throw new Error(`写前复查发现桥接在运行（PID ${lock.pid}），已停止修复`);
+          }
+          if (lock.state === 'unknown' && !forceUnlocked) {
+            throw new Error(`写前复查发现锁状态未知（${lock.reason || ''}），已停止修复`);
+          }
         }
-        if (lock.state === 'unknown' && !forceUnlocked) {
-          throw new Error(`写前复查发现锁状态未知（${lock.reason || ''}），已停止修复`);
-        }
-      }
-      : undefined,
-  });
-  reportMaintenance(result, {
-    previewHint: applyRepair ? '' : '（上面是预览：没有写任何文件。确认后加 --apply 真正修复）',
-  });
-  process.exit(result.failed.length && applyRepair ? 1 : 0);
+        : undefined,
+    });
+    reportMaintenance(result, {
+      previewHint: applyRepair ? '' : '（上面是预览：没有写任何文件。确认后加 --apply 真正修复）',
+    });
+    if (!applyRepair) return 0;
+    // 修复的完成后置条件只按 repair 自己的结果判断（不要求 pending 归零）。
+    const problems = maintenanceProblems(result);
+    if (problems.length) {
+      console.error('❌ 摘要修复没有完全成功：');
+      for (const p of problems) console.error(`   · ${p}`);
+      return 1;
+    }
+    return result.failed.length ? 1 : 0;
+  };
+  process.exit(applyRepair ? runGated('repair-summaries', runRepair) : runRepair());
 }
 say('');
 

@@ -248,8 +248,16 @@ export function withMaintenanceGate(options, fn) {
   }
   const release = releaseMaintenanceGate(lockPath, acquired.gate);
   if (thrown) throw thrown;
-  if (release.replaced) {
-    return { ok: false, unsafe: true, reason: 'gate 在 callback 执行期间被别人接管/删除，本次结果不可信' };
+  // maintenance wrapper 里 missing/replaced 都意味着互斥证据已消失：
+  //   bridge 启动看到 missing 可以继续（bridge.lock 已写好），但维护命令不能。
+  if (release.replaced || release.missing) {
+    return {
+      ok: false,
+      unsafe: true,
+      reason: release.replaced
+        ? 'gate 在 callback 执行期间被别人接管，本次结果不可信'
+        : 'gate 在 callback 执行期间消失（互斥证据已丢失），本次结果不可信',
+    };
   }
   return { ok: true, result, release };
 }
