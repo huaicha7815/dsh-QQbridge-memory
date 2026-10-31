@@ -2262,3 +2262,30 @@ test('失败清单读不到时 pending 不可信且可见', () => {
   }
   cleanup(dir);
 });
+
+test('health --replay --apply 在 replay 锁被占用时 exit 1（不能把没恢复当成功）', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'replay-cli-lock-'));
+  const memDir = path.join(base, 'state', 'memory');
+  fs.mkdirSync(memDir, { recursive: true });
+  const row = { id: 'cli-pending', t: Date.now(), k: 'g:1', kind: 'msg', text: '待恢复', s: 2 };
+  fs.writeFileSync(
+    path.join(memDir, 'write-failures.jsonl'),
+    JSON.stringify({ at: Date.now(), phase: 'event', id: 'cli-pending', row }) + '\n',
+    'utf8',
+  );
+  // 另一个进程持有 replay 锁（PID 用当前存活进程）
+  fs.writeFileSync(
+    path.join(memDir, 'write-failures.jsonl.lock'),
+    JSON.stringify({ owner: 'other', pid: process.pid, at: Date.now() }),
+    'utf8',
+  );
+  // 目标库 bridge 已停（合法 PID 但进程不存在），允许进入 replay
+  const dead = spawnSync(process.execPath, ['-e', '0'], { timeout: 10000 });
+  fs.writeFileSync(path.join(base, 'state', 'bridge.lock'), String(dead.pid), 'utf8');
+
+  const run = runHealth(['--dir', memDir, '--replay', '--apply']);
+  assert.equal(run.status, 1, '锁被占用时 CLI 必须 exit 1：' + (run.stdout || run.stderr || '').slice(0, 400));
+  assert.ok(fs.existsSync(path.join(memDir, 'write-failures.jsonl.lock')), '不能删除别人的锁');
+  assert.ok(fs.existsSync(path.join(memDir, 'write-failures.jsonl')), '待恢复清单要还在');
+  cleanup(base);
+});

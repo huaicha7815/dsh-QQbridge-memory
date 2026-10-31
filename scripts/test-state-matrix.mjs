@@ -112,6 +112,19 @@ function assertMetric(stats, metric, label) {
     );
     return;
   }
+  if (field === 'pendingUnreadable') {
+    assert.equal(stats.pendingUnreadable, true, `${label}：pendingUnreadable 应为 true`);
+    const reasons = stats.pendingUnreadableReasons || {};
+    if (reason) {
+      const key = reason === 'manifest' ? 'manifest' : (reason === 'overflow' ? 'overflow' : 'snapshots');
+      assert.ok(reasons[key], `${label}：pendingUnreadableReasons.${key} 没有命中`);
+    }
+    return;
+  }
+  if (field === 'failureManifestWriteError') {
+    assert.ok(stats.failureManifestWriteError, `${label}：failureManifestWriteError 为空（恢复线索丢失但不可见）`);
+    return;
+  }
   const value = stats[field] || 0;
   if (field === 'corruptJsonFileCount') {
     assert.ok(value > 0, `${label}：corruptJsonFileCount 为 0`);
@@ -168,16 +181,22 @@ const RUNTIME_FILES = new Set(['recall-log.jsonl', 'usage.json']);
  *   allowTouch  允许 mtime 变化但内容必须不变（rename 恢复现场、同内容重写清单）
  *   allowCorrupt  允许创建 *.corrupt（仅明确声明允许备份的入口）
  */
-function assertNoUnexpectedWrites(before, after, { allowWrite = [], allowTouch = [], allowCorrupt = false } = {}, label) {
+function assertNoUnexpectedWrites(before, after, {
+  allowWrite = [], allowTouch = [], allowCorrupt = false, allowDelete = [],
+} = {}, label) {
   const writable = new Set([...RUNTIME_FILES, ...allowWrite]);
   const touchable = new Set(allowTouch);
-  const changed = Object.keys(after)
+  const deletable = new Set(allowDelete);
+  // 用并集：只看 after 的键会漏掉「入口把文件删了」（删除只体现在 before 里）。
+  const allKeys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  const changed = [...allKeys]
     .filter((rel) => !writable.has(rel))
     .filter((rel) => !(allowCorrupt && rel.endsWith('.corrupt')))
     .filter((rel) => {
       const prev = before[rel];
       const cur = after[rel];
       if (!prev) return true; // 新增文件（不在 allowWrite/allowCorrupt 里）
+      if (!cur) return !deletable.has(rel); // 删除：只有显式 allowDelete 才允许
       if (touchable.has(rel)) return prev.hash !== cur.hash; // 只允许 mtime/size 变，内容不变
       return prev.size !== cur.size || prev.mtimeMs !== cur.mtimeMs || prev.hash !== cur.hash;
     });
@@ -185,7 +204,7 @@ function assertNoUnexpectedWrites(before, after, { allowWrite = [], allowTouch =
 }
 
 function scenario(label, {
-  seed, inject, entries = READ_ENTRIES, expectMetric, allowWrite, allowTouch, allowCorrupt,
+  seed, inject, entries = READ_ENTRIES, expectMetric, allowWrite, allowTouch, allowCorrupt, allowDelete,
 }) {
   test(`状态矩阵：${label}`, () => {
     const { dir, store, cleanup } = makeStore();
@@ -197,7 +216,7 @@ function scenario(label, {
       assertMetric(stats, expectMetric, label);
       restoreFs();
       const after = snapshotTree(dir);
-      assertNoUnexpectedWrites(before, after, { allowWrite, allowTouch, allowCorrupt }, label);
+      assertNoUnexpectedWrites(before, after, { allowWrite, allowTouch, allowCorrupt, allowDelete }, label);
     } finally {
       restoreFs();
       cleanup();
@@ -399,6 +418,132 @@ scenario('repairSummaries 预览在摘要坏时不写', {
   inject: () => {},
   entries: [['repairPreview', (s) => s.repairSummaries({ dryRun: true })]],
   expectMetric: { field: 'corruptJsonFileCount', file: `${DAY}.json`, reason: 'schema' },
+});
+
+// ── 追加格：归档/摘要/账本的 P0/P1 故障（审查给的下一档预算） ────────
+scenario('归档目录 readdir EACCES（replay 判重必须 unknown）', {
+  seed: (dir) => {
+    fs.mkdirSync(path.join(dir, 'events-archive'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'events-archive', '2026-01.jsonl'), JSON.stringify({ id: 'same', t: TS, k: 'g:1', kind: 'msg', text: '归档同 id', s: 2 }) + '\n', 'utf8');
+    fs.writeFileSync(
+      path.join(dir, 'write-failures.jsonl'),
+      JSON.stringify({ at: TS, phase: 'event', id: 'same', row: { id: 'same', t: TS, k: 'g:1', kind: 'msg', text: '归档同 id', s: 2 } }) + '\n',
+      'utf8',
+    );
+  },
+  inject: (dir) => injectIoFailure('readdirSync', path.join(dir, 'events-archive'), 'EACCES'),
+  entries: [['replay', (s) => s.replayWriteFailures({ dryRun: false })]],
+  expectMetric: { field: 'readErrors', file: 'events-archive' },
+  allowTouch: ['write-failures.jsonl'],
+});
+
+scenario('归档月文件 stat EIO', {
+  seed: (dir) => {
+    fs.mkdirSync(path.join(dir, 'events-archive'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'events-archive', '2026-01.jsonl'), JSON.stringify({ id: 'a1', t: TS, k: 'g:1', kind: 'msg', text: '归档', s: 2 }) + '\n', 'utf8');
+  },
+  inject: (dir) => injectIoFailure('statSync', path.join(dir, 'events-archive', '2026-01.jsonl'), 'EIO'),
+  expectMetric: { field: 'readErrors', file: '2026-01.jsonl' },
+});
+
+scenario('归档月文件坏行', {
+  seed: (dir) => {
+    fs.mkdirSync(path.join(dir, 'events-archive'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'events-archive', '2026-01.jsonl'), JSON.stringify({ id: 'a1', t: TS, k: 'g:1', kind: 'msg', text: '归档', s: 2 }) + '\nnull\n', 'utf8');
+  },
+  inject: () => {},
+  expectMetric: { field: 'parseErrorLines' },
+});
+
+scenario('日摘要 read EACCES', {
+  inject: (dir) => injectIoFailure('readFileSync', targetDay(dir), 'EACCES'),
+  expectMetric: { field: 'readErrors', file: `${DAY}.json` },
+  allowCorrupt: true,
+});
+
+scenario('周要点 read EIO', {
+  seed: (dir) => {
+    fs.mkdirSync(path.join(dir, 'weeks'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'weeks', '2025-W52.json'), JSON.stringify({ week: '2025-W52', count: 1, lines: [{ t: 'x', s: 2 }] }), 'utf8');
+  },
+  inject: (dir) => injectIoFailure('readFileSync', path.join(dir, 'weeks', '2025-W52.json'), 'EIO'),
+  expectMetric: { field: 'readErrors', file: '2025-W52.json' },
+});
+
+scenario('周要点语法坏', {
+  seed: (dir) => {
+    fs.mkdirSync(path.join(dir, 'weeks'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'weeks', '2025-W52.json'), '{ 坏 JSON', 'utf8');
+  },
+  inject: () => {},
+  expectMetric: { field: 'corruptJsonFileCount', file: '2025-W52.json', reason: 'syntax' },
+  allowCorrupt: true,
+});
+
+scenario('月要点 read EIO', {
+  seed: (dir) => {
+    fs.mkdirSync(path.join(dir, 'months'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'months', '2025-12.json'), JSON.stringify({ month: '2025-12', count: 1, lines: [{ t: 'x', s: 2 }] }), 'utf8');
+  },
+  inject: (dir) => injectIoFailure('readFileSync', path.join(dir, 'months', '2025-12.json'), 'EIO'),
+  expectMetric: { field: 'readErrors', file: '2025-12.json' },
+});
+
+scenario('月要点语法坏', {
+  seed: (dir) => {
+    fs.mkdirSync(path.join(dir, 'months'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'months', '2025-12.json'), '{ 坏 JSON', 'utf8');
+  },
+  inject: () => {},
+  expectMetric: { field: 'corruptJsonFileCount', file: '2025-12.json', reason: 'syntax' },
+  allowCorrupt: true,
+});
+
+scenario('usage read EACCES', {
+  seed: (dir) => fs.writeFileSync(path.join(dir, 'usage.json'), JSON.stringify({ hits: {} }), 'utf8'),
+  inject: (dir) => injectIoFailure('readFileSync', path.join(dir, 'usage.json'), 'EACCES'),
+  expectMetric: { field: 'readErrors', file: 'usage.json' },
+});
+
+scenario('overflow 账本读 EACCES → pendingUnreadable', {
+  seed: (dir) => {
+    fs.writeFileSync(path.join(dir, 'write-failures.jsonl'), '', 'utf8');
+    fs.writeFileSync(path.join(dir, 'write-failures.jsonl.overflow'), '3\n', 'utf8');
+  },
+  inject: (dir) => injectIoFailure('readFileSync', path.join(dir, 'write-failures.jsonl.overflow'), 'EACCES'),
+  entries: [['stats', (s) => s.stats()]],
+  expectMetric: { field: 'pendingUnreadable', reason: 'overflow' },
+});
+
+scenario('processing 快照读 EACCES → pendingUnreadable', {
+  seed: (dir) => {
+    fs.writeFileSync(path.join(dir, 'write-failures.jsonl'), '', 'utf8');
+    fs.writeFileSync(path.join(dir, 'write-failures.jsonl.processing-1'), JSON.stringify({ at: TS, phase: 'event', id: 'p1', row: { id: 'p1', t: TS, k: 'g:1', kind: 'msg', text: '待恢复', s: 2 } }) + '\n', 'utf8');
+  },
+  inject: (dir) => injectIoFailure('readFileSync', path.join(dir, 'write-failures.jsonl.processing-1'), 'EACCES'),
+  entries: [['stats', (s) => s.stats()]],
+  expectMetric: { field: 'pendingUnreadable', reason: 'snapshots' },
+});
+
+scenario('recordWriteFailure 连清单都写不进去 → failureManifestWriteError 可见', {
+  seed: (dir) => fs.mkdirSync(path.join(dir, 'events'), { recursive: true }),
+  inject: () => {},
+  entries: [['append', (s) => {
+    const origAppend = fs.appendFileSync;
+    fs.appendFileSync = (p, ...rest) => {
+      const target = String(p);
+      if (target.includes('write-failures') || target.includes(`${path.sep}events${path.sep}`)) {
+        const e = new Error('ENOSPC: no space left on device'); e.code = 'ENOSPC'; throw e;
+      }
+      return origAppend(p, ...rest);
+    };
+    try {
+      s.appendEvent({ id: 'fail-1', t: TS, k: 'g:1', kind: 'msg', text: '写不进去', s: 2 });
+    } finally {
+      fs.appendFileSync = origAppend;
+    }
+  }]],
+  expectMetric: { field: 'failureManifestWriteError' },
 });
 
 // ── 锁层（直接测共享库，不依赖 CLI） ────────────────────────────────

@@ -24,19 +24,18 @@ import {
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const argv = process.argv.slice(2);
-const dirIdx = argv.indexOf('--dir');
-const memDir = dirIdx >= 0 && argv[dirIdx + 1]
-  ? path.resolve(argv[dirIdx + 1])
-  : path.join(root, 'state', 'memory');
 
+// 公共参数解析（--apply / --force-unlocked / --dir / --bridge-lock）统一在维护库里，
+// 各入口不再手写一份：以前 memDir 手写 --dir、各分支各自 argv.includes('--apply')，
+// 组合与缺值行为会在不同分支漂移。
+const maintArgs = parseMaintenanceArgs(argv);
+const memDir = maintArgs.dir || path.join(root, 'state', 'memory');
+const apply = maintArgs.apply;
+const forceUnlocked = maintArgs.forceUnlocked;
 // 维护命令可以指向别的库（--dir），那么并发保护也必须跟着目标库走。
 // 推断不出来返回 null，apply 前 fail-closed；绝不回退脚本所在项目的锁。
-// 公共参数解析（--apply / --force-unlocked / --dir / --bridge-lock）统一在维护库里，
-// 各入口不再手写一份（以前两套解析并存，容易漏 --force-unlocked 之类）。
-const maintArgs = parseMaintenanceArgs(argv);
 const bridgeLockArg = maintArgs.bridgeLock;
 const bridgeLockFile = resolveBridgeLockForMemoryDir(memDir, bridgeLockArg);
-const forceUnlocked = maintArgs.forceUnlocked;
 
 // 先确认目录真的可读。否则「读不到」会被下面的 stats() 折叠成「0 条事件」，
 // 报告看起来像「库是空的而且很健康」——审查时被指出过这个坑。
@@ -67,7 +66,7 @@ const store = createMemoryStore({ dir: memDir, config: {} });
 // 旧格式迁移入口：给旧失败记录补 id、给旧归档行补 srcDay。
 // 默认只预览（dry-run），--apply 才真正写回。
 if (argv.includes('--migrate')) {
-  const applyMigrate = argv.includes('--apply');
+  const applyMigrate = apply;
   if (applyMigrate) {
     requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked });
   }
@@ -84,7 +83,7 @@ if (argv.includes('--migrate')) {
 // 提示「调用 recoverArchiveSnapshots()」，同样没有可执行入口。
 // 恢复是幂等的（按事件 id / 整行内容的稳定指纹去重），可以重复跑；
 if (argv.includes('--recover-archive')) {
-  const applyArchive = argv.includes('--apply');
+  const applyArchive = apply;
   if (applyArchive) {
     requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked });
   }
@@ -128,16 +127,31 @@ if (argv.includes('--recover-archive')) {
 }
 
 if (argv.includes('--replay')) {
-  const apply = argv.includes('--apply');
+  const applyReplay = apply;
   // 桥接本身也是失败清单的写者：它在跑的时候 replay 可能和它抢同一份清单。
   // （清单提交已改成「只删处理过的行」，不会吞新行，但停写窗口仍然更安全。）
   if (apply) {
     requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked });
   }
-  const result = store.replayWriteFailures({ dryRun: !apply });
-  console.log(JSON.stringify(result, null, 2));
-  if (!apply) {
-    console.log('（上面是预览。确认无误后加 --apply 真正写回）');
+  const result = store.replayWriteFailures({ dryRun: !applyReplay });
+  reportMaintenance(result, {
+    previewHint: applyReplay ? '' : '（上面是预览。确认无误后加 --apply 真正写回）',
+  });
+  if (!applyReplay) process.exit(0);
+  // 退出码要如实反映「有没有真的恢复」：自动化脚本会把 0 当成成功。
+  const problems = [];
+  if (result.locked) problems.push('另一个进程持有 replay 锁');
+  if (result.lockLost) problems.push('replay 锁被接管');
+  if (result.error) problems.push(`错误：${result.error}`);
+  if (result.commitError) problems.push(`回填失败：${result.commitError.error}`);
+  if ((result.failed || 0) > 0) problems.push(`${result.failed} 条处理失败（已保留待下次重试）`);
+  if ((result.unreadable || 0) > 0) problems.push(`${result.unreadable} 个快照读不到`);
+  const pendingAfter = store.stats().pendingRecoverable;
+  if (pendingAfter > 0) problems.push(`仍有 ${pendingAfter} 条待恢复`);
+  if (problems.length) {
+    console.error('❌ replay 没有完全成功：');
+    for (const p of problems) console.error(`   · ${p}`);
+    process.exit(1);
   }
   process.exit(0);
 }
@@ -249,7 +263,7 @@ if (summaryAudit && summaryAudit.corrupt.length) {
 
 // 显式修复入口：默认 dry-run 预览；--apply 才写，且拒绝在桥接运行时执行。
 if (argv.includes('--repair-summaries')) {
-  const applyRepair = argv.includes('--apply');
+  const applyRepair = apply;
   if (applyRepair) {
     requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked });
   }
