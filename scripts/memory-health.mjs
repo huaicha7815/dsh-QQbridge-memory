@@ -194,8 +194,13 @@ if (st.parseErrorLines > 0) {
   say('     注意：语法合法但结构不对的行（null、数组、空对象）同样算坏行，不会被当正常记录用。');
 }
 if (Array.isArray(st.corruptJsonFiles) && st.corruptJsonFiles.length) {
-  say(`  🔴 有 ${st.corruptJsonFiles.length} 个 JSON 档案损坏：${st.corruptJsonFiles.join('、')}`);
-  say('     已另存为 *.corrupt（同名只备份一次，不会越积越多）；修复后下一次读取会自动恢复。');
+  const reasons = st.corruptJsonReasons && typeof st.corruptJsonReasons === 'object' ? st.corruptJsonReasons : {};
+  const detail = st.corruptJsonFiles
+    .map((n) => `${n}（${reasons[n] === 'schema' ? '结构不符合契约' : 'JSON 语法坏'}）`)
+    .join('、');
+  say(`  🔴 有 ${st.corruptJsonFiles.length} 个 JSON 档案不可用：${detail}`);
+  say('     两个原因都按同一条路径处理：备份成 *.corrupt（同名只一次）、拒写、等修好后自动恢复。');
+  say('     结构坏 = 语法是合法 JSON，但不是 profile/摘要/usage 该有的形状（例如 lines 不是数组）。');
 }
 if (st.profileRead && (st.profileRead.corrupt || st.profileRead.readError)) {
   say(`  🔴 长期档案处于写保护：${st.profileRead.corrupt ? 'profile.json 解析失败（坏文件已备份）' : `读取失败 ${st.profileRead.readError}`}`);
@@ -345,7 +350,7 @@ if (overLimitPeople > 0) {
 }
 if (st.eventDays >= 3 && st.events < 50) advice.push('事件量偏少：桥接可能没在跑，或最近很安静。');
 if (st.parseErrorLines > 0) advice.push(`有 ${st.parseErrorLines} 条记忆记录解析失败：坏行还在原文件里，人工修好后重新读取会自动恢复计数。`);
-if (Array.isArray(st.corruptJsonFiles) && st.corruptJsonFiles.length) advice.push(`有 ${st.corruptJsonFiles.length} 个 JSON 档案损坏（${st.corruptJsonFiles.join('、')}）：已备份为 *.corrupt，修好后下次读取自动恢复。`);
+if (Array.isArray(st.corruptJsonFiles) && st.corruptJsonFiles.length) advice.push(`有 ${st.corruptJsonFiles.length} 个 JSON 档案不可用（${st.corruptJsonFiles.join('、')}）：已备份为 *.corrupt，修好后下次读取自动恢复。`);
 if (st.readErrors > 0) advice.push(`有 ${st.readErrors} 个记忆文件读不出来（${(st.unreadableFiles || []).join('、') || '-'}）：先修权限/磁盘，别当成「没有数据」。`);
 if (st.profileRead && !st.profileRead.writable) advice.push('长期档案处于写保护（读不到或解析失败）：修好 profile.json 后下一次成功读取会自动恢复写入。');
 if (st.eventsWithoutSource > 0) advice.push(`有 ${st.eventsWithoutSource} 条事件没有来源标签：isolated 下不可见、也不能当证据；需要的话按可靠元数据补 k，别用「无来源即公共」绕过隔离。`);

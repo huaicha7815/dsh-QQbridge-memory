@@ -1763,3 +1763,66 @@ test('坏行文件的故障登记同样不会被 existsSync 抹掉', () => {
   }
   cleanup(dir);
 });
+
+// ── JSON schema：语法合法 ≠ 内容是这份文件该有的东西 ────────────────
+
+test('profile 顶层结构不合法时同样写保护（数组/字符串/people 数组）', () => {
+  const cases = [
+    '[{"text":"可能是可恢复的人物资料"}]',
+    '"只是一个字符串"',
+    '{"people":[]}',
+  ];
+  for (const body of cases) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'profile-schema-'));
+    const profilePath = path.join(dir, 'profile.json');
+    fs.writeFileSync(profilePath, body, 'utf8');
+    const store = createMemoryStore({ dir });
+
+    assert.throws(
+      () => store.readProfile({ strict: true }),
+      /结构不符合/,
+      `${body} 应该被判定为 schema 损坏`,
+    );
+    const state = store.readState();
+    assert.equal(state.corrupt, true, '要标记 corrupt（不是「空档案」）');
+    assert.equal(state.writable, false, '写保护必须生效');
+    assert.equal(store.writeProfile(store.readProfile()), false, '不能把空档案覆盖回去');
+    assert.ok(fs.existsSync(profilePath + '.corrupt'), 'schema 损坏也要备份原内容');
+    assert.equal(fs.readFileSync(profilePath, 'utf8'), body, '磁盘原内容不能被改动');
+    cleanup(dir);
+  }
+});
+
+test('摘要 JSON 结构不合法时登记 schema 损坏，而不是当成没有摘要', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'summary-schema-'));
+  fs.mkdirSync(path.join(dir, 'days'), { recursive: true });
+  const store = createMemoryStore({ dir });
+  store.appendEvent({ t: Date.now(), k: 'group:111', kind: 'msg', text: '今天的珊瑚事件', s: 2 });
+  const noteFile = path.join(dir, 'days', `${day()}.json`);
+  // 合法 JSON，但 lines 应该是数组
+  fs.writeFileSync(noteFile, JSON.stringify({ day: day(), count: 1, lines: '本应是数组' }), 'utf8');
+
+  store.search('珊瑚', { days: 30 }); // 不能崩
+  const st = store.stats();
+  assert.ok(st.corruptJsonFiles.some((n) => n.startsWith(day())), 'sore 结构坏要被登记');
+  assert.equal(st.corruptJsonReasons[`${day()}.json`], 'schema', '原因要标成 schema 而不是 syntax');
+  assert.ok(fs.existsSync(noteFile + '.corrupt'), '结构坏也要备份');
+
+  // 修好后重新读取：登记自动清零
+  fs.writeFileSync(noteFile, JSON.stringify({ version: 1, day: day(), count: 1, lines: [{ t: '珊瑚', s: 2 }] }), 'utf8');
+  store.search('珊瑚', { days: 30 });
+  const st2 = store.stats();
+  assert.ok(!st2.corruptJsonFiles.some((n) => n.startsWith(day())), '修好后要恢复');
+  cleanup(dir);
+});
+
+test('usage.json 结构不合法时同样登记（hits 必须是对象）', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'usage-schema-'));
+  const store = createMemoryStore({ dir });
+  fs.writeFileSync(path.join(dir, 'usage.json'), JSON.stringify({ hits: '不是对象' }), 'utf8');
+  const st = store.stats();
+  assert.ok(st.corruptJsonFiles.includes('usage.json'), 'usage 结构坏要被登记');
+  assert.equal(st.corruptJsonReasons['usage.json'], 'schema');
+  assert.ok(fs.existsSync(path.join(dir, 'usage.json.corrupt')), '要备份');
+  cleanup(dir);
+});

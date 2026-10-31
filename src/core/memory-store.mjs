@@ -193,12 +193,13 @@ const parseFailureFiles = new Map();
  * kind 用来区分「JSONL 里的坏行」和「整个 JSON 文件损坏」—— 这两种故障的
  * 处理方式完全不同，混在一个指标里健康页就说不清了。
  */
-function noteParseFailure(file, errors = 1, { kind = 'jsonl', samples = [] } = {}) {
+function noteParseFailure(file, errors = 1, { kind = 'jsonl', samples = [], reason = '' } = {}) {
   const count = Number(errors) || 0;
   if (count > 0) {
     parseFailureFiles.set(file, {
       errors: count,
       kind,
+      reason: String(reason || ''),
       at: Date.now(),
       samples: Array.isArray(samples) ? samples.slice(0, 3) : [],
     });
@@ -271,7 +272,7 @@ function parseJsonl(text, file) {
  * 以前所有错误都当「JSON 损坏」降级成空值，于是一次瞬时 EIO 就能让
  * 「读档案 → 改 → 写档案」把原档案清空。
  */
-function readJsonFile(file, fallback, { strict = false, onCorrupt, onIOError } = {}) {
+function readJsonFile(file, fallback, { strict = false, onCorrupt, onIOError, validate } = {}) {
   let raw;
   try {
     raw = fs.readFileSync(file, 'utf8');
@@ -292,29 +293,84 @@ function readJsonFile(file, fallback, { strict = false, onCorrupt, onIOError } =
     return fallback;
   }
   clearReadFailure(file);
-  try {
-    const parsed = JSON.parse(raw);
-    noteParseFailure(file, 0);
-    return parsed;
-  } catch (error) {
-    // 解析失败：登记成独立状态（不是「没有数据」），并备份一次原始内容。
-    // 备份名固定，不做带时间戳的版本 —— 否则每次 search/唤醒读到同一个损坏摘要
-    // 都会新增一个 .corrupt-* 文件，目录会被这些重复副本撑爆。
-    noteParseFailure(file, 1, { kind: 'json' });
+
+  /**
+   * 内容不可用（语法坏或结构不符合契约）：登记 + 备份一次 + 通知调用方。
+   * 备份名固定，不做带时间戳的版本 —— 否则每次 search/唤醒读到同一个损坏文件
+   * 都会新增一个 .corrupt-* 副本，目录会被撑爆。
+   */
+  const corrupt = (error, reason) => {
+    noteParseFailure(file, 1, { kind: 'json', reason });
     let backup = null;
     try {
       const fixedBackup = `${file}.corrupt`;
       if (!fs.existsSync(fixedBackup)) {
         fs.copyFileSync(file, fixedBackup);
-        console.warn(`[memory] JSON 损坏已备份 ${path.basename(file)}: ${error.message}`);
+        console.warn(
+          `[memory] ${reason === 'schema' ? 'JSON 结构不符合契约' : 'JSON 损坏'}已备份 `
+          + `${path.basename(file)}: ${error.message}`,
+        );
       }
       backup = fixedBackup;
     } catch {
       // 备份失败也要走 onCorrupt：调用方必须拒写，不能把空值覆盖回去
     }
-    if (typeof onCorrupt === 'function') onCorrupt({ file, backup, error });
+    if (typeof onCorrupt === 'function') onCorrupt({ file, backup, error, reason });
     return fallback;
+  };
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    return corrupt(error, 'syntax');
   }
+  // 语法合法 ≠ 内容是这份文件该有的东西：`[]`、`"x"`、`{"people":[]}` 都能 parse，
+  // 但它们不是档案/摘要/usage。没有 schema 校验时，profile 会被当成空档案，
+  // 随后写路径把空档案覆盖回磁盘（原内容还没备份）。
+  if (typeof validate === 'function' && !validate(parsed)) {
+    const error = new Error(`${path.basename(file)} 结构不符合记录契约（schema）`);
+    error.code = 'MEMORY_SCHEMA_INVALID';
+    error.file = file;
+    const result = corrupt(error, 'schema');
+    if (strict) throw error;
+    return result;
+  }
+  noteParseFailure(file, 0);
+  return parsed;
+}
+
+/**
+ * profile 顶层契约：必须是普通对象（数组/字符串/数字都不行）；
+ * people 若是存在必须是对象，threads/self/audit 若是存在必须是数组。
+ * 注意 `{"people":[]}` 也要拒绝 —— 它把 people 写成数组，ensureProfile 会静默变空档案。
+ */
+function isProfilePayload(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+  if (v.people !== undefined) {
+    if (!v.people || typeof v.people !== 'object' || Array.isArray(v.people)) return false;
+  }
+  if (v.threads !== undefined && !Array.isArray(v.threads)) return false;
+  if (v.self !== undefined && !Array.isArray(v.self)) return false;
+  if (v.audit !== undefined && !Array.isArray(v.audit)) return false;
+  return true;
+}
+
+/** 日/周/月摘要契约：对象；lines 若是存在必须是数组；count 若是存在必须是有限数字。 */
+function isSummaryPayload(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+  if (v.lines !== undefined && !Array.isArray(v.lines)) return false;
+  if (v.count !== undefined && !Number.isFinite(Number(v.count))) return false;
+  return true;
+}
+
+/** usage 契约：对象；hits 若是存在必须是对象（id → { n }）。 */
+function isUsagePayload(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+  if (v.hits !== undefined) {
+    if (!v.hits || typeof v.hits !== 'object' || Array.isArray(v.hits)) return false;
+  }
+  return true;
 }
 
 function writeJsonFile(file, value) {
@@ -857,7 +913,7 @@ export function createMemoryStore(options = {}) {
 
   function readDaySummary(day) {
     const file = path.join(daysDir, `${day}.json`);
-    const val = readJsonFile(file, null);
+    const val = readJsonFile(file, null, { validate: isSummaryPayload });
     if (!val || val.skipped || !Array.isArray(val.lines) || !val.lines.length) return null;
     return val;
   }
@@ -931,7 +987,7 @@ export function createMemoryStore(options = {}) {
     const months = [...byMonth.keys()].sort().slice(-Math.max(1, Number(cfg.consolidateMonths) || 60));
     for (const month of months) {
       const notes = byMonth.get(month).sort()
-        .map((w) => readJsonFile(path.join(weeksDir, `${w}.json`), null))
+        .map((w) => readJsonFile(path.join(weeksDir, `${w}.json`), null, { validate: isSummaryPayload }))
         .filter(Boolean);
       const note = consolidateMonth(notes, month, { minLines: 3, maxLines: 8 });
       if (!note) continue;
@@ -974,7 +1030,7 @@ export function createMemoryStore(options = {}) {
     for (const week of listWeekFiles()) {
       const ts = weekStartTs(week);
       if (ts < cutoff) continue;
-      const note = readJsonFile(path.join(weeksDir, `${week}.json`), null);
+      const note = readJsonFile(path.join(weeksDir, `${week}.json`), null, { validate: isSummaryPayload });
       if (note && Array.isArray(note.lines) && note.lines.length) out.push(note);
     }
     return out;
@@ -990,7 +1046,7 @@ export function createMemoryStore(options = {}) {
       if (!Number.isFinite(y) || !Number.isFinite(m)) continue;
       const ts = new Date(y, m - 1, 15, 12, 0, 0).getTime();
       if (ts < cutoff) continue;
-      const note = readJsonFile(path.join(monthsDir, `${month}.json`), null);
+      const note = readJsonFile(path.join(monthsDir, `${month}.json`), null, { validate: isSummaryPayload });
       if (note && Array.isArray(note.lines) && note.lines.length) out.push(note);
     }
     return out;
@@ -1017,6 +1073,9 @@ export function createMemoryStore(options = {}) {
     let ioError = null;
     const raw = readJsonFile(profileFile, null, {
       strict,
+      // 语法合法但顶层结构不对（数组/字符串/{"people":[]}）同样算损坏：
+      // 否则 ensureProfile 会把它变成空档案，然后写路径把空档案覆盖回去。
+      validate: isProfilePayload,
       onCorrupt: () => { profileCorrupt = true; },
       onIOError: (error) => { ioError = error; profileReadError = error; },
     });
@@ -1114,7 +1173,7 @@ export function createMemoryStore(options = {}) {
 
   function loadUsage() {
     if (usageCache) return usageCache;
-    const raw = readJsonFile(usageFile, null);
+    const raw = readJsonFile(usageFile, null, { validate: isUsagePayload });
     usageCache = raw && typeof raw === 'object' && raw.hits && typeof raw.hits === 'object'
       ? { v: 1, hits: raw.hits }
       : { v: 1, hits: {} };
@@ -2324,6 +2383,9 @@ export function createMemoryStore(options = {}) {
     // 周/月目录的失败会漏进快照（这一轮真实踩到过）。
     const weekFilesCount = listWeekFiles().length;
     const monthFilesCount = listMonthFiles().length;
+    // usage.json 也是 readJsonFile 的调用方（可能 schema 损坏），必须先读再做快照，
+    // 否则它的 corruptJsonFiles 登记会漏进这份统计（属性求值顺序的坑已踩过两次）。
+    const usageSnapshot = usageStats();
     const readFailureSnapshot = readFailureFilesInRoot();
     const parseFailureSnapshot = parseFailureFilesInRoot();
     const parseErrorLines = parseFailureSnapshot
@@ -2332,6 +2394,13 @@ export function createMemoryStore(options = {}) {
     const corruptJsonFiles = parseFailureSnapshot
       .filter(([, v]) => v.kind === 'json')
       .slice(0, 10).map(([file]) => path.basename(file));
+    // 损坏原因：syntax（JSON 语法坏）还是 schema（结构不符合契约）
+    const corruptJsonReasons = Object.fromEntries(
+      parseFailureSnapshot
+        .filter(([, v]) => v.kind === 'json')
+        .slice(0, 10)
+        .map(([file, v]) => [path.basename(file), v.reason || 'syntax']),
+    );
     const corruptFilesSnapshot = parseFailureSnapshot.slice(0, 10).map(([file]) => path.basename(file));
     return {
       root,
@@ -2350,6 +2419,7 @@ export function createMemoryStore(options = {}) {
       //   corruptJsonFiles  = 整份 JSON 档案损坏（如某天的摘要读不出来）
       parseErrorLines,
       corruptJsonFiles,
+      corruptJsonReasons,
       parseErrors: parseErrorLines + corruptJsonFiles.length,
       // 兼容旧字段：所有解析失败的文件名
       corruptFiles: corruptFilesSnapshot,
