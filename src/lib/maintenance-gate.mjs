@@ -56,6 +56,19 @@ export function inspectMaintenanceGate(lockPath) {
   if (typeof gate.owner !== 'string' || !SAFE_TOKEN.test(gate.owner)) {
     return { state: 'unsafe', reason: 'gate 的 owner 非法' };
   }
+  // nonce 是所有权的一部分：release 和 bridge 启动前的 owner 校验都要比较它。
+  if (gate.nonce !== undefined && (typeof gate.nonce !== 'string' || !SAFE_TOKEN.test(gate.nonce))) {
+    return { state: 'unsafe', reason: 'gate 的 nonce 非法' };
+  }
+  if (gate.version !== undefined && gate.version !== 1) {
+    return { state: 'unsafe', reason: `未知的 gate version：${gate.version}` };
+  }
+  if (gate.kind !== undefined && typeof gate.kind !== 'string') {
+    return { state: 'unsafe', reason: 'gate 的 kind 非法' };
+  }
+  if (gate.command !== undefined && typeof gate.command !== 'string') {
+    return { state: 'unsafe', reason: 'gate 的 command 非法' };
+  }
   const acquiredAt = Number(gate.acquiredAt);
   if (!Number.isFinite(acquiredAt) || acquiredAt <= 0) {
     return { state: 'unsafe', reason: 'gate 的 acquiredAt 非法' };
@@ -170,23 +183,24 @@ export function acquireMaintenanceGate(lockPath, { command = '', kind = 'mainten
  */
 export function releaseMaintenanceGate(lockPath, gate) {
   const held = gate || (lockPath ? heldGates.get(lockPath) : null);
-  if (!lockPath || !held) return { lostOwnership: true };
+  if (!lockPath || !held) return { missing: true };
   let raw;
   try {
     raw = fs.readFileSync(lockPath, 'utf8');
   } catch (error) {
     if (error && error.code === 'ENOENT') {
       heldGates.delete(lockPath);
-      return { lostOwnership: true };
+      return { missing: true };
     }
     // 读不了：文件可能还是自己的，保留 token 让 exit hook 再试一次。
     return { retryable: true, error: String(error?.code || error) };
   }
   let current = null;
   try { current = JSON.parse(raw); } catch { current = null; }
-  if (!current || current.owner !== held.owner) {
+  // owner 和 nonce 都是所有权的一部分：只比 owner 会允许旧 token 删掉同 owner 的新 gate。
+  if (!current || current.owner !== held.owner || current.nonce !== held.nonce) {
     heldGates.delete(lockPath);
-    return { lostOwnership: true };
+    return { replaced: true };
   }
   try {
     fs.unlinkSync(lockPath);
@@ -234,7 +248,7 @@ export function withMaintenanceGate(options, fn) {
   }
   const release = releaseMaintenanceGate(lockPath, acquired.gate);
   if (thrown) throw thrown;
-  if (release.lostOwnership) {
+  if (release.replaced) {
     return { ok: false, unsafe: true, reason: 'gate 在 callback 执行期间被别人接管/删除，本次结果不可信' };
   }
   return { ok: true, result, release };

@@ -1113,17 +1113,19 @@ function acquireLock() {
     return { ok: false, exitCode, message };
   };
 
+  let createError = null;
   const created = (() => {
     try {
       writeBridgeLockExclusive();
       return true;
     } catch (error) {
       if (error && error.code === 'EEXIST') return false;
+      createError = error;
       return null; // 其他错误
     }
   })();
   if (created === null) {
-    return rollback(1, `无法创建锁文件 ${LOCK_FILE}：${new Error('write-failed').message}`);
+    return rollback(1, `无法创建锁文件 ${LOCK_FILE}：${createError?.code || ''} ${createError?.message ?? createError}`);
   }
 
   if (!created) {
@@ -1190,7 +1192,10 @@ function acquireLock() {
     return rollback(2, '维护门在启动期间被其他进程接管：本次启动退出（避免与维护写操作并发）。');
   }
   const released = releaseMaintenanceGate(gatePath, gate.gate);
-  if (!released.released && !released.lostOwnership) {
+  if (released.replaced) {
+    return rollback(2, '维护门在启动期间被其他进程替换：本次启动退出（避免与维护写操作并发）。');
+  }
+  if (!released.released && !released.missing) {
     // 释放失败（EACCES/EIO）：带着一个 PID 仍存活的 gate 运行会让 maintenance 永久 busy。
     return rollback(1, `释放维护门失败（${released.error || '未知'}）：本次启动退出，避免维护命令被永久阻塞。`);
   }
@@ -8725,13 +8730,23 @@ async function main() {
 process.on('SIGINT', () => {
   log('退出中…');
   // 宿主自己负责退出生命周期：先释放维护门，再保存状态/删锁，最后才 exit。
-  try { releaseHeldMaintenanceGates(); } catch {}
+  try {
+    const releases = releaseHeldMaintenanceGates();
+    for (const r of releases) {
+      if (!r.released && !r.missing) log(`维护门释放失败（${r.error || (r.replaced ? '已被替换' : '未知')}）：进程继续退出，gate 将留给下次 stale 接管。`);
+    }
+  } catch {}
   saveState();
   releaseLock();
   process.exit(0);
 });
 process.on('SIGTERM', () => {
-  try { releaseHeldMaintenanceGates(); } catch {}
+  try {
+    const releases = releaseHeldMaintenanceGates();
+    for (const r of releases) {
+      if (!r.released && !r.missing) log(`维护门释放失败（${r.error || (r.replaced ? '已被替换' : '未知')}）：进程继续退出，gate 将留给下次 stale 接管。`);
+    }
+  } catch {}
   saveState();
   releaseLock();
   process.exit(0);
@@ -8751,7 +8766,12 @@ process.on('unhandledRejection', (error) => {
  */
 process.on('uncaughtException', (error) => {
   try { log('致命异常（进程即将退出）:', error?.stack ?? error?.message ?? error); } catch {}
-  try { releaseHeldMaintenanceGates(); } catch {}
+  try {
+    const releases = releaseHeldMaintenanceGates();
+    for (const r of releases) {
+      if (!r.released && !r.missing) log(`维护门释放失败（${r.error || (r.replaced ? '已被替换' : '未知')}）：进程继续退出，gate 将留给下次 stale 接管。`);
+    }
+  } catch {}
   try { saveState(); } catch {}
   releaseLock();
   process.exit(1);

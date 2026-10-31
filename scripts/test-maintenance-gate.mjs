@@ -235,3 +235,41 @@ test('gate：写命令表在门被占用时 exit 2（零写盘）', () => {
   assert.equal(fs.readFileSync(path.join(memDir, 'write-failures.jsonl'), 'utf8'), '');
   fs.rmSync(base, { recursive: true, force: true });
 });
+
+test('gate：同 owner 不同 nonce 的旧 token 不能删新 gate', () => {
+  const dir = tmpDir('gate-nonce-');
+  const lock = path.join(dir, 'maintenance.lock');
+  const oldToken = { owner: 'same-owner', nonce: 'old' };
+  writeGate(lock, { version: 1, owner: 'same-owner', nonce: 'new', pid: process.pid, acquiredAt: Date.now() });
+  const result = releaseMaintenanceGate(lock, oldToken);
+  assert.equal(result.replaced, true, 'nonce 不同必须视为已被替换：' + JSON.stringify(result));
+  assert.equal(fs.existsSync(lock), true, '不能删别人的 gate');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('gate：inspect 会拒绝非法 nonce / 未知 version', () => {
+  const dir = tmpDir('gate-inspect-');
+  const lock = path.join(dir, 'maintenance.lock');
+  writeGate(lock, { version: 1, owner: 'x', nonce: '../evil', pid: process.pid, acquiredAt: Date.now() });
+  assert.equal(inspectMaintenanceGate(lock).state, 'unsafe');
+  writeGate(lock, { version: 99, owner: 'x', nonce: 'ok', pid: process.pid, acquiredAt: Date.now() });
+  assert.equal(inspectMaintenanceGate(lock).state, 'unsafe');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('gate：callback 内 requireBridgeIdle 抛错 → gate 释放、CLI exit 2', () => {
+  const base = tmpDir('gate-blocked-');
+  const memDir = path.join(base, 'state', 'memory');
+  fs.mkdirSync(memDir, { recursive: true });
+  fs.writeFileSync(path.join(memDir, 'write-failures.jsonl'), '', 'utf8');
+  // bridge 正在运行（锁指向当前存活进程）
+  fs.writeFileSync(path.join(base, 'state', 'bridge.lock'), JSON.stringify({ version: 1, pid: process.pid, owner: 'bridge-x', startedAt: Date.now() }), 'utf8');
+
+  const run = spawnSync(process.execPath, [HEALTH, '--dir', memDir, '--replay', '--apply'], { encoding: 'utf8', timeout: 60000 });
+  const out = `${run.stdout || ''}${run.stderr || ''}`;
+  assert.equal(run.status, 2, 'bridge 运行时必须 exit 2：' + out.slice(0, 300));
+  assert.ok(out.includes('桥接正在运行'), '要说明 bridge 在跑：' + out.slice(0, 300));
+  // gate 必须被释放（callback 抛错后 wrapper 释放）
+  assert.equal(fs.existsSync(path.join(base, 'state', 'maintenance.lock')), false, 'gate 必须已释放');
+  fs.rmSync(base, { recursive: true, force: true });
+});

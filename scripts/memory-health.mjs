@@ -74,7 +74,12 @@ function runGated(command, fn) {
       stateDir: path.dirname(memDir),
       command,
     }, fn);
-    if (attempt.ok) return Number(attempt.result) || 0;
+    if (attempt.ok) {
+      if (attempt.release && attempt.release.retryable) {
+        console.error(`⚠️ 维护门释放失败（${attempt.release.error || '未知'}）：gate 可能残留到下次 stale 接管。`);
+      }
+      return Number(attempt.result) || 0;
+    }
     if (attempt.busy) {
       const holder = attempt.holder || {};
       console.error(`❌ 维护门被占用（PID ${holder.pid ?? '?'}，${holder.command || 'maintenance'}）：等它结束后重试。`);
@@ -228,13 +233,18 @@ const recalls = store.readRecallLog({ limit: 1000 });
 
 // 统计口径提示：stats() 只算活动日文件，归档月文件不计入。
 // 库活得久了之后「事件总数」会低估历史规模，这里显式说明，避免误读。
-// 维护门 stale 归档：不自动清理（审计数据），只做可观测。
-const gateStaleCount = (() => {
+// 维护门 / 桥接锁的 stale 归档：不自动清理（审计数据），只做可观测。
+const staleEvidence = (() => {
   try {
     const stateDir = path.dirname(memDir);
-    return fs.readdirSync(stateDir).filter((n) => n.startsWith('maintenance.lock.stale-')).length;
-  } catch { return 0; }
+    const names = fs.readdirSync(stateDir);
+    return {
+      gate: names.filter((n) => n.startsWith('maintenance.lock.stale-')).length,
+      bridge: names.filter((n) => n.startsWith('bridge.lock.stale-')).length,
+    };
+  } catch { return { gate: 0, bridge: 0 }; }
 })();
+const gateStaleCount = staleEvidence.gate;
 const archiveMonths = (() => {
   try { return fs.readdirSync(path.join(memDir, 'events-archive')).filter((f) => f.endsWith('.jsonl')).length; } catch { return 0; }
 })();
@@ -502,7 +512,9 @@ if (overLimitPeople > 0) {
   say(`  ℹ️ 有 ${overLimitPeople} 个人物档位的事实数超过上限 ${PROFILE_LIMITS.maxFactsPerPerson}（isolated 只在可见范围内淘汰，不算异常）`);
 }
 if (st.eventDays >= 3 && st.events < 50) advice.push('事件量偏少：桥接可能没在跑，或最近很安静。');
-if (gateStaleCount > 0) advice.push(`维护门有 ${gateStaleCount} 个 stale 归档（maintenance.lock.stale-*）：是过去维护进程崩溃的审计记录，不自动删除；确认无用后可人工清理。`);
+if (staleEvidence.gate > 0 || staleEvidence.bridge > 0) {
+  advice.push(`有 stale 归档（维护门 ${staleEvidence.gate} 个 / 桥接锁 ${staleEvidence.bridge} 个）：是过去进程崩溃的审计记录，不自动删除；确认无用后可人工清理。`);
+}
 if (st.failureManifestWriteError) advice.push('上次运行连失败清单都写不进去：检查 write-failures.manifest-error.jsonl，确认磁盘/权限恢复后再评估丢失范围。');
 if (st.pendingUnreadable) advice.push('恢复账本读不到（或隔离区不可读）：pendingRecoverable 不可信，先修权限再判断是否需要 replay。');
 if (st.parseErrorLines > 0) advice.push(`有 ${st.parseErrorLines} 条记忆记录解析失败：坏行还在原文件里，人工修好后重新读取会自动恢复计数。`);

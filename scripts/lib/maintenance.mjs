@@ -76,18 +76,40 @@ export function bridgeLockState(lockFile, { explicit = false } = {}) {
  * 失败直接 process.exit(2)，调用方无需再判断。
  * @returns {ReturnType<typeof bridgeLockState>} 通过时的锁状态
  */
-export function requireBridgeIdle(lockFile, { explicit = false, forceUnlocked = false } = {}) {
+export class MaintenanceBlockedError extends Error {
+  constructor(message, exitCode = 2) {
+    super(message);
+    this.name = 'MaintenanceBlockedError';
+    this.exitCode = exitCode;
+  }
+}
+
+/**
+ * apply 前的并发检查：running / unknown 一律拒绝（unknown 需 --force-unlocked）。
+ *
+ * 默认行为保持旧契约：阻塞时直接 process.exit(2)。
+ * 但在 withMaintenanceGate 的 callback 内必须传 `throwOnBlock: true` ——
+ * process.exit 会绕过 wrapper 的 finally，gate 只能靠 exit hook 兜底；
+ * 抛 MaintenanceBlockedError 才能让 wrapper 先释放 gate、再由外层决定退出码。
+ *
+ * @returns {ReturnType<typeof bridgeLockState>} 通过时的锁状态
+ */
+export function requireBridgeIdle(lockFile, { explicit = false, forceUnlocked = false, throwOnBlock = false } = {}) {
   const lock = bridgeLockState(lockFile, { explicit });
+  const block = (message) => {
+    if (throwOnBlock) throw new MaintenanceBlockedError(message, 2);
+    process.exit(2);
+  };
   if (lock.state === 'running') {
     console.error(`❌ 桥接正在运行（PID ${lock.pid}）：先停桥接再 --apply。`);
     console.error('   （bridge 和 consolidation 会写同一批记忆文件，没有共享锁。）');
-    process.exit(2);
+    block(`桥接正在运行（PID ${lock.pid}）`);
   }
   if (lock.state === 'unknown') {
     if (!forceUnlocked) {
       console.error(`❌ 锁状态未知（${lock.reason || '读不到/内容损坏'}）：不能假定桥接没在跑。`);
       console.error('   修好锁文件，或确认桥接已停后加 --force-unlocked 明确越过这项检查。');
-      process.exit(2);
+      block(`锁状态未知（${lock.reason || '读不到/内容损坏'}）`);
     }
     console.warn(`⚠️ 锁状态未知（${lock.reason || '读不到/内容损坏'}），但已指定 --force-unlocked：继续执行。`);
   }
