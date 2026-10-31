@@ -2501,3 +2501,96 @@ test('零字节诊断文件也算 unknown（不能当 0）', () => {
   assert.equal(st.unrecordedFailureCountUnknown, true);
   cleanup(dir);
 });
+
+test('诊断行结构非法也要算坏行（null/数组/坏 phase）', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'diag-shape-'));
+  fs.writeFileSync(
+    path.join(dir, 'write-failures.manifest-error.jsonl'),
+    ['null', '[]', '{"phase":"other"}', JSON.stringify({ at: 1, phase: 'event', code: 'ENOSPC', error: 'x' })].join('\n') + '\n',
+    'utf8',
+  );
+  const store = createMemoryStore({ dir });
+  const st = store.stats();
+  assert.equal(st.unrecordedFailureCountUnknown, true, '坏行要置 unknown');
+  assert.ok(String(st.unrecordedFailureUnknownReason || '').includes('解析失败'));
+  cleanup(dir);
+});
+
+test('ack 空诊断文件也要归档（否则 unknown 永远清不掉）', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ack-empty-'));
+  const diagFile = path.join(dir, 'write-failures.manifest-error.jsonl');
+  fs.writeFileSync(diagFile, '', 'utf8');
+  const store = createMemoryStore({ dir });
+  assert.equal(store.stats().unrecordedFailureCountUnknown, true, '空文件 = unknown');
+
+  const ack = store.ackManifestErrors();
+  assert.equal(ack.ok, true);
+  assert.ok(!fs.existsSync(diagFile), '空文件也要被归档走');
+  const after = createMemoryStore({ dir }).stats();
+  assert.equal(after.unrecordedFailureCountUnknown, false, '归档后不再 unknown');
+  cleanup(dir);
+});
+
+test('ack 第二次读取失败时不能归档', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ack-recheck-'));
+  const diagFile = path.join(dir, 'write-failures.manifest-error.jsonl');
+  fs.writeFileSync(diagFile, JSON.stringify({ at: 1, phase: 'event', code: 'ENOSPC', error: 'x' }) + '\n', 'utf8');
+  const store = createMemoryStore({ dir });
+
+  const origRead = fs.readFileSync;
+  let reads = 0;
+  fs.readFileSync = (p, ...rest) => {
+    if (String(p) === diagFile) {
+      reads += 1;
+      if (reads >= 2) { const e = new Error('EACCES'); e.code = 'EACCES'; throw e; }
+    }
+    return origRead(p, ...rest);
+  };
+  let ack;
+  try {
+    ack = store.ackManifestErrors();
+  } finally {
+    fs.readFileSync = origRead;
+  }
+  assert.equal(ack.ok, false, '第二次读失败必须失败：' + JSON.stringify(ack));
+  assert.ok(String(ack.error || '').includes('recheck-failed'));
+  assert.ok(fs.existsSync(diagFile), '失败时不能归档');
+  cleanup(dir);
+});
+
+test('清单和诊断文件同时不可写时 unknown 仍可见', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'both-unwritable-'));
+  const store = createMemoryStore({ dir });
+  const origAppend = fs.appendFileSync;
+  fs.appendFileSync = (p, ...rest) => {
+    const target = String(p);
+    if (target.includes(`${path.sep}events${path.sep}`) || target.includes('write-failures')) {
+      const e = new Error('ENOSPC'); e.code = 'ENOSPC'; throw e;
+    }
+    return origAppend(p, ...rest);
+  };
+  try {
+    store.appendEvent({ id: 'x1', t: Date.now(), k: 'g:1', kind: 'msg', text: '写不进去', s: 2 });
+  } finally {
+    fs.appendFileSync = origAppend;
+  }
+  const st = store.stats();
+  assert.equal(st.unrecordedFailureCountUnknown, true, '内存 fallback 也要 unknown');
+  assert.ok(st.failureManifestWriteError, '线索本身要可见');
+  cleanup(dir);
+});
+
+test('--ack-manifest-errors 在 bridge 运行时 exit 2 且不改诊断文件', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ack-cli-idle-'));
+  const memDir = path.join(base, 'state', 'memory');
+  fs.mkdirSync(memDir, { recursive: true });
+  const diagFile = path.join(memDir, 'write-failures.manifest-error.jsonl');
+  fs.writeFileSync(diagFile, JSON.stringify({ at: 1, phase: 'event', code: 'ENOSPC', error: 'x' }) + '\n', 'utf8');
+  fs.writeFileSync(path.join(base, 'state', 'bridge.lock'), String(process.pid), 'utf8');
+  const before = fs.readFileSync(diagFile, 'utf8');
+
+  const run = runHealth(['--dir', memDir, '--ack-manifest-errors']);
+  assert.equal(run.status, 2, 'bridge 在跑时 ack 必须拒绝：' + `${run.stdout || ''}${run.stderr || ''}`.slice(0, 400));
+  assert.equal(fs.readFileSync(diagFile, 'utf8'), before, '拒绝时不能动诊断文件');
+  cleanup(base);
+});

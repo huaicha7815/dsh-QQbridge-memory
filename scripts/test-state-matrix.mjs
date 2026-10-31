@@ -595,6 +595,28 @@ scenario('诊断文件零字节 → unrecordedFailureCountUnknown', {
   expectMetric: { field: 'unrecordedFailureCountUnknown' },
 });
 
+scenario('清单与诊断文件同时不可写 → unknown（不能当 0）', {
+  seed: (dir) => fs.mkdirSync(path.join(dir, 'events'), { recursive: true }),
+  inject: () => {},
+  entries: [['append', (s) => {
+    const origAppend = fs.appendFileSync;
+    fs.appendFileSync = (p, ...rest) => {
+      const target = String(p);
+      // events / 主清单 / 替代诊断文件全部 ENOSPC
+      if (target.includes(`${path.sep}events${path.sep}`) || target.includes('write-failures')) {
+        const e = new Error('ENOSPC: no space left on device'); e.code = 'ENOSPC'; throw e;
+      }
+      return origAppend(p, ...rest);
+    };
+    try {
+      s.appendEvent({ id: 'fail-2', t: TS, k: 'g:1', kind: 'msg', text: '全盘不可写', s: 2 });
+    } finally {
+      fs.appendFileSync = origAppend;
+    }
+  }]],
+  expectMetric: { field: 'unrecordedFailureCountUnknown' },
+});
+
 // ── 锁层（直接测共享库，不依赖 CLI） ────────────────────────────────
 test('状态矩阵：bridge.lock 四态判定', () => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'lock-matrix-'));

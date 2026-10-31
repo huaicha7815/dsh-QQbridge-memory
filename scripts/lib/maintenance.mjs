@@ -159,6 +159,10 @@ export function maintenanceProblems(result, { statsAfter = null, requireDrained 
       problems.push(`未记录失败的诊断文件读不到/损坏（${statsAfter.unrecordedFailureUnknownReason || '状态未知'}）：真实丢失量未知，不能当成功；修文件或 --ack-manifest-errors 归档后再判`);
     } else if ((Number(statsAfter.unrecordedFailureCount) || 0) > 0) {
       problems.push(`有 ${statsAfter.unrecordedFailureCount} 条失败连清单都没写进去（明细已丢失，见 write-failures.manifest-error.jsonl；确认后可用 --ack-manifest-errors 归档）`);
+    } else if (statsAfter.failureManifestWriteError) {
+      // count=0 但内存/诊断状态仍存在：这是「无法持久化的失败线索」，
+      // 不能因为计数为 0 就当成功（磁盘完全不可写时的最短故障链）。
+      problems.push(`存在无法持久化的失败线索（${statsAfter.failureManifestWriteError.code || 'IO'}，未记录不可恢复）：不能当成功`);
     }
   }
   return problems;

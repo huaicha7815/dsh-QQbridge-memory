@@ -241,7 +241,7 @@ reserved2 的 token 开销优化、消息水位协议、升级及回退说明见
 ```bash
 node scripts/test-memory-lib.mjs   # 54 项：注入预算、逐级压缩、检索、档案一致性与自愈
 node scripts/test-memory-e2e.mjs   # 4 项：端到端注入与工具契约
-node scripts/test-state-matrix.mjs # 42 项：层×故障×入口矩阵（未知状态必须可见、诊断零写盘）
+node scripts/test-state-matrix.mjs # 46 项：层×故障×入口矩阵（未知状态必须可见、诊断零写盘）
 npm run memory-health              # 只读：看真实库的规模、检索质量与档案自检结论
 ```
 

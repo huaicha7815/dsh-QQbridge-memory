@@ -527,9 +527,14 @@ export function createMemoryStore(options = {}) {
     for (const line of lines) {
       let item = null;
       try { item = JSON.parse(line); } catch { badLines += 1; continue; }
+      // 语法合法 ≠ 诊断记录：null / 数组 / 字符串 / 缺 phase 都算坏行，
+      // 否则计数会把垃圾行当成真实失败记录。
+      if (!item || typeof item !== 'object' || Array.isArray(item)) { badLines += 1; continue; }
+      if (item.phase !== 'event' && item.phase !== 'salient') { badLines += 1; continue; }
+      if (item.code !== undefined && typeof item.code !== 'string') { badLines += 1; continue; }
+      if (item.error !== undefined && typeof item.error !== 'string') { badLines += 1; continue; }
       last = item;
-      const ph = item?.phase === 'salient' ? 'salient' : 'event';
-      byPhase[ph] += 1;
+      byPhase[item.phase] += 1;
     }
     return {
       at: Number(last?.at) || 0,
@@ -743,21 +748,31 @@ export function createMemoryStore(options = {}) {
     } catch (manifestError) {
       // 磁盘彻底不可写：清单也写不进去。内存计数下次重启就归零，
       // 所以必须留一个可观测状态让 health 标红，否则「刚丢过数据」彻底看不见。
+      // 内存 fallback 必须遵守和文件状态同一个三态契约：
+      // 磁盘完全不可写时，这是最后一条可见线索；它若仍表现为 count:0/unknown:false，
+      // 前面的三态改造就会在最短的故障链里失效。
       failureManifestWriteError = {
         at: Date.now(),
         phase,
         code: String(manifestError?.code ?? 'IO'),
         error: String(manifestError?.message ?? manifestError),
+        history: 0,
+        byPhase: { event: 0, salient: 0 },
+        unknown: true,
+        reason: `诊断文件也写不进去（${String(manifestError?.code ?? 'IO')}）：无法持久化未记录失败`,
       };
       console.warn('[memory] 失败清单写入失败:', manifestError?.message ?? manifestError);
       // 尽力写一份替代诊断文件（同样不保证成功）。
       try {
-        fs.appendFileSync(path.join(root, 'write-failures.manifest-error.jsonl'), JSON.stringify({
+        fs.appendFileSync(manifestErrorFile, JSON.stringify({
           at: Date.now(), phase, id: row?.id ?? null,
           code: String(manifestError?.code ?? 'IO'),
           error: String(manifestError?.message ?? manifestError).slice(0, 300),
         }) + '\n', 'utf8');
-      } catch { /* 磁盘完全不可写：只能靠内存状态 + console */ }
+        // 写入成功：重新按文件内容计算状态（unknown 应解除，history 应为真实行数）
+        const refreshed = readManifestDiagnostics();
+        if (refreshed) failureManifestWriteError = refreshed;
+      } catch { /* 磁盘完全不可写：保留内存 unknown 状态 + console */ }
     }
   }
 
@@ -2522,10 +2537,12 @@ export function createMemoryStore(options = {}) {
     if (error) return { ok: false, error: `read-failed: ${error}` };
     if (text === null) return { ok: true, acknowledged: 0, note: '没有诊断文件' };
     const lines = text.split('\n').filter(Boolean);
-    if (!lines.length) return { ok: true, acknowledged: 0 };
-    // rename 前再确认一次：bridge 可能在两次读之间又追加了新的诊断行
-    // （gate 落地后这一步变成兜底，但先做没有坏处）。
-    const { text: again } = readTextStrict(manifestErrorFile);
+    // 空文件也要归档：health 明确建议「空文件 unknown 用 ack 清除」，
+    // 如果这里提前 return，那个建议就是空的。
+    // rename 前再确认一次：bridge 可能在两次读之间又追加了新的诊断行。
+    // 第二次读取的错误不能丢弃（否则一次 EACCES 就会让 ack 在未确认的情况下归档）。
+    const { text: again, error: againError } = readTextStrict(manifestErrorFile);
+    if (againError) return { ok: false, error: `recheck-failed: ${againError}` };
     if (again !== null && again !== text) {
       return { ok: false, error: 'diagnosis-changed-during-ack', note: '诊断文件在确认期间又变了，已中止（重跑一次即可）' };
     }
