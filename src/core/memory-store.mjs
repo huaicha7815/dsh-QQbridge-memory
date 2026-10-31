@@ -1118,7 +1118,7 @@ export function createMemoryStore(options = {}) {
    * dryRun=true 时和 auditSummaries 一样只报告计划；false 才备份 + 重建。
    * 调用方必须自己保证不与 bridge 的 consolidation 并发（health 的 --apply 会检查）。
    */
-  function repairSummaries({ limit = 400, dryRun = true } = {}) {
+  function repairSummaries({ limit = 400, dryRun = true, beforeWrite } = {}) {
     const max = Math.max(1, Number(limit) || 400);
     const dayNames = listDirStrict(daysDir).names.filter((n) => n.endsWith('.json')).sort();
     const weekNames = listDirStrict(weeksDir).names.filter((n) => n.endsWith('.json')).sort();
@@ -1149,6 +1149,9 @@ export function createMemoryStore(options = {}) {
       }
       if (dryRun) { repaired.push({ ...entry, planned: true }); continue; }
       try {
+        // 写前复查：清点「桥接没在跑」之后它可能立刻启动，
+        // 所以每个文件真正写之前让调用方再确认一次（CLI 传进来的 dry-run 保护）。
+        if (typeof beforeWrite === 'function') beforeWrite(file);
         writeJsonFile(file, { ...summary, srcFingerprint: dayFingerprint(day) });
         noteParseFailure(file, 0);
         repaired.push(entry);

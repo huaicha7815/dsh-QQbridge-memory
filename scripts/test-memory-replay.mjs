@@ -2056,3 +2056,80 @@ test('memory-health 默认只读：跑完 state/memory 一个字节都不变', (
   assert.deepEqual(snapshotTree(dir), before, 'health 默认不能改记忆库（不备份、不重建）');
   cleanup(dir);
 });
+
+// ── --dir 的并发保护必须跟着目标库走，而不是脚本所在项目 ──────────────
+
+function seedRepairableProject(baseDir) {
+  // 项目结构：<base>/state/memory + <base>/state/bridge.lock
+  const memDir = path.join(baseDir, 'state', 'memory');
+  fs.mkdirSync(path.join(memDir, 'days'), { recursive: true });
+  fs.mkdirSync(path.join(memDir, 'events-archive'), { recursive: true });
+  const orphanDay = '2026-01-05';
+  const ts = new Date('2026-01-05T12:00:00').getTime();
+  fs.writeFileSync(
+    path.join(memDir, 'events-archive', '2026-01.jsonl'),
+    [1, 2, 3].map((i) => JSON.stringify({ id: `e${i}`, t: ts + i * 1000, k: 'group:111', kind: 'msg', text: `归档事件${i}`, s: 2, srcDay: orphanDay })).join('\n') + '\n',
+    'utf8',
+  );
+  const summaryFile = path.join(memDir, 'days', `${orphanDay}.json`);
+  fs.writeFileSync(summaryFile, JSON.stringify({ day: orphanDay, count: 1, lines: '坏的' }), 'utf8');
+  return { memDir, summaryFile };
+}
+
+function runHealth(args) {
+  const script = fileURLToPath(new URL('../scripts/memory-health.mjs', import.meta.url));
+  return spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', timeout: 120000 });
+}
+
+test('repair apply 必须检查目标库的 bridge.lock（不是当前项目）', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'lock-scope-'));
+  const { memDir, summaryFile } = seedRepairableProject(base);
+  const before = fs.readFileSync(summaryFile, 'utf8');
+  // 目标库自己的 bridge 正在运行（用当前测试进程的 PID 保证存活）
+  fs.mkdirSync(path.join(base, 'state'), { recursive: true });
+  fs.writeFileSync(path.join(base, 'state', 'bridge.lock'), String(process.pid), 'utf8');
+
+  const run = runHealth(['--dir', memDir, '--repair-summaries', '--apply']);
+  assert.equal(run.status, 2, '目标库 bridge 在跑时 apply 必须拒绝：' + (run.stdout || run.stderr || '').slice(0, 300));
+  assert.equal(fs.readFileSync(summaryFile, 'utf8'), before, '拒绝时不能改摘要');
+  assert.ok(!fs.existsSync(summaryFile + '.corrupt'), '拒绝时不能产生备份');
+  cleanup(base);
+});
+
+test('目标库没有 bridge.lock 时 apply 正常执行（不误用当前项目的锁）', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'lock-scope-free-'));
+  const { memDir, summaryFile } = seedRepairableProject(base);
+
+  const run = runHealth(['--dir', memDir, '--repair-summaries', '--apply']);
+  assert.equal(run.status, 0, '目标库没跑 bridge，应允许修复：' + (run.stdout || run.stderr || '').slice(0, 300));
+  const fixed = JSON.parse(fs.readFileSync(summaryFile, 'utf8'));
+  assert.ok(Array.isArray(fixed.lines), '摘要应被重建');
+  assert.ok(fs.existsSync(summaryFile + '.corrupt'), '应备份原文件');
+  cleanup(base);
+});
+
+test('推断不出 lock 位置时 fail-closed，必须显式 --bridge-lock', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'lock-scope-unknown-'));
+  // 目录不是 <project>/state/memory 形态
+  const plainMem = path.join(base, 'custom-memory');
+  fs.mkdirSync(path.join(plainMem, 'days'), { recursive: true });
+  fs.mkdirSync(path.join(plainMem, 'events-archive'), { recursive: true });
+  const orphanDay = '2026-01-05';
+  const ts = new Date('2026-01-05T12:00:00').getTime();
+  fs.writeFileSync(
+    path.join(plainMem, 'events-archive', '2026-01.jsonl'),
+    JSON.stringify({ id: 'e1', t: ts, k: 'group:111', kind: 'msg', text: '归档事件', s: 2, srcDay: orphanDay }) + '\n',
+    'utf8',
+  );
+  const summaryFile = path.join(plainMem, 'days', `${orphanDay}.json`);
+  fs.writeFileSync(summaryFile, JSON.stringify({ day: orphanDay, count: 1, lines: '坏的' }), 'utf8');
+
+  const refused = runHealth(['--dir', plainMem, '--repair-summaries', '--apply']);
+  assert.equal(refused.status, 2, '推断不出锁位置时必须拒绝');
+  assert.equal(JSON.parse(fs.readFileSync(summaryFile, 'utf8')).lines, '坏的', '拒绝时不能改摘要');
+
+  const okRun = runHealth(['--dir', plainMem, '--bridge-lock', path.join(base, 'no-such.lock'), '--repair-summaries', '--apply']);
+  assert.equal(okRun.status, 0, '显式给了 lock 路径就应执行：' + (okRun.stdout || okRun.stderr || '').slice(0, 300));
+  assert.ok(Array.isArray(JSON.parse(fs.readFileSync(summaryFile, 'utf8')).lines));
+  cleanup(base);
+});
