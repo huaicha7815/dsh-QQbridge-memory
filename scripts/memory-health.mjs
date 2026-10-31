@@ -17,7 +17,10 @@ import { createMemoryStore } from '../src/core/memory-store.mjs';
 import { collectMetrics, compareMetrics, formatCompare, readBaseline } from './memory-baseline.mjs';
 import { PROFILE_LIMITS, auditProfile, buildMemoryGraph } from '../src/core/memory-lib.mjs';
 // 维护命令的共享契约（默认只读、--apply、目标库锁四态）都在这里，四个写入口共用一份。
-import { bridgeLockState, requireBridgeIdle, resolveBridgeLockForMemoryDir } from './lib/maintenance.mjs';
+import {
+  bridgeLockState, requireBridgeIdle, resolveBridgeLockForMemoryDir,
+  parseMaintenanceArgs, reportMaintenance,
+} from './lib/maintenance.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const argv = process.argv.slice(2);
@@ -28,12 +31,12 @@ const memDir = dirIdx >= 0 && argv[dirIdx + 1]
 
 // 维护命令可以指向别的库（--dir），那么并发保护也必须跟着目标库走。
 // 推断不出来返回 null，apply 前 fail-closed；绝不回退脚本所在项目的锁。
-const bridgeLockArgIdx = argv.indexOf('--bridge-lock');
-const bridgeLockArg = bridgeLockArgIdx >= 0 ? argv[bridgeLockArgIdx + 1] : '';
+// 公共参数解析（--apply / --force-unlocked / --dir / --bridge-lock）统一在维护库里，
+// 各入口不再手写一份（以前两套解析并存，容易漏 --force-unlocked 之类）。
+const maintArgs = parseMaintenanceArgs(argv);
+const bridgeLockArg = maintArgs.bridgeLock;
 const bridgeLockFile = resolveBridgeLockForMemoryDir(memDir, bridgeLockArg);
-// 锁状态为 unknown（读不到/内容损坏/显式路径不存在）时，默认 fail-closed；
-// 明确知道桥接已停的人可以加 --force-unlocked 越过这项检查（不检查 PID）。
-const forceUnlocked = argv.includes('--force-unlocked');
+const forceUnlocked = maintArgs.forceUnlocked;
 
 // 先确认目录真的可读。否则「读不到」会被下面的 stats() 折叠成「0 条事件」，
 // 报告看起来像「库是空的而且很健康」——审查时被指出过这个坑。
@@ -188,6 +191,10 @@ if (st.readErrors > 0) {
   say('     这不是「没有数据」，是「暂时看不见」：修好权限/磁盘后下一次请求会自动重试（读失败不会写进缓存）。');
   say('     这期间档案写入会被拒绝，避免用空档案覆盖原文件；health 的数字也会偏小，先修 IO。');
 }
+if (st.pendingUnreadable) {
+  say('  🔴 失败清单 write-failures.jsonl 读不到（权限/IO）：下面的 pending 数字不可信，不能当成「没有待恢复」。');
+  say('     先修权限，再跑 --replay 查看真实待恢复数。');
+}
 if (st.parseErrorLines > 0) {
   say(`  🔴 有 ${st.parseErrorLines} 条记忆记录解析失败（坏行 / 截断行 / 类型不对）`);
   say('     坏行保持原样没有删（可以人工修复）；它们不进入检索，也不能当证据。');
@@ -262,10 +269,9 @@ if (argv.includes('--repair-summaries')) {
       }
       : undefined,
   });
-  console.log(JSON.stringify(result, null, 2));
-  if (!applyRepair) {
-    console.log('（上面是预览：没有写任何文件。确认后加 --apply 真正修复）');
-  }
+  reportMaintenance(result, {
+    previewHint: applyRepair ? '' : '（上面是预览：没有写任何文件。确认后加 --apply 真正修复）',
+  });
   process.exit(result.failed.length && applyRepair ? 1 : 0);
 }
 say('');
@@ -397,6 +403,7 @@ if (overLimitPeople > 0) {
   say(`  ℹ️ 有 ${overLimitPeople} 个人物档位的事实数超过上限 ${PROFILE_LIMITS.maxFactsPerPerson}（isolated 只在可见范围内淘汰，不算异常）`);
 }
 if (st.eventDays >= 3 && st.events < 50) advice.push('事件量偏少：桥接可能没在跑，或最近很安静。');
+if (st.pendingUnreadable) advice.push('失败清单 write-failures.jsonl 读不到：pendingRecoverable 不可信，先修权限再判断是否需要 replay。');
 if (st.parseErrorLines > 0) advice.push(`有 ${st.parseErrorLines} 条记忆记录解析失败：坏行还在原文件里，人工修好后重新读取会自动恢复计数。`);
 if (typeof summaryAudit !== 'undefined' && summaryAudit && summaryAudit.corrupt.length) {
   advice.push(`有 ${summaryAudit.corrupt.length} 个摘要文件不可用：可自动重建 ${summaryAudit.repairable.length} 个，需人工 ${summaryAudit.unrepairable.length} 个。先跑 --repair-summaries 预览，停桥接后加 --apply 修复。`);

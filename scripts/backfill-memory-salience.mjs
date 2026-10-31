@@ -13,12 +13,18 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { salience } from '../src/core/memory-lib.mjs';
 import { createMemoryStore } from '../src/core/memory-store.mjs';
+import { bridgeLockState, requireBridgeIdle, resolveBridgeLockForMemoryDir } from './lib/maintenance.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const MEMORY_DIR = path.join(root, 'state', 'memory');
 const DRY_RUN = process.argv.includes('--dry-run');
 
 const store = createMemoryStore({ dir: MEMORY_DIR });
+if (process.argv.includes('--apply')) {
+  requireBridgeIdle(resolveBridgeLockForMemoryDir(MEMORY_DIR), {
+    forceUnlocked: process.argv.includes('--force-unlocked'),
+  });
+}
 const eventsDir = path.join(MEMORY_DIR, 'events');
 const salientFile = path.join(MEMORY_DIR, 'salient.jsonl');
 

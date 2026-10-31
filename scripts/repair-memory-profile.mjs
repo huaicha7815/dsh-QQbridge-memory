@@ -17,7 +17,16 @@ import { createMemoryStore } from '../src/core/memory-store.mjs';
 import { repairProfile } from '../src/core/memory-lib.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
+import { bridgeLockState, requireBridgeIdle, resolveBridgeLockForMemoryDir } from './lib/maintenance.mjs';
 const apply = process.argv.includes('--apply');
+// 写 profile 会覆盖 bridge 正在改的同一份档案（last-writer-wins），
+// 所以 --apply 前必须确认目标库的 bridge 没在运行（锁状态四态，unknown 也算不安全）。
+const MEMORY_DIR = path.join(root, 'state', 'memory');
+if (apply) {
+  requireBridgeIdle(resolveBridgeLockForMemoryDir(MEMORY_DIR), {
+    forceUnlocked: process.argv.includes('--force-unlocked'),
+  });
+}
 const store = createMemoryStore({ dir: path.join(root, 'state', 'memory'), config: {} });
 const now = Date.now();
 

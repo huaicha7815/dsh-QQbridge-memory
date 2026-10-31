@@ -1,17 +1,20 @@
-// 状态矩阵：层 × 故障 × 入口。
+// 状态矩阵：层 × 故障 × 入口（数据驱动）。
 //
 // 为什么单独一个文件：前 39 轮审查里，绝大多数阻断都是同一个根因换了入口 ——
 // 「文件读不到 / 内容坏 / 锁状态未知」被当成「没有数据 / 没在运行」。
-// 逐个入口补 catch 永远补不完，所以这里按矩阵跑：
+// 逐个入口补 catch 永远补不完，所以这里按矩阵跑。
 //
-//   层：events / archive / days / weeks / months / profile / usage / salient / lock
-//   故障：ENOENT、EACCES、EIO、坏语法、坏 schema、坏行、锁损坏/未知
-//   入口：search / stats / inspect / auditSummaries / writeProfile / 锁检查
+// 每个场景声明：
+//   label        测的是什么（失败信息里能看出是哪一格）
+//   entries      入口列表（READ_ENTRIES 或控制面入口）
+//   expectMetric 期望命中的指标（字段 + 文件 + 原因），**必须命中这一格**，
+//                防止「别的故障凑出可见性」造成假通过
+//   allowWrite   该入口允许写的文件（默认空：诊断路径零数据写入）
 //
 // 每个场景断言三条不变量：
 //   1) 入口不崩；
-//   2) 故障可见（readErrors / parseErrorLines / corruptJsonFileCount / profileRead 至少一项）；
-//   3) 非 apply 入口零写盘（目录快照前后一致）。
+//   2) 故障可见且命中声明的那一格；
+//   3) 非 apply 入口不写数据文件（size/mtime/hash 三重比较，能抓同字节重写）。
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -23,12 +26,12 @@ import { createMemoryStore } from '../src/core/memory-store.mjs';
 import { bridgeLockState } from './lib/maintenance.mjs';
 
 const DAY = '2026-01-05';
+const TS = new Date('2026-01-05T12:00:00').getTime();
 
 /** 某天的日摘要文件路径。 */
 function targetDay(dir) {
   return path.join(dir, 'days', `${DAY}.json`);
 }
-const TS = new Date('2026-01-05T12:00:00').getTime();
 
 function makeStore() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'state-matrix-'));
@@ -36,13 +39,14 @@ function makeStore() {
   store.appendEvent({ id: 'e1', t: TS, k: 'group:1', kind: 'msg', text: '状态矩阵事件', s: 2 });
   fs.mkdirSync(path.join(dir, 'days'), { recursive: true });
   fs.writeFileSync(
-    path.join(dir, 'days', `${DAY}.json`),
+    targetDay(dir),
     JSON.stringify({ day: DAY, count: 1, lines: [{ t: '状态矩阵摘要', s: 2 }] }),
     'utf8',
   );
   return { dir, store, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }
 
+/** 快照同时记录 size / mtime / hash：同字节重写（mtime 变）也能被发现。 */
 function snapshotTree(dir) {
   const out = {};
   const walk = (cur, base) => {
@@ -50,17 +54,29 @@ function snapshotTree(dir) {
       const rel = base ? `${base}/${entry.name}` : entry.name;
       const abs = path.join(cur, entry.name);
       if (entry.isDirectory()) { walk(abs, rel); continue; }
-      out[rel] = crypto.createHash('sha256').update(fs.readFileSync(abs)).digest('hex');
+      const stat = fs.statSync(abs);
+      out[rel] = {
+        size: stat.size,
+        mtimeMs: Math.floor(stat.mtimeMs),
+        hash: crypto.createHash('sha256').update(fs.readFileSync(abs)).digest('hex'),
+      };
     }
   };
   if (fs.existsSync(dir)) walk(dir, '');
   return out;
 }
 
-const ORIG = { statSync: fs.statSync, readFileSync: fs.readFileSync, readdirSync: fs.readdirSync, existsSync: fs.existsSync };
+const ORIG = {
+  statSync: fs.statSync,
+  lstatSync: fs.lstatSync,
+  readFileSync: fs.readFileSync,
+  readdirSync: fs.readdirSync,
+  existsSync: fs.existsSync,
+};
 
 function restoreFs() {
   fs.statSync = ORIG.statSync;
+  fs.lstatSync = ORIG.lstatSync;
   fs.readFileSync = ORIG.readFileSync;
   fs.readdirSync = ORIG.readdirSync;
   fs.existsSync = ORIG.existsSync;
@@ -84,20 +100,44 @@ function injectIoFailure(name, target, code = 'EACCES') {
 }
 
 /**
- * 故障可见性断言：必须吃「故障仍生效时」的 stats 快照。
- * 恢复 FS 再取一次 stats 会把刚登记的故障清掉（读取成功 = 状态恢复），那就测不到东西了。
+ * 故障可见性断言：必须命中场景声明的指标字段与文件，
+ * 不能靠「别的故障让 readErrors 非零」凑数（审查指出过这个假通过）。
  */
-function assertVisible(stats, label) {
-  const visible = (stats.readErrors || 0) > 0
-    || (stats.parseErrorLines || 0) > 0
-    || (stats.corruptJsonFileCount || 0) > 0
-    || Boolean(stats.profileRead && (stats.profileRead.corrupt || stats.profileRead.readError));
-  assert.ok(visible, `${label}：故障不可见（readErrors/parseErrorLines/corruptJsonFileCount/profileRead 全为 0）`);
+function assertMetric(stats, metric, label) {
+  const { field, file, reason } = metric;
+  if (field === 'profileRead') {
+    assert.ok(
+      stats.profileRead && (stats.profileRead.corrupt || stats.profileRead.readError),
+      `${label}：profileRead 没有反映故障`,
+    );
+    return;
+  }
+  const value = stats[field] || 0;
+  if (field === 'corruptJsonFileCount') {
+    assert.ok(value > 0, `${label}：corruptJsonFileCount 为 0`);
+    if (file) {
+      const reasons = stats.corruptJsonReasons || {};
+      const hit = Object.keys(reasons).some((name) => name.includes(file));
+      assert.ok(hit, `${label}：损坏名单里没有 ${file}（实际 ${JSON.stringify(Object.keys(reasons))}）`);
+      if (reason) {
+        const actual = Object.entries(reasons).find(([name]) => name.includes(file))?.[1];
+        assert.equal(actual, reason, `${label}：损坏原因应为 ${reason}，实际 ${actual}`);
+      }
+    }
+    return;
+  }
+  assert.ok(value > 0, `${label}：${field} 为 0`);
+  if (file) {
+    const names = Array.isArray(stats.unreadableFiles) ? stats.unreadableFiles : [];
+    assert.ok(
+      names.some((name) => name.includes(file)),
+      `${label}：unreadableFiles 里没有 ${file}（实际 ${JSON.stringify(names)}）`,
+    );
+  }
 }
 
 /** 跑一组入口，断言全部不崩；返回最后一份 stats（在故障仍生效时取）。 */
 function runEntries(store, entries, label) {
-  let lastStats = null;
   for (const [name, fn] of entries) {
     try {
       fn(store);
@@ -106,11 +146,10 @@ function runEntries(store, entries, label) {
     }
   }
   try {
-    lastStats = store.stats();
+    return store.stats();
   } catch (error) {
     assert.fail(`${label} / stats 抛错：${error.message}`);
   }
-  return lastStats;
 }
 
 const READ_ENTRIES = [
@@ -120,29 +159,45 @@ const READ_ENTRIES = [
   ['auditSummaries', (s) => s.auditSummaries()],
 ];
 
-function scenario(label, { seed, inject, entries = READ_ENTRIES, expect }) {
+// 运行中会写的文件：search/inspect 记录召回日志与热度，属于设计内行为。
+const RUNTIME_FILES = new Set(['recall-log.jsonl', 'usage.json']);
+
+/**
+ * before/after 三重快照比较。
+ *   allowWrite  允许内容变化（运行时会写的文件，如 recall-log）
+ *   allowTouch  允许 mtime 变化但内容必须不变（rename 恢复现场、同内容重写清单）
+ *   allowCorrupt  允许创建 *.corrupt（仅明确声明允许备份的入口）
+ */
+function assertNoUnexpectedWrites(before, after, { allowWrite = [], allowTouch = [], allowCorrupt = false } = {}, label) {
+  const writable = new Set([...RUNTIME_FILES, ...allowWrite]);
+  const touchable = new Set(allowTouch);
+  const changed = Object.keys(after)
+    .filter((rel) => !writable.has(rel))
+    .filter((rel) => !(allowCorrupt && rel.endsWith('.corrupt')))
+    .filter((rel) => {
+      const prev = before[rel];
+      const cur = after[rel];
+      if (!prev) return true; // 新增文件（不在 allowWrite/allowCorrupt 里）
+      if (touchable.has(rel)) return prev.hash !== cur.hash; // 只允许 mtime/size 变，内容不变
+      return prev.size !== cur.size || prev.mtimeMs !== cur.mtimeMs || prev.hash !== cur.hash;
+    });
+  assert.deepEqual(changed, [], `${label}：诊断路径改写了数据文件（${changed.join('、')}）`);
+}
+
+function scenario(label, {
+  seed, inject, entries = READ_ENTRIES, expectMetric, allowWrite, allowTouch, allowCorrupt,
+}) {
   test(`状态矩阵：${label}`, () => {
     const { dir, store, cleanup } = makeStore();
     try {
       if (seed) seed(dir);
       const before = snapshotTree(dir);
       inject(dir, store);
-      // 入口 + 断言都在「故障仍生效」时执行：可见性/写保护看的是当下的状态，
-      // 一旦恢复文件系统，读取成功本身就会解除这些状态。
       const stats = runEntries(store, entries, label);
-      if (expect) expect(store, stats);
-      else assertVisible(stats, label);
+      assertMetric(stats, expectMetric, label);
       restoreFs();
       const after = snapshotTree(dir);
-      // search/inspect 会写 recall-log/usage（检索日志与热度），这是设计内的运行时数据；
-      // *.corrupt 是首次发现损坏时的保护性备份（既有机制）。
-      // 其余任何数据文件都不允许被诊断路径改写。
-      const RUNTIME = new Set(['recall-log.jsonl', 'usage.json']);
-      const changed = Object.keys(after)
-        .filter((rel) => !RUNTIME.has(rel))
-        .filter((rel) => !rel.endsWith('.corrupt'))
-        .filter((rel) => before[rel] !== after[rel]);
-      assert.deepEqual(changed, [], `${label}：诊断路径不能改写数据文件（${changed.join('、')}）`);
+      assertNoUnexpectedWrites(before, after, { allowWrite, allowTouch, allowCorrupt }, label);
     } finally {
       restoreFs();
       cleanup();
@@ -154,27 +209,23 @@ function scenario(label, { seed, inject, entries = READ_ENTRIES, expect }) {
 for (const code of ['EACCES', 'EIO']) {
   scenario(`events 日文件 stat ${code}`, {
     inject: (dir) => injectIoFailure('statSync', path.join(dir, 'events', `${DAY}.jsonl`), code),
+    expectMetric: { field: 'readErrors', file: `${DAY}.jsonl` },
   });
   scenario(`events 日文件 read ${code}`, {
     inject: (dir) => injectIoFailure('readFileSync', path.join(dir, 'events', `${DAY}.jsonl`), code),
+    expectMetric: { field: 'readErrors', file: `${DAY}.jsonl` },
   });
 }
 
 scenario('events 坏行（null / 字符串 / 数组 / {}）', {
-  seed: (dir) => fs.appendFileSync(
-    path.join(dir, 'events', `${DAY}.jsonl`),
-    'null\n"字符串"\n[1,2]\n{}\n',
-    'utf8',
-  ),
+  seed: (dir) => fs.appendFileSync(path.join(dir, 'events', `${DAY}.jsonl`), 'null\n"字符串"\n[1,2]\n{}\n', 'utf8'),
   inject: () => {},
-  expect: (store) => {
-    const st = store.stats();
-    assert.equal(st.parseErrorLines, 4, '四条结构错误都要计入坏行');
-  },
+  expectMetric: { field: 'parseErrorLines' },
 });
 
 scenario('events 目录 readdir EACCES', {
   inject: (dir) => injectIoFailure('readdirSync', path.join(dir, 'events'), 'EACCES'),
+  expectMetric: { field: 'readErrors', file: 'events' },
 });
 
 // ── archive 层 ──────────────────────────────────────────────────────
@@ -184,53 +235,69 @@ scenario('归档月文件 read EACCES', {
     fs.writeFileSync(path.join(dir, 'events-archive', '2026-01.jsonl'), JSON.stringify({ id: 'a1', t: TS, k: 'group:1', kind: 'msg', text: '归档', s: 2 }) + '\n', 'utf8');
   },
   inject: (dir) => injectIoFailure('readFileSync', path.join(dir, 'events-archive', '2026-01.jsonl'), 'EACCES'),
+  expectMetric: { field: 'readErrors', file: '2026-01.jsonl' },
+});
+
+scenario('归档目录 readdir EACCES', {
+  seed: (dir) => fs.mkdirSync(path.join(dir, 'events-archive'), { recursive: true }),
+  inject: (dir) => injectIoFailure('readdirSync', path.join(dir, 'events-archive'), 'EACCES'),
+  expectMetric: { field: 'readErrors', file: 'events-archive' },
 });
 
 // ── days 层 ─────────────────────────────────────────────────────────
 scenario('日摘要语法坏', {
-  seed: (dir) => fs.writeFileSync(path.join(dir, 'days', `${DAY}.json`), '{ 坏 JSON', 'utf8'),
+  seed: (dir) => fs.writeFileSync(targetDay(dir), '{ 坏 JSON', 'utf8'),
   inject: () => {},
-  expect: (store) => {
-    const st = store.stats();
-    assert.ok(st.corruptJsonFileCount >= 1, '语法坏要登记');
-    assert.equal(st.corruptJsonReasons[`${DAY}.json`], 'syntax');
-  },
+  expectMetric: { field: 'corruptJsonFileCount', file: `${DAY}.json`, reason: 'syntax' },
 });
 
 scenario('日摘要 schema 坏（lines 不是数组）', {
   seed: (dir) => fs.writeFileSync(targetDay(dir), JSON.stringify({ day: DAY, count: 1, lines: '坏' }), 'utf8'),
   inject: () => {},
-  expect: (store) => {
-    const st = store.stats();
-    assert.ok(st.corruptJsonFileCount >= 1, 'schema 坏要登记');
-    assert.equal(st.corruptJsonReasons[`${DAY}.json`], 'schema');
-  },
+  expectMetric: { field: 'corruptJsonFileCount', file: `${DAY}.json`, reason: 'schema' },
 });
 
 scenario('日摘要 read EIO', {
   inject: (dir) => injectIoFailure('readFileSync', targetDay(dir), 'EIO'),
+  expectMetric: { field: 'readErrors', file: `${DAY}.json` },
 });
 
-// ── weeks / months 层 ───────────────────────────────────────────────
+scenario('days 目录 readdir EACCES', {
+  inject: (dir) => injectIoFailure('readdirSync', path.join(dir, 'days'), 'EACCES'),
+  expectMetric: { field: 'readErrors', file: 'days' },
+});
+
+// ── weeks 层 ────────────────────────────────────────────────────────
+scenario('weeks 文件 schema 坏', {
+  seed: (dir) => {
+    fs.mkdirSync(path.join(dir, 'weeks'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'weeks', '2025-W52.json'), JSON.stringify({ week: '2025-W52', count: 1, lines: '坏' }), 'utf8');
+  },
+  inject: () => {},
+  expectMetric: { field: 'corruptJsonFileCount', file: '2025-W52.json', reason: 'schema' },
+});
+
 scenario('weeks 目录 readdir EACCES', {
-  // 目录必须真实存在，EACCES 才有意义（不存在时 readdir 抛的是 ENOENT，
-  // 那是正常空态，登记会被「确定不存在」清理掉——不是本场景要测的东西）。
+  // 目录必须真实存在，EACCES 才有意义（不存在时 readdir 抛 ENOENT，是正常空态）。
   seed: (dir) => fs.mkdirSync(path.join(dir, 'weeks'), { recursive: true }),
   inject: (dir) => injectIoFailure('readdirSync', path.join(dir, 'weeks'), 'EACCES'),
+  expectMetric: { field: 'readErrors', file: 'weeks' },
 });
 
+// ── months 层 ───────────────────────────────────────────────────────
 scenario('months 文件 schema 坏', {
   seed: (dir) => {
     fs.mkdirSync(path.join(dir, 'months'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'months', '2025-12.json'), JSON.stringify({ month: '2025-12', count: 1, lines: '坏' }), 'utf8');
   },
   inject: () => {},
-  expect: (store) => {
-    const st = store.stats();
-    const audit = store.auditSummaries();
-    assert.ok(audit.corrupt.some((c) => c.file === '2025-12.json'), '主动审计要发现');
-    assert.ok(st.corruptJsonFileCount >= 1);
-  },
+  expectMetric: { field: 'corruptJsonFileCount', file: '2025-12.json', reason: 'schema' },
+});
+
+scenario('months 目录 readdir EACCES', {
+  seed: (dir) => fs.mkdirSync(path.join(dir, 'months'), { recursive: true }),
+  inject: (dir) => injectIoFailure('readdirSync', path.join(dir, 'months'), 'EACCES'),
+  expectMetric: { field: 'readErrors', file: 'months' },
 });
 
 // ── profile 层 ──────────────────────────────────────────────────────
@@ -238,42 +305,100 @@ for (const body of ['[]', '"字符串"', '{"people":[]}']) {
   scenario(`profile 顶层结构坏（${body}）`, {
     seed: (dir) => fs.writeFileSync(path.join(dir, 'profile.json'), body, 'utf8'),
     inject: () => {},
-    expect: (store) => {
-      const state = store.readState();
-      assert.equal(state.corrupt, true, '要标记 corrupt');
-      assert.equal(state.writable, false, '写保护要生效');
-      assert.equal(store.writeProfile(store.readProfile()), false, '不能覆盖');
-    },
+    expectMetric: { field: 'profileRead' },
+    entries: [
+      ['stats', (s) => s.stats()],
+      ['inspect', (s) => s.inspect()],
+    ],
+    // stats/inspect 是「首次发现损坏」的入口，允许做一次保护性备份（.corrupt）。
+    allowCorrupt: true,
   });
 }
 
+scenario('profile 语法坏', {
+  seed: (dir) => fs.writeFileSync(path.join(dir, 'profile.json'), '{ 坏 JSON', 'utf8'),
+  inject: () => {},
+  expectMetric: { field: 'profileRead' },
+  allowCorrupt: true,
+});
+
+scenario('profile 读 EACCES', {
+  inject: (dir) => injectIoFailure('readFileSync', path.join(dir, 'profile.json'), 'EACCES'),
+  expectMetric: { field: 'profileRead' },
+});
+
 scenario('profile 读 EIO', {
   inject: (dir) => injectIoFailure('readFileSync', path.join(dir, 'profile.json'), 'EIO'),
-  expect: (store) => {
-    const state = store.readState();
-    assert.equal(state.writable, false, '读不到时写保护要生效');
-    assert.equal(store.writeProfile(store.readProfile()), false);
-  },
+  expectMetric: { field: 'profileRead' },
 });
 
 // ── usage / salient 层 ──────────────────────────────────────────────
 scenario('usage schema 坏', {
   seed: (dir) => fs.writeFileSync(path.join(dir, 'usage.json'), JSON.stringify({ hits: '坏' }), 'utf8'),
   inject: () => {},
-  expect: (store) => {
-    const st = store.stats();
-    assert.ok(st.corruptFiles.includes('usage.json'), 'usage 坏要可见');
-  },
+  expectMetric: { field: 'corruptJsonFileCount', file: 'usage.json', reason: 'schema' },
+  allowCorrupt: true,
 });
 
 scenario('salient 坏行', {
-  seed: (dir) => {
-    fs.writeFileSync(path.join(dir, 'salient.jsonl'), JSON.stringify({ id: 's1', t: TS, k: 'g:1', text: '好行', s: 3 }) + '\n{"broken":\n', 'utf8');
-  },
+  seed: (dir) => fs.writeFileSync(
+    path.join(dir, 'salient.jsonl'),
+    JSON.stringify({ id: 's1', t: TS, k: 'g:1', text: '好行', s: 3 }) + '\n{"broken":\n',
+    'utf8',
+  ),
   inject: () => {},
-  expect: (store) => {
-    assert.ok(store.stats().parseErrorLines >= 1, 'S3 坏行要计入');
-  },
+  expectMetric: { field: 'parseErrorLines' },
+});
+
+// ── 恢复控制面：失败清单 / replay / migrate / recover / repair ─────────
+scenario('失败清单 write-failures 读 EACCES', {
+  seed: (dir) => fs.writeFileSync(
+    path.join(dir, 'write-failures.jsonl'),
+    JSON.stringify({ at: TS, phase: 'event', id: 'pending-1', row: { id: 'pending-1', t: TS, k: 'g:1', kind: 'msg', text: '待恢复', s: 2 } }) + '\n',
+    'utf8',
+  ),
+  inject: (dir) => injectIoFailure('readFileSync', path.join(dir, 'write-failures.jsonl'), 'EACCES'),
+  entries: [['stats', (s) => s.stats()], ['inspect', (s) => s.inspect()]],
+  expectMetric: { field: 'readErrors', file: 'write-failures.jsonl' },
+});
+
+scenario('replay 在 L1 判重读失败时不写', {
+  seed: (dir) => fs.writeFileSync(
+    path.join(dir, 'write-failures.jsonl'),
+    JSON.stringify({ at: TS, phase: 'event', id: 'e1', row: { id: 'e1', t: TS, k: 'g:1', kind: 'msg', text: '同一条', s: 2 } }) + '\n',
+    'utf8',
+  ),
+  inject: (dir) => injectIoFailure('readFileSync', path.join(dir, 'events', `${DAY}.jsonl`), 'EACCES'),
+  entries: [['replay', (s) => s.replayWriteFailures({ dryRun: false })]],
+  expectMetric: { field: 'readErrors', file: `${DAY}.jsonl` },
+  allowTouch: ['write-failures.jsonl'],
+});
+
+scenario('migrate 在失败清单读失败时不写', {
+  seed: (dir) => fs.writeFileSync(
+    path.join(dir, 'write-failures.jsonl'),
+    JSON.stringify({ at: TS, phase: 'event', row: { id: 'x', t: TS, k: 'g:1', kind: 'msg', text: '旧格式' } }) + '\n',
+    'utf8',
+  ),
+  inject: (dir) => injectIoFailure('readFileSync', path.join(dir, 'write-failures.jsonl'), 'EACCES'),
+  entries: [['migrate', (s) => s.migrateLegacyRecords({ dryRun: false })]],
+  expectMetric: { field: 'readErrors', file: 'write-failures.jsonl' },
+  allowTouch: ['write-failures.jsonl'],
+});
+
+scenario('recover-archive 在归档目录读失败时不写', {
+  // 目录真实存在才可能 EACCES；不存在时 readdir 抛 ENOENT，那是正常空态。
+  seed: (dir) => fs.mkdirSync(path.join(dir, 'events-archive'), { recursive: true }),
+  inject: (dir) => injectIoFailure('readdirSync', path.join(dir, 'events-archive'), 'EACCES'),
+  entries: [['recover', (s) => s.recoverArchiveSnapshots({ dryRun: false })]],
+  expectMetric: { field: 'readErrors', file: 'events-archive' },
+});
+
+scenario('repairSummaries 预览在摘要坏时不写', {
+  seed: (dir) => fs.writeFileSync(targetDay(dir), JSON.stringify({ day: DAY, count: 1, lines: '坏' }), 'utf8'),
+  inject: () => {},
+  entries: [['repairPreview', (s) => s.repairSummaries({ dryRun: true })]],
+  expectMetric: { field: 'corruptJsonFileCount', file: `${DAY}.json`, reason: 'schema' },
 });
 
 // ── 锁层（直接测共享库，不依赖 CLI） ────────────────────────────────
@@ -282,23 +407,17 @@ test('状态矩阵：bridge.lock 四态判定', () => {
   try {
     const lock = path.join(base, 'bridge.lock');
     assert.equal(bridgeLockState(lock).state, 'missing', '不存在 = missing');
-
     fs.writeFileSync(lock, 'not-a-valid-pid', 'utf8');
     assert.equal(bridgeLockState(lock).state, 'unknown', '损坏内容 = unknown');
-
     fs.writeFileSync(lock, '', 'utf8');
     assert.equal(bridgeLockState(lock).state, 'unknown', '空文件 = unknown');
-
     fs.writeFileSync(lock, JSON.stringify({ pid: process.pid }), 'utf8');
     assert.equal(bridgeLockState(lock).state, 'running', '存活 PID = running');
-
     const dead = spawnSync(process.execPath, ['-e', '0'], { timeout: 10000 });
     fs.writeFileSync(lock, String(dead.pid), 'utf8');
     assert.equal(bridgeLockState(lock).state, 'stopped', '已退出 PID = stopped');
-
     assert.equal(bridgeLockState(path.join(base, 'nope.lock'), { explicit: true }).state, 'unknown', '显式路径不存在 = unknown');
   } finally {
     fs.rmSync(base, { recursive: true, force: true });
   }
 });
-

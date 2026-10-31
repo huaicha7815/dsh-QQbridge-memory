@@ -119,7 +119,11 @@ function isDefinitelyMissing(file) {
     fs.lstatSync(file);
     return false;
   } catch (error) {
-    return Boolean(error && error.code === 'ENOENT');
+    if (error && error.code === 'ENOENT') return true;
+    // EACCES/EIO：状态未知。既不能当「确定不存在」（那会清掉刚登记的故障），
+    // 也不能静默吞掉 —— 登记一次，健康页能看见。
+    noteReadFailure(file, error);
+    return false;
   }
 }
 
@@ -414,9 +418,11 @@ export function createMemoryStore(options = {}) {
   // overflow 追加日志最多保留这么多行，超过就压缩成一行数字
   const MAX_OVERFLOW_LINES = 5000;
   function readFailureLines() {
-    try {
-      return fs.readFileSync(writeFailFile, 'utf8').split('\n').filter(Boolean);
-    } catch { return []; }
+    // 走统一原语：读不到要登记（EACCES/EIO），不能当成「清单是空的」——
+    // 那会让 health 显示 pendingRecoverable=0 而实际上有一堆待恢复记录读不出来。
+    const { text } = readTextStrict(writeFailFile);
+    if (text === null) return [];
+    return text.split('\n').filter(Boolean);
   }
   const initialFailLines = readFailureLines();
   const overflowFile = writeFailFile + '.overflow';
@@ -428,7 +434,8 @@ export function createMemoryStore(options = {}) {
    */
   function readOverflowCount() {
     try {
-      const raw = fs.readFileSync(overflowFile, 'utf8').trim();
+      const { text } = readTextStrict(overflowFile);
+      const raw = (text || '').trim();
       if (!raw) return 0;
       // 逐行累加，兼容「旧数字格式 + 新追加」混用：
       // 旧文件是 "5"（无换行），升级后 append "1\n" 变成 "51\n" ——
@@ -1915,12 +1922,17 @@ export function createMemoryStore(options = {}) {
     }
   }
 
-  /** S3 独立副本里是否已有该 id（判断「是否还缺副本」）。 */
+  /**
+   * S3 独立副本里是否已有该 id。
+   * 返回 { found, unknown }：读不到时 unknown=true —— 不能当成「没有」，
+   * 否则 replay 会在 S3 里重复追加同一条副本。
+   */
   function salientHasId(id) {
     const needle = '"id":' + JSON.stringify(id);
-    try {
-      return fs.readFileSync(salientFile, 'utf8').includes(needle);
-    } catch { return false; }
+    const { text, error } = readTextStrict(salientFile);
+    // text===null 且没有 error = 文件不存在（确实没有）；有 error = 读不到（未知）。
+    if (text === null) return { found: false, unknown: Boolean(error) };
+    return { found: text.includes(needle), unknown: false };
   }
 
   /**
@@ -2015,12 +2027,34 @@ export function createMemoryStore(options = {}) {
         seenIds.add(id);
         // 幂等判断要覆盖「该 id 的两个阶段都完成」：
         // 只看 L1 有 id 就 skip，会漏掉「L1 已有但 S3 副本缺失」的情况。
-        if (phase === 'event' && l1HasId(day, id)) {
-          const stillNeedsSalient = tier >= 3 && Boolean(cfg.salientFile) && !salientHasId(id);
-          if (!stillNeedsSalient) { skipped += 1; continue; }
-          phase = 'salient'; // 降级：只补 S3 副本
+        if (phase === 'event') {
+          const l1 = l1HasId(day, id);
+          if (l1.unknown) {
+            // 读不到 = 不知道是否已存在；写下去可能重复 → 保留这条待恢复记录。
+            remaining.push(line);
+            lastWriteFailure = { at: Date.now(), error: 'L1 幂等判重读取失败（EACCES/EIO），本条保留待恢复', phase };
+            continue;
+          }
+          if (l1.found) {
+            const s3 = tier >= 3 && Boolean(cfg.salientFile) ? salientHasId(id) : { found: true, unknown: false };
+            if (s3.unknown) {
+              remaining.push(line);
+              lastWriteFailure = { at: Date.now(), error: 'S3 幂等判重读取失败（EACCES/EIO），本条保留待恢复', phase };
+              continue;
+            }
+            if (s3.found) { skipped += 1; continue; }
+            phase = 'salient'; // 降级：只补 S3 副本
+          }
         }
-        if (phase === 'salient' && salientHasId(id)) { skipped += 1; continue; }
+        if (phase === 'salient') {
+          const s3 = salientHasId(id);
+          if (s3.unknown) {
+            remaining.push(line);
+            lastWriteFailure = { at: Date.now(), error: 'S3 幂等判重读取失败（EACCES/EIO），本条保留待恢复', phase };
+            continue;
+          }
+          if (s3.found) { skipped += 1; continue; }
+        }
         if (dryRun) { replayed += 1; continue; }
         try {
           ensureDirs();
@@ -2320,13 +2354,21 @@ export function createMemoryStore(options = {}) {
     const overflow = readOverflowCount();
     let records = 0;
     let unreadable = 0;
-    try { records += fs.readFileSync(writeFailFile, 'utf8').split('\n').filter(Boolean).length; } catch { /* 主清单不存在 */ }
+    // 主清单用统一原语读：读不到会登记 readErrors，并置 manifestUnreadable。
+    // 以前这里 catch 成 0，于是「账本读不出来」和「账本是空的」在健康页上长得一样。
+    let manifestUnreadable = false;
+    // 直接用 readTextStrict 的 error 判断：readFailureLines() 读失败时也返回 []，
+    // 单看返回值分不清「清单是空的」和「清单读不出来」。
+    const manifestRead = readTextStrict(writeFailFile);
+    if (manifestRead.error) manifestUnreadable = true;
+    else records += (manifestRead.text || '').split('\n').filter(Boolean).length;
     for (const file of listFailureSnapshots()) {
-      try {
-        records += fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).length;
-      } catch {
-        unreadable += 1;
+      const { text } = readTextStrict(file);
+      if (text === null) {
+        if (!isDefinitelyMissing(file)) unreadable += 1;
+        continue;
       }
+      records += text.split('\n').filter(Boolean).length;
     }
     // 归档快照是另一种格式，单独计数、单独恢复，不能混进 pendingRecoverable。
     const archiveScan = listArchiveSnapshots();
@@ -2334,6 +2376,7 @@ export function createMemoryStore(options = {}) {
     const archiveSnapshots = archiveSnapshotError ? 0 : archiveScan.files.length;
     return {
       records, unreadable, overflow, archiveSnapshots, archiveSnapshotError,
+      manifestUnreadable,
       total: records + overflow,
     };
   }
@@ -2383,7 +2426,16 @@ export function createMemoryStore(options = {}) {
           }
         }
       }
-      const lines = fs.readFileSync(sourceFile, 'utf8').split('\n').filter(Boolean);
+      // 读不到 = 状态未知：不能当空清单（那会写出空清单/丢记录），
+      // 而且 --apply 时源文件已经被 rename 成快照，必须恢复回去再中止。
+      const manifestRead = readTextStrict(sourceFile);
+      if (manifestRead.error) {
+        if (sourceFile !== writeFailFile) {
+          try { fs.renameSync(sourceFile, writeFailFile); } catch {}
+        }
+        return { ...result, error: `manifest-unreadable: ${manifestRead.error}` };
+      }
+      const lines = (manifestRead.text || '').split('\n').filter(Boolean);
       let changed = 0;
       const seen = new Set();
       const out = lines.map((line) => {
@@ -2422,7 +2474,13 @@ export function createMemoryStore(options = {}) {
         result.failureIdsAdded = changed;
         result.filesTouched += 1;
       }
-    } catch { /* 没有失败清单 */ }
+    } catch (error) {
+      // 兜底：任何异常都要把 rename 走的快照放回原位，绝不能留成 .migrate-*（数据被藏起来）。
+      if (typeof sourceFile !== 'undefined' && sourceFile !== writeFailFile) {
+        try { fs.renameSync(sourceFile, writeFailFile); } catch {}
+      }
+      return { ...result, error: `manifest-migrate-failed: ${error?.message ?? error}` };
+    }
 
     // 2) 归档月文件
     let archiveFiles = [];
@@ -2483,23 +2541,31 @@ export function createMemoryStore(options = {}) {
     }
   }
 
+  /**
+   * L1（活动日 + 归档月）是否已有该 id。
+   * 返回 { found, unknown }：任何一层读不到都标记 unknown —— 不能「看不见就当没有」，
+   * 否则 replay 会重复写同一条事件（L1 出现同 id 两条）。
+   */
   function l1HasId(day, id) {
     const needle = '"id":' + JSON.stringify(id);
-    // 1) 当天活动文件
-    try {
-      if (fs.readFileSync(path.join(eventsDir, `${day}.jsonl`), 'utf8').includes(needle)) return true;
-    } catch { /* 当天文件可能还没建 */ }
+    const dayFile = path.join(eventsDir, `${day}.jsonl`);
+    const dayText = readTextStrict(dayFile);
+    if (dayText.text === null && dayText.error) return { found: false, unknown: true };
+    if (dayText.text && dayText.text.includes(needle)) return { found: true, unknown: false };
+
     // 2) 归档月文件：事件可能早已归档，「活动日里没有」不等于「库里没有」。
-    //    以前只查活动日，导致已归档的事件被 replay 又写进活动日 → readEvents 出现同 id 两条。
-    try {
-      const months = fs.readdirSync(archiveDir).filter((f) => f.endsWith('.jsonl'));
-      for (const name of months) {
-        try {
-          if (fs.readFileSync(path.join(archiveDir, name), 'utf8').includes(needle)) return true;
-        } catch { /* 单个归档文件读不到就跳过 */ }
+    let unknown = false;
+    const { names } = listDirStrict(archiveDir);
+    for (const name of names.filter((f) => f.endsWith('.jsonl'))) {
+      const file = path.join(archiveDir, name);
+      const { text } = readTextStrict(file);
+      if (text === null) {
+        if (!isDefinitelyMissing(file)) unknown = true;
+        continue;
       }
-    } catch { /* 还没有归档目录 */ }
-    return false;
+      if (text.includes(needle)) return { found: true, unknown: false };
+    }
+    return { found: false, unknown };
   }
 
   function stats({ now = Date.now() } = {}) {
@@ -2618,6 +2684,8 @@ export function createMemoryStore(options = {}) {
       pendingRecoverable: pending.records,
       unrecoverableOverflow: pending.overflow,
       unreadableSnapshots: pending.unreadable,
+      // 主失败清单（write-failures.jsonl）读不到：pending 数字不可信，health 必须红。
+      pendingUnreadable: Boolean(pending.manifestUnreadable),
       // 归档迁移快照：单独一类，需要 recoverArchiveSnapshots() 恢复
       archiveSnapshots: pending.archiveSnapshots,
       // 归档目录读不到 ≠ 没有快照：这一项非空时健康页必须红，不能报「没有待恢复数据」。

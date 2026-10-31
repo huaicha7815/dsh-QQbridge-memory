@@ -2195,3 +2195,70 @@ test('显式 --bridge-lock 指向不存在的文件时也算未知（除非 --fo
   assert.equal(forced.status, 0);
   cleanup(base);
 });
+
+// ── 恢复控制面：判重读取失败必须 fail-closed（不能重复写） ─────────────
+
+test('replay 幂等判重读不到时不能重复写 L1', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'replay-unknown-'));
+  const store = createMemoryStore({ dir });
+  const row = { id: 'same-event', t: Date.now(), k: 'group:111', kind: 'msg', text: '同一条事件', s: 2 };
+  store.appendEvent(row); // L1 已经有一条
+  const dayFile = path.join(dir, 'events', `${day()}.jsonl`);
+  // 失败清单里放同 id 的待恢复记录
+  fs.writeFileSync(
+    path.join(dir, 'write-failures.jsonl'),
+    JSON.stringify({ at: Date.now(), phase: 'event', id: 'same-event', row }) + '\n',
+    'utf8',
+  );
+
+  const origRead = fs.readFileSync;
+  fs.readFileSync = (p, ...rest) => {
+    if (String(p) === dayFile) {
+      const e = new Error('EACCES: permission denied'); e.code = 'EACCES'; throw e;
+    }
+    return origRead(p, ...rest);
+  };
+  let result;
+  let stDuring = null;
+  try {
+    result = store.replayWriteFailures({ dryRun: false });
+    // 故障仍生效时取 stats：恢复后重新读成功会把登记清掉（那正是期望行为）。
+    stDuring = store.stats();
+  } finally {
+    fs.readFileSync = origRead;
+  }
+
+  const lines = fs.readFileSync(dayFile, 'utf8').split('\n').filter(Boolean);
+  const sameId = lines.filter((line) => {
+    try { return JSON.parse(line).id === 'same-event'; } catch { return false; }
+  });
+  assert.equal(sameId.length, 1, '判重读不到时绝不能重复写同一条事件');
+  assert.ok((result.failed || 0) > 0 || (result.remaining || 0) > 0, '要如实报告没恢复成功');
+  assert.ok(stDuring.readErrors > 0, '判重读取失败要登记，health 能看见');
+  cleanup(dir);
+});
+
+test('失败清单读不到时 pending 不可信且可见', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ledger-unknown-'));
+  const store = createMemoryStore({ dir });
+  const row = { id: 'pending-1', t: Date.now(), k: 'group:111', kind: 'msg', text: '待恢复', s: 2 };
+  const failFile = path.join(dir, 'write-failures.jsonl');
+  fs.writeFileSync(failFile, JSON.stringify({ at: Date.now(), phase: 'event', id: 'pending-1', row }) + '\n', 'utf8');
+
+  const origRead = fs.readFileSync;
+  let injected = true;
+  fs.readFileSync = (p, ...rest) => {
+    if (injected && String(p) === failFile) {
+      const e = new Error('EACCES: permission denied'); e.code = 'EACCES'; throw e;
+    }
+    return origRead(p, ...rest);
+  };
+  try {
+    const st = store.stats();
+    assert.equal(st.pendingUnreadable, true, '主清单读不到必须标记 pendingUnreadable');
+    assert.ok(st.readErrors > 0, '读失败要登记');
+  } finally {
+    fs.readFileSync = origRead;
+  }
+  cleanup(dir);
+});

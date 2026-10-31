@@ -14,6 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createMemoryStore } from '../src/core/memory-store.mjs';
 import { mergePersonFact, ensureProfile } from '../src/core/memory-lib.mjs';
+import { bridgeLockState, requireBridgeIdle, resolveBridgeLockForMemoryDir } from './lib/maintenance.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const STATE_DIR = path.join(root, 'state');
@@ -23,6 +24,13 @@ const MEMORY_DIR = path.join(STATE_DIR, 'memory');
 const DRY_RUN = process.argv.includes('--dry-run');
 
 const store = createMemoryStore({ dir: MEMORY_DIR });
+// 迁移会 appendEvent + writeProfile：bridge 在跑时是 last-writer-wins，
+// 可能把它们刚写进档案的新事实冲掉。
+if (process.argv.includes('--apply')) {
+  requireBridgeIdle(resolveBridgeLockForMemoryDir(MEMORY_DIR), {
+    forceUnlocked: process.argv.includes('--force-unlocked'),
+  });
+}
 
 function readJson(file, fallback) {
   try {

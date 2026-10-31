@@ -34,6 +34,12 @@ const opt = (name) => {
 };
 const name = String(opt('name') || '').trim();
 const apply = args.includes('--apply');
+// 回填会重写事件日文件：bridge 正在 append 同一天的事件时，整体重写会丢新行。
+if (apply) {
+  const { requireBridgeIdle: requireIdle, resolveBridgeLockForMemoryDir: resolveLock } = await import('./lib/maintenance.mjs');
+  const MEMORY_DIR = path.join(ROOT, 'state', 'memory');
+  requireIdle(resolveLock(MEMORY_DIR), { forceUnlocked: args.includes('--force-unlocked') });
+}
 const all = args.includes('--all');
 if (!name) {
   console.error('用法：node scripts/backfill-private-who.mjs --name 爸爸 [--uid 1477325291] [--apply]');
