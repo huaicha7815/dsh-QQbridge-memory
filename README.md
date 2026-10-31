@@ -241,8 +241,19 @@ reserved2 的 token 开销优化、消息水位协议、升级及回退说明见
 ```bash
 node scripts/test-memory-lib.mjs   # 54 项：注入预算、逐级压缩、检索、档案一致性与自愈
 node scripts/test-memory-e2e.mjs   # 4 项：端到端注入与工具契约
+node scripts/test-state-matrix.mjs # 19 项：层×故障×入口矩阵（未知状态必须可见、诊断零写盘）
 npm run memory-health              # 只读：看真实库的规模、检索质量与档案自检结论
 ```
+
+`memory-health` 默认**只读**（不备份、不重建、不改任何记忆文件）。需要修复时是单独的显式命令：
+
+```bash
+node scripts/memory-health.mjs --repair-summaries            # 预览可修复的摘要，不写盘
+node scripts/memory-health.mjs --repair-summaries --apply    # 真正修复（需先停桥接）
+```
+
+写入口统一走 `scripts/lib/maintenance.mjs` 的契约：默认 dry-run、`--apply` 才写、锁状态四态
+（missing/stopped/running/unknown，unknown 一律 fail-closed）、`--dir` 时锁跟随目标库。
 
 控制台「令牌与花费」看板的账本与价目表回归（峰谷分时、幂等折叠、基线合并、压缩与容错）：
 

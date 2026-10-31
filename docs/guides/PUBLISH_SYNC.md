@@ -63,3 +63,31 @@ git -C "C:\Users\1\.dsh\qq-bridge-public" commit -m "round N: …"
 4. `node scripts/sync-public.mjs --round N --msg "…"`（本页）。
 
 推送由发布会话负责：`git -C "C:\Users\1\.dsh\qq-bridge-public" push origin main`。
+
+## 效率约定（审查协作）
+
+39 轮审查里，绝大多数阻断都是同一根因换了入口：「读不到 / 内容坏 / 锁状态未知」
+被当成「没有数据 / 没在运行」。逐轮被指出再补 catch 永远补不完，所以流程上有三条约定：
+
+### 1) 审查方一次给全量清单，不要逐轮挤牙膏
+
+下一轮开始前，请审查方一次性输出**所有剩余的 fail-open / 契约冲突 / 作用域错位点**，
+按严重度排序、每条附最小复现脚本；我们一次修完、一次回归，复审只做确认。
+每轮只报 1-2 条会让我们修 1-2 条、跑一遍全量测试、再等下一轮，往返成本最高。
+
+### 2) 状态矩阵代替逐个入口补测试
+
+`scripts/test-state-matrix.mjs` 按矩阵跑：
+
+- 层：events / archive / days / weeks / months / profile / usage / salient / lock
+- 故障：ENOENT、EACCES、EIO、坏语法、坏 schema、坏行、锁损坏/未知
+- 入口：search / stats / inspect / auditSummaries / writeProfile / 锁检查
+
+每个场景断言三条不变量：**入口不崩、故障可见（readErrors/parseErrorLines/corruptJsonFileCount/profileRead）、
+诊断路径不改写数据文件**。新增入口只要矩阵跑过，就不会再靠人工静态推演发现漏状态。
+
+### 3) 写入口统一走 maintenance 契约
+
+`scripts/lib/maintenance.mjs` 提供：默认 dry-run、`--apply` 显式、`--force-unlocked` 越过未知锁、
+锁路径跟随 `--dir` 目标库、锁四态判定。四个写入口（replay / migrate / recover-archive / repair-summaries）
+已全部迁移；以后新增写命令直接复用，不再各写一份锁检查。

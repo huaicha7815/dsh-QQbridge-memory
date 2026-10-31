@@ -81,6 +81,13 @@ const suite = [
     expect: 0,
   },
   {
+    // 层 × 故障 × 入口矩阵：把「新入口又漏掉未知状态」这类问题在提交前抓出来，
+    // 而不是等审查方逐轮静态推演（见 docs/guides/PUBLISH_SYNC.md 的效率说明）。
+    name: '状态矩阵（层×故障×入口）',
+    args: ['--test', 'scripts/test-state-matrix.mjs'],
+    expect: 0,
+  },
+  {
     name: '记忆库端到端',
     args: ['--test', 'scripts/test-memory-e2e.mjs'],
     expect: 0,
