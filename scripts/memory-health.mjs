@@ -1,7 +1,13 @@
 // 记忆库健康检查：一次看清规模、检索质量、档案健康度，并给出可执行建议。
 //
-// 用法：node scripts/memory-health.mjs
-// 只读，不修改任何数据。
+// 用法：
+//   node scripts/memory-health.mjs                     # 只读诊断（默认，零磁盘副作用）
+//   node scripts/memory-health.mjs --dir <库目录>      # 诊断另一个记忆库
+//   node scripts/memory-health.mjs --repair-summaries          # 预览可修复的摘要（仍只读）
+//   node scripts/memory-health.mjs --repair-summaries --apply  # 真正修复（需先停桥接）
+//
+// 默认**只读**：审计摘要时不备份、不覆盖、不重建。修复是单独命令，必须显式 --apply，
+// 且 --apply 会检查桥接是否在跑（它和 consolidation 会写同一批摘要文件）。
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +16,11 @@ import { collectMetrics, compareMetrics, formatCompare, readBaseline } from './m
 import { PROFILE_LIMITS, auditProfile, buildMemoryGraph } from '../src/core/memory-lib.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const memDir = path.join(root, 'state', 'memory');
+const argv = process.argv.slice(2);
+const dirIdx = argv.indexOf('--dir');
+const memDir = dirIdx >= 0 && argv[dirIdx + 1]
+  ? path.resolve(argv[dirIdx + 1])
+  : path.join(root, 'state', 'memory');
 
 // 先确认目录真的可读。否则「读不到」会被下面的 stats() 折叠成「0 条事件」，
 // 报告看起来像「库是空的而且很健康」——审查时被指出过这个坑。
@@ -38,8 +48,6 @@ const store = createMemoryStore({ dir: memDir, config: {} });
 
 // 恢复入口：以前只打印「可以用 replayWriteFailures()」但没有任何可执行入口，
 // 用户修好权限后还得自己写 Node 脚本。这里给一个真能用的一行命令。
-const argv = process.argv.slice(2);
-
 /**
  * 桥接是否正在运行（读 state/bridge.lock）。返回 pid 或 null。
  * 锁里可能是纯 PID 字符串，也可能是 {"pid":...}，两种都要认。
@@ -225,22 +233,39 @@ say(`  归档：${store.listArchiveMonths().length} 个月`);
 const summaryAudit = (() => {
   try { return store.auditSummaries({ limit: 400 }); } catch { return null; }
 })();
-if (summaryAudit && (summaryAudit.corrupt.length || summaryAudit.repaired > 0)) {
+if (summaryAudit && summaryAudit.corrupt.length) {
   const scope = summaryAudit.sampled
     ? `抽样 ${summaryAudit.checked}/${summaryAudit.totalFiles} 个摘要`
     : `全部 ${summaryAudit.checked} 个摘要`;
-  if (summaryAudit.repaired > 0) {
-    say(`  ℹ️ 主动校验：${scope}，从归档事件重建了 ${summaryAudit.repaired} 个损坏的日摘要`);
+  const detail = (list) => list.slice(0, 5).map((c) => `${c.file}（${c.reason === 'schema' ? '结构' : '语法'}）`).join('、');
+  say(`  🔴 主动校验：${scope}，其中 ${summaryAudit.corrupt.length} 个不可用`);
+  if (summaryAudit.repairable.length) {
+    say(`     可自动重建 ${summaryAudit.repairable.length} 个：${detail(summaryAudit.repairable)}`);
   }
-  if (summaryAudit.corrupt.length) {
-    const detail = summaryAudit.corrupt
-      .slice(0, 5)
-      .map((c) => `${c.file}（${c.reason === 'schema' ? '结构' : '语法'}）`)
-      .join('、');
-    say(`  🔴 主动校验：${scope}，其中 ${summaryAudit.corrupt.length} 个不可用`);
-    say(`     ${detail}${summaryAudit.corrupt.length > 5 ? ' 等' : ''}`);
-    say('     已备份成 *.corrupt；日摘要能按归档事件重建的已自动重建，剩下的需要人工确认。');
+  if (summaryAudit.unrepairable.length) {
+    say(`     无法自动重建 ${summaryAudit.unrepairable.length} 个（下层数据也缺）：${detail(summaryAudit.unrepairable)}`);
   }
+  say('     本次只读：没有备份、没有覆盖。修复用 --repair-summaries（先预览），加 --apply 才真正写。');
+}
+
+// 显式修复入口：默认 dry-run 预览；--apply 才写，且拒绝在桥接运行时执行。
+if (argv.includes('--repair-summaries')) {
+  const applyRepair = argv.includes('--apply');
+  if (applyRepair) {
+    const pid = runningBridgePid();
+    if (pid) {
+      console.error(`❌ 桥接正在运行（PID ${pid}）：摘要修复会覆盖 days/*.json，` +
+        '和 consolidation 没有共享锁，可能互相覆盖。');
+      console.error('   先停桥接，再跑 --repair-summaries --apply。');
+      process.exit(2);
+    }
+  }
+  const result = store.repairSummaries({ limit: 400, dryRun: !applyRepair });
+  console.log(JSON.stringify(result, null, 2));
+  if (!applyRepair) {
+    console.log('（上面是预览：没有写任何文件。确认后加 --apply 真正修复）');
+  }
+  process.exit(result.failed.length && applyRepair ? 1 : 0);
 }
 say('');
 
@@ -373,7 +398,7 @@ if (overLimitPeople > 0) {
 if (st.eventDays >= 3 && st.events < 50) advice.push('事件量偏少：桥接可能没在跑，或最近很安静。');
 if (st.parseErrorLines > 0) advice.push(`有 ${st.parseErrorLines} 条记忆记录解析失败：坏行还在原文件里，人工修好后重新读取会自动恢复计数。`);
 if (typeof summaryAudit !== 'undefined' && summaryAudit && summaryAudit.corrupt.length) {
-  advice.push(`有 ${summaryAudit.corrupt.length} 个摘要文件不可用（${summaryAudit.sampled ? '抽样检查，可用 --limit 扩大范围' : '已全量检查'}）：能按归档事件重建的会自动重建，剩下的说明下层数据也缺。`);
+  advice.push(`有 ${summaryAudit.corrupt.length} 个摘要文件不可用：可自动重建 ${summaryAudit.repairable.length} 个，需人工 ${summaryAudit.unrepairable.length} 个。先跑 --repair-summaries 预览，停桥接后加 --apply 修复。`);
 }
 if (Array.isArray(st.corruptJsonFiles) && st.corruptJsonFiles.length) advice.push(`有 ${st.corruptJsonFiles.length} 个 JSON 档案不可用（${st.corruptJsonFiles.join('、')}）：已备份为 *.corrupt，修好后下次读取自动恢复。`);
 if (st.readErrors > 0) advice.push(`有 ${st.readErrors} 个记忆文件读不出来（${(st.unreadableFiles || []).join('、') || '-'}）：先修权限/磁盘，别当成「没有数据」。`);

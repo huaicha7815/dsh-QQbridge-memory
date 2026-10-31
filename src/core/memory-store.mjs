@@ -272,7 +272,7 @@ function parseJsonl(text, file) {
  * 以前所有错误都当「JSON 损坏」降级成空值，于是一次瞬时 EIO 就能让
  * 「读档案 → 改 → 写档案」把原档案清空。
  */
-function readJsonFile(file, fallback, { strict = false, onCorrupt, onIOError, validate } = {}) {
+function readJsonFile(file, fallback, { strict = false, onCorrupt, onIOError, validate, backup = true } = {}) {
   let raw;
   try {
     raw = fs.readFileSync(file, 'utf8');
@@ -301,21 +301,25 @@ function readJsonFile(file, fallback, { strict = false, onCorrupt, onIOError, va
    */
   const corrupt = (error, reason) => {
     noteParseFailure(file, 1, { kind: 'json', reason });
-    let backup = null;
-    try {
-      const fixedBackup = `${file}.corrupt`;
-      if (!fs.existsSync(fixedBackup)) {
-        fs.copyFileSync(file, fixedBackup);
-        console.warn(
-          `[memory] ${reason === 'schema' ? 'JSON 结构不符合契约' : 'JSON 损坏'}已备份 `
-          + `${path.basename(file)}: ${error.message}`,
-        );
+    // backup=false 用于只读诊断（health 的 dry-run）：只登记、不落盘。
+    // 一旦诊断本身会写 .corrupt，它就不再是「只读」入口了。
+    let backupFile = null;
+    if (backup) {
+      try {
+        const fixedBackup = `${file}.corrupt`;
+        if (!fs.existsSync(fixedBackup)) {
+          fs.copyFileSync(file, fixedBackup);
+          console.warn(
+            `[memory] ${reason === 'schema' ? 'JSON 结构不符合契约' : 'JSON 损坏'}已备份 `
+            + `${path.basename(file)}: ${error.message}`,
+          );
+        }
+        backupFile = fixedBackup;
+      } catch {
+        // 备份失败也要走 onCorrupt：调用方必须拒写，不能把空值覆盖回去
       }
-      backup = fixedBackup;
-    } catch {
-      // 备份失败也要走 onCorrupt：调用方必须拒写，不能把空值覆盖回去
     }
-    if (typeof onCorrupt === 'function') onCorrupt({ file, backup, error, reason });
+    if (typeof onCorrupt === 'function') onCorrupt({ file, backup: backupFile, error, reason });
     return fallback;
   };
 
@@ -1049,6 +1053,15 @@ export function createMemoryStore(options = {}) {
    *
    * @returns {{checked:number, corrupt:Array<{file:string, kind:string, reason:string}>}}
    */
+  /**
+   * 主动校验已有的日/周/月摘要：**默认纯只读、零磁盘副作用**。
+   *
+   * 早期版本在审计里直接重建损坏的日摘要，结果 memory-health（文档与 test-daily
+   * 都标着「只读」）会在生产库里悄悄写 .corrupt、覆盖摘要，还可能和 bridge 的
+   * consolidation 并发写同一文件。现在默认只报告计划：
+   *   { repairable, unrepairable, wouldBackup, wouldRewrite, dryRun: true }
+   * 真正修复走 {@link repairSummaries}（单独命令 + --apply + 桥接运行检查）。
+   */
   function auditSummaries({ limit = 400 } = {}) {
     const max = Math.max(1, Number(limit) || 400);
     // 枚举源必须是**实际存在的摘要文件**，不能从事件日反推：
@@ -1064,42 +1077,86 @@ export function createMemoryStore(options = {}) {
     ];
     const skippedByLimit = Math.max(0, totalFiles - picks.length);
     let checked = 0;
-    let repaired = 0;
-    const corrupt = [];
+    const repairable = [];
+    const unrepairable = [];
     for (const { file, kind } of picks) {
       if (isDefinitelyMissing(file)) continue;
       checked += 1;
-      const val = readJsonFile(file, null, { validate: isSummaryPayload });
+      // backup:false —— 只读诊断绝不落盘（连 *.corrupt 都不产生）
+      const val = readJsonFile(file, null, { validate: isSummaryPayload, backup: false });
       if (val !== null) continue;
       const failure = parseFailureFiles.get(file);
       if (!failure) continue; // 读不出来但没有解析登记 = 别的状态，交给 readErrors 报
-      const reason = failure.reason || 'schema';
+      const entry = { file: path.basename(file), kind, reason: failure.reason || 'schema' };
 
       // orphan 日摘要：事件日文件已归档删掉，但归档月里还能按 srcDay 找回原始事件，
-      // 那就顺手重建（而不是留一份只能人工处理的坏文件）。
+      // 那就是「可修」；这里只判断可行性，不写。
       if (kind === 'day') {
         const day = path.basename(file, '.json');
         const events = eventsForDay(day);
         const summary = events.length ? summarizeDay(events, day) : null;
-        if (summary && Number(summary.count) > 0) {
-          try {
-            writeJsonFile(file, { ...summary, srcFingerprint: dayFingerprint(day) });
-            noteParseFailure(file, 0);
-            repaired += 1;
-            continue;
-          } catch { /* 写不进去就按损坏上报 */ }
-        }
+        if (summary && Number(summary.count) > 0) { repairable.push(entry); continue; }
       }
-      corrupt.push({ file: path.basename(file), kind, reason });
+      unrepairable.push(entry);
     }
     return {
       checked,
-      corrupt,
-      repaired,
+      corrupt: [...repairable, ...unrepairable], // 兼容旧调用方
+      repairable,
+      unrepairable,
+      wouldBackup: repairable.length + unrepairable.length,
+      wouldRewrite: repairable.length,
       totalFiles,
       skippedByLimit,
       sampled: skippedByLimit > 0,
+      dryRun: true,
     };
+  }
+
+  /**
+   * 修复损坏的摘要（唯一会写盘的入口）。
+   * dryRun=true 时和 auditSummaries 一样只报告计划；false 才备份 + 重建。
+   * 调用方必须自己保证不与 bridge 的 consolidation 并发（health 的 --apply 会检查）。
+   */
+  function repairSummaries({ limit = 400, dryRun = true } = {}) {
+    const max = Math.max(1, Number(limit) || 400);
+    const dayNames = listDirStrict(daysDir).names.filter((n) => n.endsWith('.json')).sort();
+    const weekNames = listDirStrict(weeksDir).names.filter((n) => n.endsWith('.json')).sort();
+    const monthNames = listDirStrict(monthsDir).names.filter((n) => n.endsWith('.json')).sort();
+    const picks = [
+      ...dayNames.slice(-max).map((n) => ({ file: path.join(daysDir, n), kind: 'day' })),
+      ...weekNames.slice(-max).map((n) => ({ file: path.join(weeksDir, n), kind: 'week' })),
+      ...monthNames.slice(-max).map((n) => ({ file: path.join(monthsDir, n), kind: 'month' })),
+    ];
+    let checked = 0;
+    const repaired = [];
+    const failed = [];
+    for (const { file, kind } of picks) {
+      if (isDefinitelyMissing(file)) continue;
+      checked += 1;
+      const val = readJsonFile(file, null, { validate: isSummaryPayload, backup: !dryRun });
+      if (val !== null) continue;
+      const failure = parseFailureFiles.get(file);
+      if (!failure) continue;
+      const entry = { file: path.basename(file), kind, reason: failure.reason || 'schema' };
+      if (kind !== 'day') { failed.push({ ...entry, error: '仅日摘要支持自动重建' }); continue; }
+      const day = path.basename(file, '.json');
+      const events = eventsForDay(day);
+      const summary = events.length ? summarizeDay(events, day) : null;
+      if (!summary || !(Number(summary.count) > 0)) {
+        failed.push({ ...entry, error: '归档与活动事件里都找不到这一天的原始事件' });
+        continue;
+      }
+      if (dryRun) { repaired.push({ ...entry, planned: true }); continue; }
+      try {
+        writeJsonFile(file, { ...summary, srcFingerprint: dayFingerprint(day) });
+        noteParseFailure(file, 0);
+        repaired.push(entry);
+      } catch (error) {
+        failed.push({ ...entry, error: String(error?.message || error) });
+      }
+    }
+    return { checked, repaired, failed, dryRun };
   }
 
   /** ISO 周对应的周一 0 点时间戳。 */
@@ -2581,6 +2638,7 @@ export function createMemoryStore(options = {}) {
     migrateLegacyRecords,
     clearProfileGuards,
     auditSummaries,
+    repairSummaries,
     readState,
     readErrorCount: () => readFailureFilesInRoot().length,
     parseErrorCount: () => parseFailureFilesInRoot()

@@ -6,9 +6,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import { createMemoryStore } from '../src/core/memory-store.mjs';
 import { handleSocialV2MemoryApi } from '../src/routes/socialv2-memory-api.mjs';
 import { mergePersonFact, mergeThread, mergeSelfNote, verifyMemoryClaim, buildWriteScope, eventsVisibleToSession } from '../src/core/memory-lib.mjs';
@@ -1927,7 +1929,7 @@ test('auditSummaries 以摘要文件为枚举源：归档后的 orphan 日摘要
   assert.equal(auditA.checked, 1, '没有事件日文件也要检查已存在的日摘要');
   assert.equal(auditA.corrupt.length, 1);
   assert.equal(auditA.corrupt[0].reason, 'schema');
-  assert.ok(fs.existsSync(path.join(dirA, 'days', '2026-01-05.json.corrupt')), '要备份');
+  assert.ok(!fs.existsSync(path.join(dirA, 'days', '2026-01-05.json.corrupt')), '只读审计不能备份');
   cleanup(dirA);
 
   // case B：归档里还有该天的事件 → 应能按 srcDay 自动重建
@@ -1944,10 +1946,14 @@ test('auditSummaries 以摘要文件为枚举源：归档后的 orphan 日摘要
   );
   fs.writeFileSync(path.join(dirB, 'days', `${orphanDay}.json`), JSON.stringify({ day: orphanDay, count: 1, lines: '坏的' }), 'utf8');
   const auditB = storeB.auditSummaries({ limit: 400 });
-  assert.equal(auditB.repaired, 1, '归档事件还在，应该自动重建');
-  assert.equal(auditB.corrupt.length, 0);
+  assert.equal(auditB.repairable.length, 1, '归档事件还在 → 标记为可修复');
+  assert.equal(auditB.wouldRewrite, 1);
+  assert.equal(auditB.corrupt.length, 1, '只读审计仍把它算作损坏项');
+  // 真正重建必须显式 apply（只读审计本身不写盘）
+  const repaired = storeB.repairSummaries({ limit: 400, dryRun: false });
+  assert.equal(repaired.repaired.length, 1);
   const fixed = JSON.parse(fs.readFileSync(path.join(dirB, 'days', `${orphanDay}.json`), 'utf8'));
-  assert.ok(Array.isArray(fixed.lines), '重建后要恢复成数组');
+  assert.ok(Array.isArray(fixed.lines), 'apply 后要恢复成数组');
   cleanup(dirB);
 });
 
@@ -1972,5 +1978,81 @@ test('auditSummaries 明确区分抽样与全量', () => {
   assert.equal(full.checked, 5);
   assert.equal(full.skippedByLimit, 0);
   assert.equal(full.sampled, false);
+  cleanup(dir);
+});
+
+// ── 只读诊断契约：audit 不能写盘，修复必须是单独显式命令 ─────────────
+
+function snapshotTree(dir) {
+  const out = {};
+  const walk = (cur, base) => {
+    for (const entry of fs.readdirSync(cur, { withFileTypes: true })) {
+      const rel = base ? `${base}/${entry.name}` : entry.name;
+      const abs = path.join(cur, entry.name);
+      if (entry.isDirectory()) { walk(abs, rel); continue; }
+      out[rel] = crypto.createHash('sha256').update(fs.readFileSync(abs)).digest('hex');
+    }
+  };
+  if (fs.existsSync(dir)) walk(dir, '');
+  return out;
+}
+
+function seedRepairableOrphan(dir) {
+  fs.mkdirSync(path.join(dir, 'days'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'events-archive'), { recursive: true });
+  const orphanDay = '2026-01-05';
+  const ts = new Date('2026-01-05T12:00:00').getTime();
+  fs.writeFileSync(
+    path.join(dir, 'events-archive', '2026-01.jsonl'),
+    [1, 2, 3].map((i) => JSON.stringify({ id: `e${i}`, t: ts + i * 1000, k: 'group:111', kind: 'msg', text: `归档事件${i}`, s: 2, srcDay: orphanDay })).join('\n') + '\n',
+    'utf8',
+  );
+  fs.writeFileSync(path.join(dir, 'days', `${orphanDay}.json`), JSON.stringify({ day: orphanDay, count: 1, lines: '坏的' }), 'utf8');
+  return orphanDay;
+}
+
+test('auditSummaries 默认零磁盘副作用（不建 .corrupt、不覆盖摘要）', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-readonly-'));
+  const orphanDay = seedRepairableOrphan(dir);
+  const store = createMemoryStore({ dir });
+  const before = snapshotTree(dir);
+
+  const audit = store.auditSummaries({ limit: 400 });
+  assert.equal(audit.dryRun, true);
+  assert.equal(audit.repairable.length, 1, '可修的要报出来');
+  assert.equal(audit.wouldBackup, 1);
+  assert.equal(audit.wouldRewrite, 1);
+  assert.deepEqual(snapshotTree(dir), before, 'audit 不能写任何文件（包括 .corrupt）');
+  assert.equal(fs.readFileSync(path.join(dir, 'days', `${orphanDay}.json`), 'utf8'), JSON.stringify({ day: orphanDay, count: 1, lines: '坏的' }), '原摘要不能被覆盖');
+  cleanup(dir);
+});
+
+test('repairSummaries 只有 dryRun:false 才写盘', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'repair-explicit-'));
+  const orphanDay = seedRepairableOrphan(dir);
+  const store = createMemoryStore({ dir });
+
+  const before = snapshotTree(dir);
+  const preview = store.repairSummaries({ limit: 400 });
+  assert.equal(preview.dryRun, true);
+  assert.equal(preview.repaired.length, 1);
+  assert.deepEqual(snapshotTree(dir), before, '预览不能写盘');
+
+  const applied = store.repairSummaries({ limit: 400, dryRun: false });
+  assert.equal(applied.repaired.length, 1);
+  const fixed = JSON.parse(fs.readFileSync(path.join(dir, 'days', `${orphanDay}.json`), 'utf8'));
+  assert.ok(Array.isArray(fixed.lines), 'apply 后要重建成功');
+  assert.ok(fs.existsSync(path.join(dir, 'days', `${orphanDay}.json.corrupt`)), 'apply 时要备份原文件');
+  cleanup(dir);
+});
+
+test('memory-health 默认只读：跑完 state/memory 一个字节都不变', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'health-readonly-'));
+  seedRepairableOrphan(dir);
+  const before = snapshotTree(dir);
+  const script = fileURLToPath(new URL('../scripts/memory-health.mjs', import.meta.url));
+  const run = spawnSync(process.execPath, [script, '--dir', dir], { encoding: 'utf8', timeout: 120000 });
+  assert.equal(run.status, 0, '健康检查应正常退出：' + (run.stderr || '').slice(0, 400));
+  assert.deepEqual(snapshotTree(dir), before, 'health 默认不能改记忆库（不备份、不重建）');
   cleanup(dir);
 });
