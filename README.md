@@ -259,6 +259,14 @@ node scripts/backfill-memory-salience.mjs --apply           # 写回（gate）
 node scripts/backfill-private-who.mjs --name 爸爸 --apply   # 回填发送者（gate）
 # 四个脚本都支持 --dir 指向别的库；写模式统一为「默认预览，--apply 才写」，
 # --dry-run 保留为兼容别名，任何写路径都必须先拿 state/maintenance.lock。
+#
+# --dir 的作用域契约：应指向另一个 <project>/state/memory。
+#   标准结构下 gate/锁路径从 <project>/state/ 推导；
+#   非标准目录目前 fail-closed（不会误写），需要时再增加 --bridge-lock / --maintenance-lock。
+#
+# 维护面收口规则：新增任何会修改记忆库的脚本/入口时，
+#   必须同时加入 gate 命令表测试（scripts/test-maintenance-gate.mjs），
+#   否则视为新缺口，不能合并。
 ```
 
 写入口统一走 `scripts/lib/maintenance.mjs` 的契约：默认 dry-run、`--apply` 才写、锁状态四态

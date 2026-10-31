@@ -22,7 +22,7 @@ const MEMORY_DIR = dirArg ? path.resolve(dirArg) : path.join(root, 'state', 'mem
 // 写模式契约：默认只预览，--apply 才写盘；--dry-run 保留为兼容别名。
 const { apply: APPLY, dryRun: DRY_RUN } = scriptWriteMode(process.argv.slice(2));
 // 契约变化提示：旧版本默认写盘，现在必须显式 --apply。
-console.log(APPLY ? '[模式] 应用（已获取维护门）' : '[模式] 预览（不写盘）');
+console.log(APPLY ? '[模式] 应用（将获取维护门）' : '[模式] 预览（不写盘）');
 if (!APPLY) console.log('[提示] 旧版本默认写盘；现在必须显式添加 --apply。');
 
 // gate 覆盖「扫描事件 → 计算档位 → 写回事件/S3/压缩层」整段。

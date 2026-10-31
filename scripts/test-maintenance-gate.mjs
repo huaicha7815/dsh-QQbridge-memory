@@ -432,3 +432,37 @@ test('--dry-run --apply 组合必须零写盘（repair / who）', () => {
   assert.equal(fs.readFileSync(path.join(memDir, 'events', '2026-01-05.jsonl'), 'utf8'), eventsBefore, 'who 的 --dry-run 必须压过 --apply');
   fs.rmSync(base, { recursive: true, force: true });
 });
+
+test('--dir 作用域：backfill-memory-salience 只动目标库', () => {
+  const PROJECT_ROOT = path.resolve(SCRIPT_DIR, '..');
+  const base = tmpDir('gate-scope-salience-');
+  const memDir = path.join(base, 'state', 'memory');
+  const today = new Date().toISOString().slice(0, 10);
+  fs.mkdirSync(path.join(memDir, 'events'), { recursive: true });
+  // 目标库：当天的历史事件（没有 s 字段；用今天避免被归档逻辑搬走）
+  fs.writeFileSync(path.join(memDir, 'events', `${today}.jsonl`),
+    JSON.stringify({ t: Date.now(), k: 'group:1', kind: 'msg', who: '某人', text: '需要补档位的事件', mid: 'm1' }) + '\n', 'utf8');
+
+  const defaultEventsDir = path.join(PROJECT_ROOT, 'state', 'memory', 'events');
+  const defaultHash = (() => {
+    try {
+      return fs.readdirSync(defaultEventsDir).filter((n) => n.endsWith('.jsonl'))
+        .map((n) => fs.readFileSync(path.join(defaultEventsDir, n), 'utf8')).join('\n');
+    } catch { return null; }
+  })();
+
+  const run = spawnSync(process.execPath, [path.join(SCRIPT_DIR, 'backfill-memory-salience.mjs'), '--dir', memDir, '--apply'], { encoding: 'utf8', timeout: 120000 });
+  assert.equal(run.status, 0, 'salience 应成功：' + (run.stdout || run.stderr || '').slice(0, 400));
+  const targetFile = path.join(memDir, 'events', `${today}.jsonl`);
+  assert.ok(fs.existsSync(targetFile), '目标库事件文件应还在');
+  const targetEvents = fs.readFileSync(targetFile, 'utf8');
+  assert.ok(targetEvents.includes('"s"'), '目标库事件应被补上档位');
+  const defaultHashAfter = (() => {
+    try {
+      return fs.readdirSync(defaultEventsDir).filter((n) => n.endsWith('.jsonl'))
+        .map((n) => fs.readFileSync(path.join(defaultEventsDir, n), 'utf8')).join('\n');
+    } catch { return null; }
+  })();
+  assert.equal(defaultHashAfter, defaultHash, '默认库不能被 --dir 操作改动');
+  fs.rmSync(base, { recursive: true, force: true });
+});

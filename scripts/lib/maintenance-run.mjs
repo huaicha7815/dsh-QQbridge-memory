@@ -44,6 +44,7 @@ export function enterMaintenanceForScript({
   // bridge.lock 四态检查：running/unknown 拒绝（unknown 需 --force-unlocked）。
   // 这里保留 exit 语义；exit hook 会释放上面拿到的 gate。
   requireBridgeIdle(bridgeLockFile, { forceUnlocked });
+  console.log(`[模式] 已进入维护模式（${command}）`);
   return { lockPath, gate: acquired.gate, bridgeLockFile };
 }
 

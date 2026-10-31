@@ -108,7 +108,11 @@ for (const file of files) {
 console.log(`事件总数 ${total} 条；可回填 ${hit} 条（回填成「${name}」${all ? '，不按 uid 过滤' : `，uid=${ownerQQ}`}）`);
 if (skippedUid) console.log(`另有 ${skippedUid} 条 who 是会话标签但不属于该 uid，保持原样（来源不明，不猜）`);
 if (perDay.length) console.log('按天：', perDay.map(([d, n]) => `${d}=${n}`).join(' '));
-if (!hit) { console.log('没有需要回填的事件。'); process.exit(0); }
+if (!hit) {
+  console.log('没有需要回填的事件。');
+  if (maintenance) { const code = finishMaintenance(maintenance); if (code) process.exitCode = code; }
+  process.exit(process.exitCode || 0);
+}
 if (!apply) {
   console.log('\n（预览模式，未写盘。确认无误后加 --apply）');
   process.exit(0);

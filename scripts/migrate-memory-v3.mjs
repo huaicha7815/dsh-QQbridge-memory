@@ -28,7 +28,7 @@ const DIARY_DIR = path.join(STATE_DIR, 'diary');
 // --dry-run 保留为兼容别名。旧版本默认写盘，无参数调用会绕过维护门 —— 已修正。
 const { apply: APPLY, dryRun: DRY_RUN } = scriptWriteMode(process.argv.slice(2));
 // 契约变化提示：旧版本默认写盘，现在必须显式 --apply。
-console.log(APPLY ? '[模式] 应用（已获取维护门）' : '[模式] 预览（不写盘）');
+console.log(APPLY ? '[模式] 应用（将获取维护门）' : '[模式] 预览（不写盘）');
 if (!APPLY) console.log('[提示] 旧版本默认写盘；现在必须显式添加 --apply。');
 
 // gate 覆盖「读取旧状态 → 计算 → 写回」整段：只包写回会让 bridge 在扫描期间
