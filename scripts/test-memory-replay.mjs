@@ -2128,8 +2128,70 @@ test('推断不出 lock 位置时 fail-closed，必须显式 --bridge-lock', () 
   assert.equal(refused.status, 2, '推断不出锁位置时必须拒绝');
   assert.equal(JSON.parse(fs.readFileSync(summaryFile, 'utf8')).lines, '坏的', '拒绝时不能改摘要');
 
-  const okRun = runHealth(['--dir', plainMem, '--bridge-lock', path.join(base, 'no-such.lock'), '--repair-summaries', '--apply']);
-  assert.equal(okRun.status, 0, '显式给了 lock 路径就应执行：' + (okRun.stdout || okRun.stderr || '').slice(0, 300));
+  // 显式锁路径必须真实存在且可解析（新语义：拼错路径 = 未知 → 拒绝）
+  const stopped = spawnSync(process.execPath, ['-e', '0'], { timeout: 10000 });
+  const lockFile = path.join(base, 'explicit.lock');
+  fs.writeFileSync(lockFile, String(stopped.pid), 'utf8');
+  const okRun = runHealth(['--dir', plainMem, '--bridge-lock', lockFile, '--repair-summaries', '--apply']);
+  assert.equal(okRun.status, 0, '显式给了有效 lock 路径就应执行：' + (okRun.stdout || okRun.stderr || '').slice(0, 300));
   assert.ok(Array.isArray(JSON.parse(fs.readFileSync(summaryFile, 'utf8')).lines));
+  cleanup(base);
+});
+
+// ── 锁状态：missing / stopped 才允许写；unknown 必须 fail-closed ──────
+
+test('锁内容损坏时必须 fail-closed（不能当成「桥接没在跑」）', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'lock-corrupt-'));
+  const { memDir, summaryFile } = seedRepairableProject(base);
+  fs.writeFileSync(path.join(base, 'state', 'bridge.lock'), 'not-a-valid-pid', 'utf8');
+  const before = fs.readFileSync(summaryFile, 'utf8');
+
+  const refused = runHealth(['--dir', memDir, '--repair-summaries', '--apply']);
+  assert.equal(refused.status, 2, '锁内容损坏 → 状态未知 → 必须拒绝：' + (refused.stdout || refused.stderr || '').slice(0, 300));
+  assert.equal(fs.readFileSync(summaryFile, 'utf8'), before, '拒绝时不能改摘要');
+  assert.ok(!fs.existsSync(summaryFile + '.corrupt'));
+
+  // 明确知道桥接已停的人可以 --force-unlocked 越过
+  const forced = runHealth(['--dir', memDir, '--repair-summaries', '--apply', '--force-unlocked']);
+  assert.equal(forced.status, 0, '--force-unlocked 后应执行：' + (forced.stdout || forced.stderr || '').slice(0, 300));
+  assert.ok(Array.isArray(JSON.parse(fs.readFileSync(summaryFile, 'utf8')).lines), '摘要应被重建');
+  cleanup(base);
+});
+
+test('锁内容为合法 PID 但进程已退出（stopped）时允许 apply', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'lock-stopped-'));
+  const { memDir, summaryFile } = seedRepairableProject(base);
+  // 起一个立刻退出的进程，拿它的 PID：这个 PID 一定不存在了
+  const dead = spawnSync(process.execPath, ['-e', '0'], { timeout: 10000 });
+  assert.ok(Number.isInteger(dead.pid) && dead.pid > 0, '要拿到一个已退出进程的 PID');
+  fs.writeFileSync(path.join(base, 'state', 'bridge.lock'), String(dead.pid), 'utf8');
+
+  const run = runHealth(['--dir', memDir, '--repair-summaries', '--apply']);
+  assert.equal(run.status, 0, 'stopped 不是故障，应允许修复：' + (run.stdout || run.stderr || '').slice(0, 300));
+  assert.ok(Array.isArray(JSON.parse(fs.readFileSync(summaryFile, 'utf8')).lines));
+  cleanup(base);
+});
+
+test('显式 --bridge-lock 指向不存在的文件时也算未知（除非 --force-unlocked）', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'lock-explicit-missing-'));
+  const plainMem = path.join(base, 'custom-memory');
+  fs.mkdirSync(path.join(plainMem, 'days'), { recursive: true });
+  fs.mkdirSync(path.join(plainMem, 'events-archive'), { recursive: true });
+  const orphanDay = '2026-01-05';
+  const ts = new Date('2026-01-05T12:00:00').getTime();
+  fs.writeFileSync(
+    path.join(plainMem, 'events-archive', '2026-01.jsonl'),
+    JSON.stringify({ id: 'e1', t: ts, k: 'group:111', kind: 'msg', text: '归档事件', s: 2, srcDay: orphanDay }) + '\n',
+    'utf8',
+  );
+  const summaryFile = path.join(plainMem, 'days', `${orphanDay}.json`);
+  fs.writeFileSync(summaryFile, JSON.stringify({ day: orphanDay, count: 1, lines: '坏的' }), 'utf8');
+
+  const refused = runHealth(['--dir', plainMem, '--bridge-lock', path.join(base, 'typo.lock'), '--repair-summaries', '--apply']);
+  assert.equal(refused.status, 2, '显式锁路径不存在 → 未知 → 拒绝（拼错路径也挡得住）');
+  assert.equal(JSON.parse(fs.readFileSync(summaryFile, 'utf8')).lines, '坏的');
+
+  const forced = runHealth(['--dir', plainMem, '--bridge-lock', path.join(base, 'typo.lock'), '--repair-summaries', '--apply', '--force-unlocked']);
+  assert.equal(forced.status, 0);
   cleanup(base);
 });

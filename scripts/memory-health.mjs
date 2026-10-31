@@ -5,6 +5,8 @@
 //   node scripts/memory-health.mjs --dir <库目录>      # 诊断另一个记忆库
 //   node scripts/memory-health.mjs --repair-summaries          # 预览可修复的摘要（仍只读）
 //   node scripts/memory-health.mjs --repair-summaries --apply  # 真正修复（需先停桥接）
+//   --bridge-lock <path>   显式指定目标库的锁（--dir 推断不出时用）
+//   --force-unlocked       锁状态未知（读不到/内容损坏）时强行继续（仅在确认桥接已停时用）
 //
 // 默认**只读**：审计摘要时不备份、不覆盖、不重建。修复是单独命令，必须显式 --apply，
 // 且 --apply 会检查桥接是否在跑（它和 consolidation 会写同一批摘要文件）。
@@ -35,6 +37,9 @@ function resolveBridgeLockForMemoryDir(dir, explicit) {
   return path.join(stateDir, 'bridge.lock');
 }
 const bridgeLockFile = resolveBridgeLockForMemoryDir(memDir, bridgeLockArg);
+// 锁状态为 unknown（读不到/内容损坏/显式路径不存在）时，默认 fail-closed；
+// 明确知道桥接已停的人可以加 --force-unlocked 越过这项检查（不检查 PID）。
+const forceUnlocked = argv.includes('--force-unlocked');
 
 // 先确认目录真的可读。否则「读不到」会被下面的 stats() 折叠成「0 条事件」，
 // 报告看起来像「库是空的而且很健康」——审查时被指出过这个坑。
@@ -63,38 +68,74 @@ const store = createMemoryStore({ dir: memDir, config: {} });
 // 恢复入口：以前只打印「可以用 replayWriteFailures()」但没有任何可执行入口，
 // 用户修好权限后还得自己写 Node 脚本。这里给一个真能用的一行命令。
 /**
- * 桥接是否正在运行（读 state/bridge.lock）。返回 pid 或 null。
- * 锁里可能是纯 PID 字符串，也可能是 {"pid":...}，两种都要认。
+ * 读桥接锁的状态。**只有 missing / stopped 才能当作「没在跑」。**
+ *
+ *   missing  自动推断的锁文件不存在（全新/已清理）
+ *   stopped  锁里有合法 PID，但进程已不存在（ESRCH）
+ *   running  PID 存活
+ *   unknown  读不到（EACCES/EIO）、内容损坏/空、PID 非法、
+ *            显式指定的路径不存在、EPERM（进程可能在但没权限探测）
+ *
+ * 以前所有异常都被 catch 成「没在跑」，于是损坏或不可读的锁会绕过并发保护。
  */
-function runningBridgePid(lockFile = bridgeLockFile) {
-  // lockFile 为 null = 推断不出目标库的锁位置；调用方必须在 apply 前 fail-closed。
-  if (!lockFile) return null;
+function bridgeLockState(lockFile, { explicit = false } = {}) {
+  if (!lockFile) return { state: 'unknown', reason: '无法从 --dir 推断锁路径' };
+  let raw;
   try {
-    const raw = fs.readFileSync(lockFile, 'utf8').trim();
-    let pid = null;
-    try {
-      const parsed = JSON.parse(raw);
-      pid = Number(parsed && typeof parsed === 'object' ? parsed.pid : parsed);
-    } catch { pid = Number(raw); }
-    if (Number.isFinite(pid) && pid > 0) { process.kill(pid, 0); return pid; }
-  } catch { /* 锁不存在或进程不在，视为没在跑 */ }
-  return null;
+    raw = fs.readFileSync(lockFile, 'utf8').trim();
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      return explicit
+        ? { state: 'unknown', reason: `显式指定的锁文件不存在：${lockFile}` }
+        : { state: 'missing' };
+    }
+    return { state: 'unknown', reason: `读取锁失败：${error?.code || error}` };
+  }
+  if (!raw) return { state: 'unknown', reason: '锁文件是空的（半写/损坏）' };
+  let pid = Number.NaN;
+  try {
+    const parsed = JSON.parse(raw);
+    pid = Number(parsed && typeof parsed === 'object' ? parsed.pid : parsed);
+  } catch {
+    pid = Number(raw);
+  }
+  if (!Number.isFinite(pid) || !Number.isInteger(pid) || pid <= 0) {
+    return { state: 'unknown', reason: `锁内容解析不出合法 PID：${raw.slice(0, 40)}` };
+  }
+  try {
+    process.kill(pid, 0);
+    return { state: 'running', pid };
+  } catch (error) {
+    if (error && error.code === 'ESRCH') return { state: 'stopped', pid };
+    // EPERM 等：进程可能还在，只是没权限探测 —— 属于未知，不能当没跑。
+    return { state: 'unknown', reason: `无法确认进程 ${pid} 状态：${error?.code || error}` };
+  }
+}
+
+/**
+ * apply 前的并发检查：running / unknown 一律拒绝；--force-unlocked 才能越过 unknown。
+ */
+function requireBridgeIdle(lockFile, { explicit = false, forceUnlocked = false } = {}) {
+  const lock = bridgeLockState(lockFile, { explicit });
+  if (lock.state === 'running') {
+    console.error(`❌ 桥接正在运行（PID ${lock.pid}）：先停桥接再 --apply。`);
+    process.exit(2);
+  }
+  if (lock.state === 'unknown') {
+    if (!forceUnlocked) {
+      console.error(`❌ 锁状态未知（${lock.reason || '读不到/内容损坏'}）：不能假定桥接没在跑。`);
+      console.error('   修好锁文件，或确认桥接已停后加 --force-unlocked 明确越过这项检查。');
+      process.exit(2);
+    }
+    console.warn(`⚠️ 锁状态未知（${lock.reason || '读不到/内容损坏'}），但已指定 --force-unlocked：继续执行。`);
+  }
 }
 // 旧格式迁移入口：给旧失败记录补 id、给旧归档行补 srcDay。
 // 默认只预览（dry-run），--apply 才真正写回。
 if (argv.includes('--migrate')) {
   const applyMigrate = argv.includes('--apply');
   if (applyMigrate) {
-    if (!bridgeLockFile) {
-      console.error('❌ 推断不出目标库的 bridge.lock 位置（期望 <project>/state/memory）。');
-      console.error('   请用 --bridge-lock <path> 显式指定。');
-      process.exit(2);
-    }
-    const pid = runningBridgePid(bridgeLockFile);
-    if (pid) {
-      console.error(`❌ 桥接正在运行（PID ${pid}）：迁移会改写记忆数据，先停桥接再 --apply。`);
-      process.exit(2);
-    }
+    requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked });
   }
   const result = store.migrateLegacyRecords({ dryRun: !applyMigrate });
   console.log(JSON.stringify(result, null, 2));
@@ -111,17 +152,7 @@ if (argv.includes('--migrate')) {
 if (argv.includes('--recover-archive')) {
   const applyArchive = argv.includes('--apply');
   if (applyArchive) {
-    if (!bridgeLockFile) {
-      console.error('❌ 推断不出目标库的 bridge.lock 位置（期望 <project>/state/memory）。');
-      console.error('   请用 --bridge-lock <path> 显式指定，避免检查错对象的锁。');
-      process.exit(2);
-    }
-    const pid = runningBridgePid(bridgeLockFile);
-    if (pid) {
-      console.warn(`⚠️ 桥接正在运行（PID ${pid}）：归档恢复会往 events-archive/ 追加，` +
-        '建议先停桥接再 --apply。');
-      console.warn('   （不强制阻止：恢复是幂等的，按整行内容去重，重复跑不会重复写入。）');
-    }
+    requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked });
   }
   const result = store.recoverArchiveSnapshots({ dryRun: !applyArchive });
   console.log(JSON.stringify(result, null, 2));
@@ -166,11 +197,8 @@ if (argv.includes('--replay')) {
   const apply = argv.includes('--apply');
   // 桥接本身也是失败清单的写者：它在跑的时候 replay 可能和它抢同一份清单。
   // （清单提交已改成「只删处理过的行」，不会吞新行，但停写窗口仍然更安全。）
-  if (apply && runningBridgePid()) {
-    // 桥接本身也是失败清单的写者：它在跑的时候 replay 可能和它抢同一份清单。
-    // （清单提交已改成「只删处理过的行」，不会吞新行，但停写窗口仍然更安全。）
-    console.warn('⚠️ 桥接似乎正在运行：建议先停桥接再 --apply，避免恢复期间它继续写失败清单。');
-    console.warn('   （不强制阻止：清单提交只删本轮处理过的行，不会吞新行，但停写窗口更稳。）');
+  if (apply) {
+    requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked });
   }
   const result = store.replayWriteFailures({ dryRun: !apply });
   console.log(JSON.stringify(result, null, 2));
@@ -285,18 +313,7 @@ if (summaryAudit && summaryAudit.corrupt.length) {
 if (argv.includes('--repair-summaries')) {
   const applyRepair = argv.includes('--apply');
   if (applyRepair) {
-    if (!bridgeLockFile) {
-      console.error('❌ 推断不出目标库的 bridge.lock 位置（期望 <project>/state/memory）。');
-      console.error('   请用 --bridge-lock <path> 显式指定，避免检查错对象的锁。');
-      process.exit(2);
-    }
-    const pid = runningBridgePid(bridgeLockFile);
-    if (pid) {
-      console.error(`❌ 桥接正在运行（PID ${pid}）：摘要修复会覆盖 days/*.json，` +
-        '和 consolidation 没有共享锁，可能互相覆盖。');
-      console.error('   先停桥接，再跑 --repair-summaries --apply。');
-      process.exit(2);
-    }
+    requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked });
   }
   const result = store.repairSummaries({
     limit: 400,
@@ -304,8 +321,13 @@ if (argv.includes('--repair-summaries')) {
     // check-then-write 竞态：清点完可能桥接立刻启动，所以每个文件写之前再查一次。
     beforeWrite: applyRepair
       ? () => {
-        const pid = runningBridgePid(bridgeLockFile);
-        if (pid) throw new Error(`桥接在写入前启动了（PID ${pid}），已停止修复`);
+        const lock = bridgeLockState(bridgeLockFile, { explicit: Boolean(bridgeLockArg) });
+        if (lock.state === 'running') {
+          throw new Error(`写前复查发现桥接在运行（PID ${lock.pid}），已停止修复`);
+        }
+        if (lock.state === 'unknown' && !forceUnlocked) {
+          throw new Error(`写前复查发现锁状态未知（${lock.reason || ''}），已停止修复`);
+        }
       }
       : undefined,
   });
