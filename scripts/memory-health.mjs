@@ -220,6 +220,20 @@ say(`  （注：以上只算活动日文件；另有 ${archiveMonths} 个月归�
 say(`  体积：事件 ${(st.eventBytes / 1024).toFixed(0)} KB · S3 档案 ${(st.salient.bytes / 1024).toFixed(1)} KB`);
 say(`  压缩层：日摘要 ${st.summaryFiles} / 周要点 ${st.weekFiles} / 月要点 ${st.monthFiles}`);
 say(`  归档：${store.listArchiveMonths().length} 个月`);
+// 主动校验现有的日/周/月摘要：search 只会在深窗口检索时才发现损坏，
+// health 是一次性运维命令，应该现在就把「很久没被读到」的损坏层捞出来。
+const summaryAudit = (() => {
+  try { return store.auditSummaries({ limit: 400 }); } catch { return null; }
+})();
+if (summaryAudit && summaryAudit.corrupt.length) {
+  const detail = summaryAudit.corrupt
+    .slice(0, 5)
+    .map((c) => `${c.file}（${c.reason === 'schema' ? '结构' : '语法'}）`)
+    .join('、');
+  say(`  🔴 主动校验：${summaryAudit.checked} 个摘要里有 ${summaryAudit.corrupt.length} 个不可用`);
+  say(`     ${detail}${summaryAudit.corrupt.length > 5 ? ' 等' : ''}`);
+  say('     已备份成 *.corrupt；下一次 consolidation 会用下层数据重建（health 本身不删数据）。');
+}
 say('');
 
 // ── 2. 分档 ───────────────────────────────────────────────
@@ -350,6 +364,7 @@ if (overLimitPeople > 0) {
 }
 if (st.eventDays >= 3 && st.events < 50) advice.push('事件量偏少：桥接可能没在跑，或最近很安静。');
 if (st.parseErrorLines > 0) advice.push(`有 ${st.parseErrorLines} 条记忆记录解析失败：坏行还在原文件里，人工修好后重新读取会自动恢复计数。`);
+if (typeof summaryAudit !== 'undefined' && summaryAudit && summaryAudit.corrupt.length) advice.push(`有 ${summaryAudit.corrupt.length} 个摘要文件不可用：下一次 consolidation 会尝试重建，若一直重建不出来说明下层数据也缺。`);
 if (Array.isArray(st.corruptJsonFiles) && st.corruptJsonFiles.length) advice.push(`有 ${st.corruptJsonFiles.length} 个 JSON 档案不可用（${st.corruptJsonFiles.join('、')}）：已备份为 *.corrupt，修好后下次读取自动恢复。`);
 if (st.readErrors > 0) advice.push(`有 ${st.readErrors} 个记忆文件读不出来（${(st.unreadableFiles || []).join('、') || '-'}）：先修权限/磁盘，别当成「没有数据」。`);
 if (st.profileRead && !st.profileRead.writable) advice.push('长期档案处于写保护（读不到或解析失败）：修好 profile.json 后下一次成功读取会自动恢复写入。');

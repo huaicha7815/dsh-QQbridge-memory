@@ -889,8 +889,11 @@ export function createMemoryStore(options = {}) {
     // 用「事件文件大小 + mtime」做指纹，变了就重算这一天的摘要。
     const todo = days.filter((d) => {
       if (!existing.has(d)) return true;
+      // 这里也必须走带 schema 的统一读取：业务层自己 JSON.parse 会让
+      // 「语法合法但 lines 不是数组」的摘要被当成有效文件长期跳过重建 ——
+      // bridge 启动/每日 consolidation/health 全都正常，只有真正 search 才发现。
       let prev = null;
-      try { prev = JSON.parse(fs.readFileSync(path.join(daysDir, `${d}.json`), 'utf8')); } catch { return true; }
+      try { prev = readJsonFile(path.join(daysDir, `${d}.json`), null, { validate: isSummaryPayload }); } catch { return true; }
       if (!prev || typeof prev !== 'object') return true;
       return prev.srcFingerprint !== dayFingerprint(d);
     }).slice(-Math.max(1, Number(maxDays) || 400));
@@ -902,7 +905,9 @@ export function createMemoryStore(options = {}) {
         : { day, ts: dayNoon(day), count: summary?.count || 0, keys: [], people: [], lines: [], tiers: [0, 0, 0, 0], skipped: true };
       try {
         // 记录生成时的指纹，供下次判断「这一天是否又有了新消息」
-        writeJsonFile(path.join(daysDir, `${day}.json`), { ...payload, srcFingerprint: dayFingerprint(day) });
+        const file = path.join(daysDir, `${day}.json`);
+        writeJsonFile(file, { ...payload, srcFingerprint: dayFingerprint(day) });
+        noteParseFailure(file, 0); // 重建成功 = 旧损坏状态解除
         created += 1;
       } catch {
         // 单天写失败不影响其它天
@@ -947,6 +952,13 @@ export function createMemoryStore(options = {}) {
   function ensureWeekNotes({ now = Date.now() } = {}) {
     const currentWeek = isoWeekString(now);
     const have = new Set(listWeekFiles());
+    // 已存在的周要点也要过 schema：损坏就当没有，下面从日摘要重建覆盖。
+    // 只在 search 时才校验等于让损坏的 L2.5 长期不被发现。
+    for (const week of [...have]) {
+      const file = path.join(weeksDir, `${week}.json`);
+      const note = readJsonFile(file, null, { validate: isSummaryPayload });
+      if (!note) have.delete(week);
+    }
     const byWeek = new Map();
     for (const day of listEventDays()) {
       const week = isoWeekString(dayNoon(day) || now);
@@ -962,7 +974,9 @@ export function createMemoryStore(options = {}) {
       const note = consolidateWeek(summaries, week, { minLines: 5, maxLines: 10 });
       if (!note) continue;
       try {
-        writeJsonFile(path.join(weeksDir, `${week}.json`), note);
+        const file = path.join(weeksDir, `${week}.json`);
+        writeJsonFile(file, note);
+        noteParseFailure(file, 0);
         created += 1;
       } catch {}
     }
@@ -973,6 +987,11 @@ export function createMemoryStore(options = {}) {
   function ensureMonthNotes({ now = Date.now() } = {}) {
     const currentMonth = monthString(now);
     const have = new Set(listMonthFiles());
+    for (const month of [...have]) {
+      const file = path.join(monthsDir, `${month}.json`);
+      const note = readJsonFile(file, null, { validate: isSummaryPayload });
+      if (!note) have.delete(month);
+    }
     const byMonth = new Map();
     for (const week of listWeekFiles()) {
       if (week >= isoWeekString(now)) continue;
@@ -992,11 +1011,44 @@ export function createMemoryStore(options = {}) {
       const note = consolidateMonth(notes, month, { minLines: 3, maxLines: 8 });
       if (!note) continue;
       try {
-        writeJsonFile(path.join(monthsDir, `${month}.json`), note);
+        const file = path.join(monthsDir, `${month}.json`);
+        writeJsonFile(file, note);
+        noteParseFailure(file, 0);
         created += 1;
       } catch {}
     }
     return created;
+  }
+
+  /**
+   * 主动校验已有的日/周/月摘要（给 memory-health 用）。
+   *
+   * 日常启动不必扫全部历史；但运维命令应该能发现「很久没做深窗口检索，
+   * 所以一直没暴露」的损坏层。校验会走统一的 readJsonFile（含 schema），
+   * 损坏的会被备份成 *.corrupt 并登记，下次 consolidation 会用下层数据重建。
+   *
+   * @returns {{checked:number, corrupt:Array<{file:string, kind:string, reason:string}>}}
+   */
+  function auditSummaries({ limit = 400 } = {}) {
+    const max = Math.max(1, Number(limit) || 400);
+    const targets = [];
+    for (const day of listEventDays().slice(-max)) targets.push({ file: path.join(daysDir, `${day}.json`), kind: 'day' });
+    for (const week of listWeekFiles().slice(-max)) targets.push({ file: path.join(weeksDir, `${week}.json`), kind: 'week' });
+    for (const month of listMonthFiles().slice(-max)) targets.push({ file: path.join(monthsDir, `${month}.json`), kind: 'month' });
+    let checked = 0;
+    const corrupt = [];
+    for (const { file, kind } of targets) {
+      if (isDefinitelyMissing(file)) continue; // 这一天/周/月本来就没有摘要，不算故障
+      checked += 1;
+      const val = readJsonFile(file, null, { validate: isSummaryPayload });
+      if (val === null) {
+        const failure = parseFailureFiles.get(file);
+        if (failure) {
+          corrupt.push({ file: path.basename(file), kind, reason: failure.reason || 'schema' });
+        }
+      }
+    }
+    return { checked, corrupt };
   }
 
   /** ISO 周对应的周一 0 点时间戳。 */
@@ -2391,9 +2443,9 @@ export function createMemoryStore(options = {}) {
     const parseErrorLines = parseFailureSnapshot
       .filter(([, v]) => v.kind !== 'json')
       .reduce((sum, [, v]) => sum + v.errors, 0);
-    const corruptJsonFiles = parseFailureSnapshot
-      .filter(([, v]) => v.kind === 'json')
-      .slice(0, 10).map(([file]) => path.basename(file));
+    const corruptJsonAll = parseFailureSnapshot.filter(([, v]) => v.kind === 'json');
+    const corruptJsonFileCount = corruptJsonAll.length;
+    const corruptJsonFiles = corruptJsonAll.slice(0, 10).map(([file]) => path.basename(file));
     // 损坏原因：syntax（JSON 语法坏）还是 schema（结构不符合契约）
     const corruptJsonReasons = Object.fromEntries(
       parseFailureSnapshot
@@ -2419,8 +2471,10 @@ export function createMemoryStore(options = {}) {
       //   corruptJsonFiles  = 整份 JSON 档案损坏（如某天的摘要读不出来）
       parseErrorLines,
       corruptJsonFiles,
+      corruptJsonFileCount,
       corruptJsonReasons,
-      parseErrors: parseErrorLines + corruptJsonFiles.length,
+      // 总数用完整计数：损坏 20 个时不能只报 10 个（列表截断只影响展示）
+      parseErrors: parseErrorLines + corruptJsonFileCount,
       // 兼容旧字段：所有解析失败的文件名
       corruptFiles: corruptFilesSnapshot,
       // 无来源事件数（活动日 + 归档月都算，「受影响的历史数据」才是完整口径）
@@ -2475,6 +2529,7 @@ export function createMemoryStore(options = {}) {
     replayWriteFailures,
     migrateLegacyRecords,
     clearProfileGuards,
+    auditSummaries,
     readState,
     readErrorCount: () => readFailureFilesInRoot().length,
     parseErrorCount: () => parseFailureFilesInRoot()

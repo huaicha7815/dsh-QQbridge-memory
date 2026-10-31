@@ -1826,3 +1826,72 @@ test('usage.json 结构不合法时同样登记（hits 必须是对象）', () =
   assert.ok(fs.existsSync(path.join(dir, 'usage.json.corrupt')), '要备份');
   cleanup(dir);
 });
+
+// ── consolidation 的读取路径也要过 schema，不能只靠 search 才发现 ─────
+
+test('日摘要结构损坏时 consolidation 会重建（不能等 search 才发现）', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'consol-day-'));
+  const store = createMemoryStore({ dir });
+  const now = Date.now();
+  store.appendEvent({ t: now, k: 'group:111', kind: 'msg', text: '第一件事', s: 2 });
+  store.appendEvent({ t: now, k: 'group:111', kind: 'msg', text: '第二件事', s: 2 });
+  assert.ok(store.ensureDaySummaries({ now }) >= 1, '先正常生成一次');
+
+  const file = path.join(dir, 'days', `${day(now)}.json`);
+  const real = JSON.parse(fs.readFileSync(file, 'utf8'));
+  // 结构坏：lines 变成字符串；srcFingerprint 保留（否则会因指纹变化而重建，测不到 schema 分支）
+  fs.writeFileSync(file, JSON.stringify({ ...real, lines: '本应是数组' }), 'utf8');
+
+  const rebuilt = store.ensureDaySummaries({ now });
+  assert.equal(rebuilt, 1, '结构损坏必须触发重建，而不是 continue');
+  const fixed = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.ok(Array.isArray(fixed.lines), '重建后 lines 要恢复成数组');
+  assert.equal(store.stats().corruptJsonFileCount, 0, '重建成功后损坏登记要清掉');
+  cleanup(dir);
+});
+
+test('周要点结构损坏时 consolidation 会重建', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'consol-week-'));
+  const store = createMemoryStore({ dir });
+  const now = Date.now();
+  // 造上周的若干事件（current week 不会生成周要点）
+  const lastWeek = now - 7 * 86400000;
+  for (let i = 0; i < 6; i += 1) {
+    store.appendEvent({ t: lastWeek + i * 60000, k: 'group:111', kind: 'msg', text: `上周第${i}件事`, s: 2 });
+  }
+  store.ensureDaySummaries({ now });
+  assert.ok(store.ensureWeekNotes({ now }) >= 1, '先正常生成周要点');
+
+  const weeks = store.listWeekFiles ? store.listWeekFiles() : null;
+  const dirWeeks = fs.readdirSync(path.join(dir, 'weeks')).filter((n) => n.endsWith('.json'));
+  assert.ok(dirWeeks.length >= 1, '应该有周要点文件');
+  const file = path.join(dir, 'weeks', dirWeeks[0]);
+  const real = JSON.parse(fs.readFileSync(file, 'utf8'));
+  fs.writeFileSync(file, JSON.stringify({ ...real, lines: '本应是数组' }), 'utf8');
+
+  const rebuilt = store.ensureWeekNotes({ now });
+  assert.ok(rebuilt >= 1, '结构损坏的周要点要重建');
+  const fixed = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.ok(Array.isArray(fixed.lines));
+  cleanup(dir);
+});
+
+test('损坏 JSON 总数不会被展示列表截断，auditSummaries 能主动发现', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'consol-count-'));
+  fs.mkdirSync(path.join(dir, 'events'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'days'), { recursive: true });
+  const store = createMemoryStore({ dir });
+  for (let i = 1; i <= 12; i += 1) {
+    const d = `2026-01-${String(i).padStart(2, '0')}`;
+    fs.writeFileSync(path.join(dir, 'events', `${d}.jsonl`), '', 'utf8');
+    fs.writeFileSync(path.join(dir, 'days', `${d}.json`), JSON.stringify({ lines: '坏' }), 'utf8');
+  }
+
+  const audit = store.auditSummaries({ limit: 400 });
+  assert.equal(audit.corrupt.length, 12, '主动校验要能把 12 个都捞出来');
+  const st = store.stats();
+  assert.equal(st.corruptJsonFileCount, 12, '总数不能被截断');
+  assert.equal(st.corruptJsonFiles.length, 10, '展示名单可以截断');
+  assert.equal(st.parseErrors, 12, 'parseErrors 用完整计数');
+  cleanup(dir);
+});
