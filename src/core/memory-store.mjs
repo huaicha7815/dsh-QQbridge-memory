@@ -502,14 +502,23 @@ export function createMemoryStore(options = {}) {
     if (!text) return null;
     const lines = text.split('\n').filter(Boolean);
     if (!lines.length) return null;
+    const byPhase = { event: 0, salient: 0 };
     let last = null;
-    try { last = JSON.parse(lines[lines.length - 1]); } catch { last = null; }
+    for (const line of lines) {
+      try { last = JSON.parse(line); } catch { last = null; continue; }
+      const ph = last?.phase === 'salient' ? 'salient' : 'event';
+      byPhase[ph] += 1;
+    }
     return {
       at: Number(last?.at) || 0,
       phase: String(last?.phase ?? ''),
       code: String(last?.code ?? 'IO'),
       error: String(last?.error ?? (last ? '' : '替代诊断文件内容损坏')),
       history: lines.length,
+      byPhase,
+      // 只有 event 阶段才更接近「事件没落盘」；salient 阶段失败时 L1 通常还在，
+      // 所以不能把总行数直接叫「丢失的可恢复记录数」。
+      unknown: false,
     };
   })();
   let lastWriteFailure = (() => {
@@ -1999,7 +2008,15 @@ export function createMemoryStore(options = {}) {
     try {
       // 遗留快照（上一次 replay 在 rename 后崩溃留下的）：必须和新快照一起处理。
       // 以前 rename 到固定名 .processing 会把它覆盖掉，旧事件就永远丢了。
-      const leftovers = listFailureSnapshots();
+      const snapshotScan = scanFailureSnapshots();
+      if (snapshotScan.error) {
+        // 根目录枚举失败：快照可能还在但看不见。不能当成「没有快照」继续跑。
+        return {
+          replayed: 0, skipped: 0, failed: 0, quarantined: 0, dryRun,
+          error: `snapshot-scan-failed: ${snapshotScan.error}`,
+        };
+      }
+      const leftovers = snapshotScan.files;
       // 唯一名快照：不会覆盖任何遗留文件。
       const snapshotFile = `${writeFailFile}.processing-${Date.now()}-${crypto.randomUUID().slice(0, 6)}`;
       if (!dryRun) {
@@ -2040,6 +2057,10 @@ export function createMemoryStore(options = {}) {
       // 这里按「最高阶段」折叠：event > salient，保留原始行交给下面写。
       const stageRank = (p) => (p === 'event' ? 2 : 1);
       const foldedById = new Map();
+      const idConflicts = [];
+      const rowKeyOf = (row) => {
+        try { return JSON.stringify(row); } catch { return ''; }
+      };
       for (const line of lines) {
         let item;
         try { item = JSON.parse(line); } catch { bad.push(line); quarantined += 1; continue; }
@@ -2049,7 +2070,16 @@ export function createMemoryStore(options = {}) {
         const phase = item.phase === 'salient' ? 'salient' : 'event';
         const rank = stageRank(phase);
         const prev = foldedById.get(id);
-        if (!prev || rank > prev.rank) {
+        if (!prev) {
+          foldedById.set(id, { line, id, row, phase, rank, day: dayString(Number(row.t) || Date.now()), tier: Number(row.s) || 0 });
+          continue;
+        }
+        if (rowKeyOf(prev.row) !== rowKeyOf(row)) {
+          // 同 id、不同内容：恢复入口遇到冲突必须 fail-closed，不能静默挑一条。
+          idConflicts.push({ id, phase, conflictPhase: prev.phase });
+          continue;
+        }
+        if (rank > prev.rank) {
           foldedById.set(id, { line, id, row, phase, rank, day: dayString(Number(row.t) || Date.now()), tier: Number(row.s) || 0 });
         }
       }
@@ -2164,6 +2194,7 @@ export function createMemoryStore(options = {}) {
       return {
         replayed, skipped, failed: remaining.length, quarantined, dryRun,
         unreadable: unreadableFiles.length,
+        ...(idConflicts.length ? { idConflicts } : {}),
         ...(commitFailure ? { commitError: commitFailure } : {}),
       };
     } finally {
@@ -2457,6 +2488,29 @@ export function createMemoryStore(options = {}) {
     };
   }
 
+  /**
+   * 确认（ack）诊断文件里的「未记录失败」。
+   *
+   * 为什么需要：诊断文件一旦产生会永久让 health 变红，即使之后的清单写入已经恢复；
+   * 若不提供显式确认，replay 会永远失败（因为 unrecorded 永远存在）。
+   * ack = 把诊断文件归档成带时间戳的文件：明细确实丢了，但审计线索保留。
+   */
+  function ackManifestErrors() {
+    const { text, error } = readTextStrict(manifestErrorFile);
+    if (error) return { ok: false, error: `read-failed: ${error}` };
+    if (text === null) return { ok: true, acknowledged: 0, note: '没有诊断文件' };
+    const lines = text.split('\n').filter(Boolean);
+    if (!lines.length) return { ok: true, acknowledged: 0 };
+    const ackFile = `${manifestErrorFile}.ack-${Date.now()}`;
+    try {
+      fs.renameSync(manifestErrorFile, ackFile);
+      failureManifestWriteError = null;
+      return { ok: true, acknowledged: lines.length, archivedTo: path.basename(ackFile) };
+    } catch (renameError) {
+      return { ok: false, error: `archive-failed: ${renameError?.message ?? renameError}` };
+    }
+  }
+
   /** 兼容旧调用点：只取记录数。 */
   function pendingFailureCount() {
     return pendingFailureStats().records;
@@ -2486,8 +2540,8 @@ export function createMemoryStore(options = {}) {
     try {
 
     // 1) 失败清单
+    let sourceFile = writeFailFile;
     try {
-      let sourceFile = writeFailFile;
       if (!dryRun) {
         sourceFile = `${writeFailFile}.migrate-${Date.now()}-${crypto.randomUUID().slice(0, 6)}`;
         try {
@@ -2798,6 +2852,12 @@ export function createMemoryStore(options = {}) {
           history: Number(failureManifestWriteError.history) || 0,
         }
         : null,
+      // 未记录的失败：补偿动作的元数据留下了，但消息明细已经丢失，replay 无法消费。
+      // 不叫 lostRecoverableCount —— 同一 ID 可能多次失败（行数≠唯一记录数），
+      // 且只有 event 阶段才更接近「事件没落盘」。
+      unrecordedFailureCount: Number(failureManifestWriteError?.history) || 0,
+      unrecordedByPhase: failureManifestWriteError?.byPhase || { event: 0, salient: 0 },
+      unrecordedFailureCountUnknown: false,
       // 归档迁移快照：单独一类，需要 recoverArchiveSnapshots() 恢复
       archiveSnapshots: pending.archiveSnapshots,
       // 归档目录读不到 ≠ 没有快照：这一项非空时健康页必须红，不能报「没有待恢复数据」。
@@ -2818,6 +2878,7 @@ export function createMemoryStore(options = {}) {
     clearProfileGuards,
     auditSummaries,
     repairSummaries,
+    ackManifestErrors,
     readState,
     readErrorCount: () => readFailureFilesInRoot().length,
     parseErrorCount: () => parseFailureFilesInRoot()

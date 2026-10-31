@@ -65,11 +65,16 @@ const store = createMemoryStore({ dir: memDir, config: {} });
 // 用户修好权限后还得自己写 Node 脚本。这里给一个真能用的一行命令。
 // 旧格式迁移入口：给旧失败记录补 id、给旧归档行补 srcDay。
 // 默认只预览（dry-run），--apply 才真正写回。
+// 确认（ack）诊断文件里的「未记录失败」：明细确实丢了，但归档保留审计线索，
+// 之后 health 不再把它当当前阻断（否则它会永久红、replay 永远失败）。
+if (argv.includes('--ack-manifest-errors')) {
+  const result = store.ackManifestErrors();
+  console.log(JSON.stringify(result, null, 2));
+  process.exit(result.ok ? 0 : 1);
+}
+
 if (argv.includes('--migrate')) {
   const applyMigrate = apply;
-  if (applyMigrate) {
-    requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked });
-  }
   if (applyMigrate) {
     requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked });
   }
@@ -78,7 +83,8 @@ if (argv.includes('--migrate')) {
     previewHint: applyMigrate ? '' : '（上面是预览。确认无误后加 --apply 真正写回）',
   });
   if (!applyMigrate) process.exit(0);
-  const problems = maintenanceProblems(result, store.stats());
+  // migrate 只补 ID，不清空清单：完成后置条件是「迁移操作成功」，不是 pending 归零。
+  const problems = maintenanceProblems(result);
   if (problems.length) {
     console.error('❌ 迁移没有完全成功：');
     for (const p of problems) console.error(`   · ${p}`);
@@ -148,7 +154,7 @@ if (argv.includes('--replay')) {
   });
   if (!applyReplay) process.exit(0);
   // 统一判定：不能只看 pendingRecoverable（overflow / 账本不可读同样是「没恢复完」）。
-  const problems = maintenanceProblems(result, store.stats());
+  const problems = maintenanceProblems(result, { statsAfter: store.stats(), requireDrained: true });
   if (problems.length) {
     console.error('❌ replay 没有完全成功：');
     for (const p of problems) console.error(`   · ${p}`);
@@ -210,8 +216,8 @@ if (st.failureManifestWriteError) {
   const d = st.failureManifestWriteError;
   say(`  🔴 上次运行连失败清单都写不进去（${d.code}，${d.phase || 'unknown'}，历史 ${d.history || 1} 条）`);
   say(`     ${d.error || ''}`);
-  say('     这些失败记录只留在 write-failures.manifest-error.jsonl 里（或已彻底丢失）：pending 数字不可信。');
-  say('     先修磁盘/权限，再人工确认丢了哪些；不要把它当成「没有失败」。');
+  say('     补偿动作的元数据留下了，但消息明细已经丢失（replay 无法用它恢复任何东西）。');
+  say('     pending 数字因此不可信；确认范围后可用 --ack-manifest-errors 归档并解除当前告警。');
 }
 if (st.pendingUnreadable) {
   say('  🔴 失败清单 write-failures.jsonl 读不到（权限/IO）：下面的 pending 数字不可信，不能当成「没有待恢复」。');

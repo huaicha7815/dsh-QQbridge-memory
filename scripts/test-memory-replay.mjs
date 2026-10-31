@@ -2407,3 +2407,87 @@ test('replay --apply 有 overflow 残留时 exit 1（已知不可恢复数据不
   assert.equal(run.status, 1, 'overflow 残留时 replay 必须 exit 1：' + (run.stdout || run.stderr || '').slice(0, 400));
   cleanup(base);
 });
+
+test('同 ID 不同内容必须报 id-conflict，不能静默挑一条', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'id-conflict-'));
+  const store = createMemoryStore({ dir });
+  const rowA = { id: 'dup', t: Date.now(), k: 'g:1', kind: 'msg', text: '内容 A', s: 2 };
+  const rowB = { id: 'dup', t: Date.now(), k: 'g:1', kind: 'msg', text: '内容 B', s: 2 };
+  fs.writeFileSync(
+    path.join(dir, 'write-failures.jsonl'),
+    [
+      JSON.stringify({ at: Date.now(), phase: 'event', id: 'dup', row: rowA }),
+      JSON.stringify({ at: Date.now(), phase: 'event', id: 'dup', row: rowB }),
+    ].join('\n') + '\n',
+    'utf8',
+  );
+  const result = store.replayWriteFailures({ dryRun: false });
+  assert.ok(Array.isArray(result.idConflicts) && result.idConflicts.length === 1, '冲突必须被报告：' + JSON.stringify(result));
+  cleanup(dir);
+});
+
+test('诊断文件按阶段计数，ack 后归档并解除告警', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'unrecorded-'));
+  const store = createMemoryStore({ dir });
+  const diagFile = path.join(dir, 'write-failures.manifest-error.jsonl');
+  fs.writeFileSync(
+    diagFile,
+    [
+      JSON.stringify({ at: Date.now(), phase: 'event', id: 'e1', code: 'ENOSPC', error: 'no space' }),
+      JSON.stringify({ at: Date.now(), phase: 'salient', id: 's1', code: 'ENOSPC', error: 'no space' }),
+    ].join('\n') + '\n',
+    'utf8',
+  );
+  const fresh = createMemoryStore({ dir });
+  const st = fresh.stats();
+  assert.equal(st.unrecordedFailureCount, 2);
+  assert.equal(st.unrecordedByPhase.event, 1);
+  assert.equal(st.unrecordedByPhase.salient, 1);
+
+  const ack = fresh.ackManifestErrors();
+  assert.equal(ack.ok, true);
+  assert.equal(ack.acknowledged, 2);
+  assert.ok(!fs.existsSync(diagFile), 'ack 后诊断文件应被归档');
+  assert.ok(fs.readdirSync(dir).some((n) => n.includes('manifest-error.jsonl.ack-')), '要保留审计线索');
+  const after = createMemoryStore({ dir }).stats();
+  assert.equal(after.unrecordedFailureCount, 0, 'ack 后不再告警');
+  cleanup(dir);
+});
+
+test('migrate 在有 pending 记录时不应假失败（迁移只补 ID）', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'migrate-no-false-fail-'));
+  const memDir = path.join(base, 'state', 'memory');
+  fs.mkdirSync(memDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(memDir, 'write-failures.jsonl'),
+    JSON.stringify({ at: Date.now(), phase: 'event', row: { t: Date.now(), k: 'g:1', kind: 'msg', text: '旧格式' } }) + '\n',
+    'utf8',
+  );
+  const dead = spawnSync(process.execPath, ['-e', '0'], { timeout: 10000 });
+  fs.writeFileSync(path.join(base, 'state', 'bridge.lock'), String(dead.pid), 'utf8');
+
+  const run = runHealth(['--dir', memDir, '--migrate', '--apply']);
+  assert.equal(run.status, 0, '迁移成功不应因 pending 仍存在而 exit 1：' + (run.stdout || run.stderr || '').slice(0, 500));
+  const after = fs.readFileSync(path.join(memDir, 'write-failures.jsonl'), 'utf8').trim();
+  assert.ok(after.includes('"id"'), '旧记录要补上 id');
+  cleanup(base);
+});
+
+test('replay --apply 在存在未记录失败（未 ack）时 exit 1', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'replay-unrecorded-'));
+  const memDir = path.join(base, 'state', 'memory');
+  fs.mkdirSync(memDir, { recursive: true });
+  fs.writeFileSync(path.join(memDir, 'write-failures.jsonl'), '', 'utf8');
+  fs.writeFileSync(
+    path.join(memDir, 'write-failures.manifest-error.jsonl'),
+    JSON.stringify({ at: Date.now(), phase: 'event', id: 'lost', code: 'ENOSPC', error: 'no space' }) + '\n',
+    'utf8',
+  );
+  const dead = spawnSync(process.execPath, ['-e', '0'], { timeout: 10000 });
+  fs.writeFileSync(path.join(base, 'state', 'bridge.lock'), String(dead.pid), 'utf8');
+
+  const run = runHealth(['--dir', memDir, '--replay', '--apply']);
+  assert.equal(run.status, 1, '未记录失败存在时 replay 必须 exit 1：' + (run.stdout || run.stderr || '').slice(0, 500));
+  assert.ok(String(`${run.stdout || ''}${run.stderr || ''}`).includes('连清单都没写进去'), '要说明原因');
+  cleanup(base);
+});

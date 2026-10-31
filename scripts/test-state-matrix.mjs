@@ -116,7 +116,14 @@ function assertMetric(stats, metric, label) {
     assert.equal(stats.pendingUnreadable, true, `${label}：pendingUnreadable 应为 true`);
     const reasons = stats.pendingUnreadableReasons || {};
     if (reason) {
-      const key = reason === 'manifest' ? 'manifest' : (reason === 'overflow' ? 'overflow' : 'snapshots');
+      const keyMap = {
+        manifest: 'manifest',
+        overflow: 'overflow',
+        snapshots: 'snapshots',
+        snapshotsEnumeration: 'snapshotsEnumeration',
+        quarantine: 'quarantine',
+      };
+      const key = keyMap[reason] || 'snapshots';
       assert.ok(reasons[key], `${label}：pendingUnreadableReasons.${key} 没有命中`);
     }
     return;
@@ -544,6 +551,26 @@ scenario('recordWriteFailure 连清单都写不进去 → failureManifestWriteEr
     }
   }]],
   expectMetric: { field: 'failureManifestWriteError' },
+});
+
+scenario('失败快照根目录枚举 EACCES → pendingUnreadable', {
+  seed: (dir) => {
+    fs.writeFileSync(path.join(dir, 'write-failures.jsonl'), '', 'utf8');
+    fs.writeFileSync(path.join(dir, 'write-failures.jsonl.processing-old'), JSON.stringify({ at: TS, phase: 'event', id: 'old-1', row: { id: 'old-1', t: TS, k: 'g:1', kind: 'msg', text: '遗留快照', s: 2 } }) + '\n', 'utf8');
+  },
+  inject: (dir) => injectIoFailure('readdirSync', dir, 'EACCES'),
+  entries: [['stats', (s) => s.stats()]],
+  expectMetric: { field: 'pendingUnreadable', reason: 'snapshotsEnumeration' },
+});
+
+scenario('quarantine 读 EACCES → pendingUnreadable', {
+  seed: (dir) => {
+    fs.writeFileSync(path.join(dir, 'write-failures.jsonl'), '', 'utf8');
+    fs.writeFileSync(path.join(dir, 'write-failures.jsonl.quarantine'), JSON.stringify({ at: TS, bad: true }) + '\n', 'utf8');
+  },
+  inject: (dir) => injectIoFailure('readFileSync', path.join(dir, 'write-failures.jsonl.quarantine'), 'EACCES'),
+  entries: [['stats', (s) => s.stats()]],
+  expectMetric: { field: 'pendingUnreadable', reason: 'quarantine' },
 });
 
 // ── 锁层（直接测共享库，不依赖 CLI） ────────────────────────────────

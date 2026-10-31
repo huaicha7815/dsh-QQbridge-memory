@@ -114,15 +114,21 @@ export function parseMaintenanceArgs(argv) {
 }
 
 /**
- * 统一成功判定：所有维护命令都用它决定退出码。
+ * 统一成功判定：所有维护命令共用同一个「问题格式」，但**完成后置条件按命令选**。
  *
- * 规则来自审查：不能把「返回了结果对象」当成「命令成功」，也不能只查一个字段。
- * 覆盖：锁冲突、锁被接管、显式错误、回填失败、失败项、读不到的快照、
- * 以及执行后仍然存在的待恢复账本（pendingRecoverable / overflow / 账本不可读）。
+ * 审查教训：把「统一」理解成「所有命令套同一组 pending 条件」会造成
+ * 正常的 migrate 假失败（迁移只补 ID，不清空清单），而真正的未记录损失假成功。
  *
+ * 通用错误（所有命令都查）：锁冲突 / 锁被接管 / 显式 error / 回填失败 /
+ *   failed（数组或数字）/ unreadable。
+ * 完成后置条件（requireDrained=true 时查）：pendingRecoverable、
+ *   unrecoverableOverflow、pendingUnreadable、unrecordedFailureCount（未 ack）。
+ *
+ * @param {object} result 维护操作返回结果
+ * @param {{statsAfter?: object|null, requireDrained?: boolean}} [options]
  * @returns {string[]} 问题列表；空数组 = 成功
  */
-export function maintenanceProblems(result, statsAfter) {
+export function maintenanceProblems(result, { statsAfter = null, requireDrained = false } = {}) {
   const problems = [];
   if (!result || typeof result !== 'object') return ['没有返回结果对象'];
   if (result.locked) problems.push('另一个进程持有锁（本次什么也没做）');
@@ -134,7 +140,12 @@ export function maintenanceProblems(result, statsAfter) {
   const failedCount = Array.isArray(result.failed) ? result.failed.length : (Number(result.failed) || 0);
   if (failedCount > 0) problems.push(`${failedCount} 项处理失败（已保留待下次重试）`);
   if ((Number(result.unreadable) || 0) > 0) problems.push(`${result.unreadable} 个快照读不到`);
-  if (statsAfter) {
+  if (Array.isArray(result.idConflicts) && result.idConflicts.length) {
+    problems.push(`${result.idConflicts.length} 个同 ID 内容冲突（已保留待人工确认）`);
+  }
+
+  // 完成后置条件：只有「要求收口」的命令（replay）才看这些。
+  if (requireDrained && statsAfter) {
     if ((Number(statsAfter.pendingRecoverable) || 0) > 0) {
       problems.push(`仍有 ${statsAfter.pendingRecoverable} 条待恢复记录`);
     }
@@ -143,6 +154,9 @@ export function maintenanceProblems(result, statsAfter) {
     }
     if (statsAfter.pendingUnreadable) {
       problems.push('恢复账本读不到（pending 数字不可信）');
+    }
+    if ((Number(statsAfter.unrecordedFailureCount) || 0) > 0) {
+      problems.push(`有 ${statsAfter.unrecordedFailureCount} 条失败连清单都没写进去（明细已丢失，见 write-failures.manifest-error.jsonl；确认后可用 --ack-manifest-errors 归档）`);
     }
   }
   return problems;
