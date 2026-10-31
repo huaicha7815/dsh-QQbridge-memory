@@ -759,6 +759,8 @@ export function createMemoryStore(options = {}) {
         history: 0,
         byPhase: { event: 0, salient: 0 },
         unknown: true,
+        // runtime 标记：这次 unknown 来自「本次进程写入失败」，而不是磁盘上的旧诊断。
+        runtime: true,
         reason: `诊断文件也写不进去（${String(manifestError?.code ?? 'IO')}）：无法持久化未记录失败`,
       };
       console.warn('[memory] 失败清单写入失败:', manifestError?.message ?? manifestError);
@@ -770,8 +772,9 @@ export function createMemoryStore(options = {}) {
           error: String(manifestError?.message ?? manifestError).slice(0, 300),
         }) + '\n', 'utf8');
         // 写入成功：重新按文件内容计算状态（unknown 应解除，history 应为真实行数）
+        // 追加成功后按文件重新计算：runtime unknown 解除（本次失败已经持久化了）。
         const refreshed = readManifestDiagnostics();
-        if (refreshed) failureManifestWriteError = refreshed;
+        failureManifestWriteError = refreshed;
       } catch { /* 磁盘完全不可写：保留内存 unknown 状态 + console */ }
     }
   }
@@ -2807,9 +2810,25 @@ export function createMemoryStore(options = {}) {
     // 否则它的 corruptJsonFiles 登记会漏进这份统计（属性求值顺序的坑已踩过两次）。
     const usageSnapshot = usageStats();
     // 诊断文件可能在进程生命周期里出现/变化（bridge 追写），stats 不能只用启动时快照。
-    // 但文件写不进去时（磁盘满），本次进程内的错误仍要可见：文件优先，内存兜底。
+    // 两个证据源要**合并**，不是互相替代：
+    //   diagNow  = 磁盘上已存在的旧诊断（可读、合法）
+    //   runtime  = 本次进程「诊断文件也写不进去」的未知失败
+    // 旧文件可读不代表本次写入成功；只报旧 count 会让新丢失线索被 ack 一起清掉。
     const diagNow = readManifestDiagnostics();
-    const diagState = diagNow || failureManifestWriteError || null;
+    const runtimeUnknown = failureManifestWriteError && failureManifestWriteError.runtime === true
+      ? failureManifestWriteError
+      : null;
+    let diagState = diagNow;
+    if (runtimeUnknown) {
+      diagState = diagNow
+        ? {
+          ...diagNow,
+          unknown: true,
+          runtimeUnknown: true,
+          reason: `另有本次无法持久化的失败（${runtimeUnknown.code}）：${runtimeUnknown.reason}`,
+        }
+        : runtimeUnknown;
+    }
     failureManifestWriteError = diagState;
     const quarantineRead = readTextStrict(`${writeFailFile}.quarantine`);
     const quarantinedCount = (quarantineRead.text || '').split('\n').filter(Boolean).length;

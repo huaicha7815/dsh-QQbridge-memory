@@ -59,6 +59,7 @@ import {
   markStickerUsed
 } from './sticker-lib.js';
 import { createMemoryStore } from './core/memory-store.mjs';
+import { acquireMaintenanceGate, releaseMaintenanceGate } from './lib/maintenance-gate.mjs';
 import { canonicalV2Key, createConversationStateV2, defaultWakeConfigV2, hydrateConversationStateV2, normalizeSpeakerIdsV2, refreshDefaultWakeConfig, serializeSocialV2 } from './core/socialv2-store.mjs';
 import { createScheduler } from './core/socialv2-scheduler.mjs';
 import { createWakePromptBuilder } from './core/socialv2-prompt.mjs';
@@ -1043,6 +1044,30 @@ function consolePortInUse() {
 
 function acquireLock() {
   fs.mkdirSync(STATE_DIR, { recursive: true });
+  // 维护门：必须比 bridge.lock 先拿。
+  //   维护命令持 gate 期间，bridge 不能进入「写 bridge.lock」阶段；
+  //   bridge 正常运行后 gate 已释放，维护命令会读到 running 并拒绝。
+  // 拿不到就 exit 2（不等待）：守护脚本稍后重试；长时间无输出会被当成卡死。
+  const gatePath = path.join(STATE_DIR, 'maintenance.lock');
+  const gate = acquireMaintenanceGate(gatePath, { command: 'bridge-start', kind: 'bridge-start' });
+  if (!gate.ok) {
+    if (gate.busy) {
+      const holder = gate.holder || {};
+      console.error(`[bridge] 维护任务正在运行（PID ${holder.pid ?? '?'}，${holder.command || 'maintenance'}）：本次启动退出，稍后重试。`);
+    } else {
+      console.error(`[bridge] 维护门状态未知（${gate.reason || '内容损坏/读不到'}）：需要人工处理，不能自动越过。`);
+    }
+    process.exit(2);
+  }
+  try {
+    acquireLockInner();
+  } finally {
+    // 正常路径由这里释放；异常/exit 路径由 gate 的 exit hook 兜底。
+    releaseMaintenanceGate(gatePath, gate.gate);
+  }
+}
+
+function acquireLockInner() {
   // 原子创建锁文件：把 PID 一次性写入（flag 'wx'），避免“先建空文件再写 PID”的窗口被第二个进程当作过期锁偷走。
   const tryCreate = () => {
     try {

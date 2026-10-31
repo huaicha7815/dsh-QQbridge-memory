@@ -21,6 +21,7 @@ import {
   bridgeLockState, requireBridgeIdle, resolveBridgeLockForMemoryDir,
   parseMaintenanceArgs, reportMaintenance, maintenanceProblems,
 } from './lib/maintenance.mjs';
+import { withMaintenanceGate, gateFailureCode } from '../src/lib/maintenance-gate.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const argv = process.argv.slice(2);
@@ -61,6 +62,22 @@ if (!fs.existsSync(path.join(memDir, 'events')) && !fs.existsSync(path.join(memD
 
 const store = createMemoryStore({ dir: memDir, config: {} });
 
+/**
+ * 写操作统一走维护门：callback 返回退出码（不能 process.exit，否则绕过 finally 释放 gate）。
+ * 拿不到门 → 2（busy/unsafe 都退出 2，但日志区分）。
+ */
+function runGated(command, fn) {
+  const attempt = withMaintenanceGate({ bridgeLockFile, stateDir: path.dirname(memDir), command }, fn);
+  if (attempt.ok) return Number(attempt.result) || 0;
+  if (attempt.busy) {
+    const holder = attempt.holder || {};
+    console.error(`❌ 维护门被占用（PID ${holder.pid ?? '?'}，${holder.command || 'maintenance'}）：等它结束后重试。`);
+  } else {
+    console.error(`❌ 维护门状态未知（${attempt.reason || '读不到/内容损坏'}）：需要人工处理。`);
+  }
+  return gateFailureCode(attempt);
+}
+
 // 恢复入口：以前只打印「可以用 replayWriteFailures()」但没有任何可执行入口，
 // 用户修好权限后还得自己写 Node 脚本。这里给一个真能用的一行命令。
 // 旧格式迁移入口：给旧失败记录补 id、给旧归档行补 srcDay。
@@ -68,41 +85,46 @@ const store = createMemoryStore({ dir: memDir, config: {} });
 // 确认（ack）诊断文件里的「未记录失败」：明细确实丢了，但归档保留审计线索，
 // 之后 health 不再把它当当前阻断（否则它会永久红、replay 永远失败）。
 if (argv.includes('--ack-manifest-errors')) {
-  // ack 是写操作（rename 诊断文件）：bridge 正在追加诊断时归档会把新行一起搬走。
-  // 这里先做 bridge idle 检查；维护 gate 落地后会再套一层 withMaintenanceGate。
-  requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked });
-  const result = store.ackManifestErrors();
-  reportMaintenance(result);
-  process.exit(result.ok ? 0 : 1);
+  // ack 是写操作（rename 诊断文件）：必须在维护门里，且再确认 bridge 没在跑。
+  const code = runGated('ack', () => {
+    requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked });
+    const result = store.ackManifestErrors();
+    reportMaintenance(result);
+    return result.ok ? 0 : 1;
+  });
+  process.exit(code);
 }
 
 if (argv.includes('--migrate')) {
   const applyMigrate = apply;
-  if (applyMigrate) {
-    requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked });
-  }
-  const result = store.migrateLegacyRecords({ dryRun: !applyMigrate });
-  reportMaintenance(result, {
-    previewHint: applyMigrate ? '' : '（上面是预览。确认无误后加 --apply 真正写回）',
-  });
-  // dry-run 也要看 locked/error：预览阶段就失败时不能 exit 0 假装没事。
-  if (!applyMigrate) {
-    const previewProblems = maintenanceProblems(result);
-    if (previewProblems.length) {
-      console.error('❌ 预览失败：');
-      for (const p of previewProblems) console.error(`   · ${p}`);
-      process.exit(1);
+  const runMigrate = () => {
+    if (applyMigrate) {
+      requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked });
     }
-    process.exit(0);
-  }
-  // migrate 只补 ID，不清空清单：完成后置条件是「迁移操作成功」，不是 pending 归零。
-  const problems = maintenanceProblems(result);
-  if (problems.length) {
-    console.error('❌ 迁移没有完全成功：');
-    for (const p of problems) console.error(`   · ${p}`);
-    process.exit(1);
-  }
-  process.exit(0);
+    const result = store.migrateLegacyRecords({ dryRun: !applyMigrate });
+    reportMaintenance(result, {
+      previewHint: applyMigrate ? '' : '（上面是预览。确认无误后加 --apply 真正写回）',
+    });
+    // dry-run 也要看 locked/error：预览阶段就失败时不能 exit 0 假装没事。
+    if (!applyMigrate) {
+      const previewProblems = maintenanceProblems(result);
+      if (previewProblems.length) {
+        console.error('❌ 预览失败：');
+        for (const p of previewProblems) console.error(`   · ${p}`);
+        return 1;
+      }
+      return 0;
+    }
+    // migrate 只补 ID，不清空清单：完成后置条件是「迁移操作成功」，不是 pending 归零。
+    const problems = maintenanceProblems(result);
+    if (problems.length) {
+      console.error('❌ 迁移没有完全成功：');
+      for (const p of problems) console.error(`   · ${p}`);
+      return 1;
+    }
+    return 0;
+  };
+  process.exit(applyMigrate ? runGated('migrate', runMigrate) : runMigrate());
 }
 
 // 归档迁移快照恢复入口：migrate 期间崩溃会在 events-archive/ 留下
@@ -155,32 +177,34 @@ if (argv.includes('--recover-archive')) {
 
 if (argv.includes('--replay')) {
   const applyReplay = apply;
-  // 桥接本身也是失败清单的写者：它在跑的时候 replay 可能和它抢同一份清单。
-  // （清单提交已改成「只删处理过的行」，不会吞新行，但停写窗口仍然更安全。）
-  if (apply) {
-    requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked });
-  }
-  const result = store.replayWriteFailures({ dryRun: !applyReplay });
-  reportMaintenance(result, {
-    previewHint: applyReplay ? '' : '（上面是预览。确认无误后加 --apply 真正写回）',
-  });
-  if (!applyReplay) {
-    const previewProblems = maintenanceProblems(result);
-    if (previewProblems.length) {
-      console.error('❌ 预览失败：');
-      for (const p of previewProblems) console.error('   · ' + p);
-      process.exit(1);
+  const runReplay = () => {
+    // 桥接本身也是失败清单的写者：它在跑的时候 replay 可能和它抢同一份清单。
+    if (applyReplay) {
+      requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked });
     }
-    process.exit(0);
-  }
-  // 统一判定：不能只看 pendingRecoverable（overflow / 账本不可读同样是「没恢复完」）。
-  const problems = maintenanceProblems(result, { statsAfter: store.stats(), requireDrained: true });
-  if (problems.length) {
-    console.error('❌ replay 没有完全成功：');
-    for (const p of problems) console.error(`   · ${p}`);
-    process.exit(1);
-  }
-  process.exit(0);
+    const result = store.replayWriteFailures({ dryRun: !applyReplay });
+    reportMaintenance(result, {
+      previewHint: applyReplay ? '' : '（上面是预览。确认无误后加 --apply 真正写回）',
+    });
+    if (!applyReplay) {
+      const previewProblems = maintenanceProblems(result);
+      if (previewProblems.length) {
+        console.error('❌ 预览失败：');
+        for (const p of previewProblems) console.error('   · ' + p);
+        return 1;
+      }
+      return 0;
+    }
+    const problems = maintenanceProblems(result, { statsAfter: store.stats(), requireDrained: true });
+    if (problems.length) {
+      console.error('❌ replay 没有完全成功：');
+      for (const p of problems) console.error('   · ' + p);
+      return 1;
+    }
+    return 0;
+  };
+  const code = applyReplay ? runGated('replay', runReplay) : runReplay();
+  process.exit(code);
 }
 const now = Date.now();
 const st = store.stats({ now });

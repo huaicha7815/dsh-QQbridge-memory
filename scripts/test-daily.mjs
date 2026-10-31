@@ -88,6 +88,13 @@ const suite = [
     expect: 0,
   },
   {
+    // 维护门：所有写记忆的命令必须走同一个 gate（bridge 启动也走）。
+    // 进程并发/时序语义单独一套，不塞进状态矩阵。
+    name: '维护门（进程互斥）',
+    args: ['--test', 'scripts/test-maintenance-gate.mjs'],
+    expect: 0,
+  },
+  {
     name: '记忆库端到端',
     args: ['--test', 'scripts/test-memory-e2e.mjs'],
     expect: 0,
