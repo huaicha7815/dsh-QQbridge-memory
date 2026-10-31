@@ -120,15 +120,16 @@ test('gate：两个进程同时抢，只有一个进入临界区', async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('gate：进程收到 SIGTERM 时 exit hook 释放 gate', async () => {
+test('gate：宿主 SIGTERM 处理器调用 releaseHeldMaintenanceGates 后 gate 释放', async () => {
   const dir = tmpDir('gate-sigterm-');
   const lock = path.join(dir, 'maintenance.lock');
-  // Windows 上 child.kill('SIGTERM') 走的是 TerminateProcess，Node 的 SIGTERM 处理器
-  // 不会执行；这里让子进程自己在进程内 emit，确定性地测 exit hook。
+  // gate 库不接管宿主生命周期：信号处理由宿主负责（bridge / CLI）。
+  // 这里模拟宿主：拿到 gate 后注册 SIGTERM handler，调用 releaseHeldMaintenanceGates 再退出。
   const script = `
-    import { acquireMaintenanceGate } from ${JSON.stringify(GATE_URL)};
+    import { acquireMaintenanceGate, releaseHeldMaintenanceGates } from ${JSON.stringify(GATE_URL)};
     const r = acquireMaintenanceGate(${JSON.stringify(lock)}, { command: 'sigterm' });
     console.log(r.ok ? 'HELD' : 'FAIL');
+    process.on('SIGTERM', () => { releaseHeldMaintenanceGates(); process.exit(0); });
     setTimeout(() => process.emit('SIGTERM'), 300);
     setInterval(() => {}, 1000);
   `;
@@ -138,7 +139,28 @@ test('gate：进程收到 SIGTERM 时 exit hook 释放 gate', async () => {
   const closed = new Promise((resolve) => child.on('close', resolve));
   await closed;
   assert.ok(out.includes('HELD'), '子进程应先持有 gate：' + out);
-  assert.equal(fs.existsSync(lock), false, 'SIGTERM 后 gate 必须被释放（exit hook）');
+  assert.equal(fs.existsSync(lock), false, '宿主 handler 释放后 gate 必须消失');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('gate：async callback 会被拒绝（不能静默失去互斥）', () => {
+  const dir = tmpDir('gate-async-');
+  const lock = path.join(dir, 'maintenance.lock');
+  assert.throws(() => {
+    withMaintenanceGate({ maintenanceLockFile: lock, command: 'async' }, async () => 'x');
+  }, /必须是同步的/);
+  assert.equal(fs.existsSync(lock), false, '抛错后 gate 必须已释放');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('gate：父目录不存在时 fail-closed，不自动创建 state', () => {
+  const dir = tmpDir('gate-nodir-');
+  const missing = path.join(dir, 'no-such-state');
+  const r = acquireMaintenanceGate(path.join(missing, 'maintenance.lock'), { command: 'x' });
+  assert.equal(r.ok, false);
+  assert.equal(r.unsafe, true);
+  assert.ok(String(r.reason).includes('状态目录不存在'));
+  assert.equal(fs.existsSync(missing), false, '不能顺手创建目录');
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

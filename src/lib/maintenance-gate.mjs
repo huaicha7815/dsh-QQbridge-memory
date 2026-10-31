@@ -9,8 +9,10 @@
 //
 // 关键约定：
 //   1. callback 里**不能**调用 process.exit（会绕过 finally 释放 gate）；
-//      callback 只返回结果/退出码，退出由最外层做。
-//   2. 进程被 SIGINT/SIGTERM/uncaughtException 打断时，由 exit hook 兜底释放。
+//      callback 只返回结果/退出码，且必须是同步的（async 会在 gate 释放后才完成写入）。
+//   2. 本库**不接管宿主进程生命周期**：只在 `process.on('exit')` 做同步兜底释放。
+//      SIGINT/SIGTERM/uncaughtException 由 bridge / CLI 宿主自己处理，并调用
+//      `releaseHeldMaintenanceGates()` —— 否则库里的 process.exit 会截断宿主的清理逻辑。
 //   3. stale gate 不直接删除，归档成 `maintenance.lock.stale-<acquiredAt>-<nonce>`
 //      （审计线索保留）；字段非法时一律 unsafe，不自动接管。
 import fs from 'node:fs';
@@ -89,6 +91,19 @@ function writeGateExclusive(lockPath, gate) {
   }
 }
 
+/** 父目录必须已存在：维护命令不应因为路径写错就创建一套新 state 并拿到 gate。 */
+function requireParentDir(lockPath) {
+  const dir = path.dirname(lockPath);
+  try {
+    const stat = fs.statSync(dir);
+    if (!stat.isDirectory()) return `状态目录不是目录：${dir}`;
+    return null;
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return `状态目录不存在：${dir}（先确认 --dir / --bridge-lock 指向正确的库）`;
+    return `无法检查状态目录：${error?.code || error}`;
+  }
+}
+
 /** 接管 stale gate：合法字段 → 归档 → wx 创建新 gate。 */
 function takeoverStaleGate(lockPath, staleGate, gate) {
   const acquiredAt = Number(staleGate.acquiredAt);
@@ -107,10 +122,7 @@ function takeoverStaleGate(lockPath, staleGate, gate) {
     writeGateExclusive(lockPath, gate);
     return { ok: true, gate, tookOverFrom: stalePath };
   } catch (error) {
-    if (error && error.code === 'EEXIST') {
-      // 另一个 contender 先创建了：刚才的 rename 归档是它的，不算我们持有。
-      return { ok: false, retry: true };
-    }
+    if (error && error.code === 'EEXIST') return { ok: false, retry: true };
     return { ok: false, unsafe: true, reason: `创建新 gate 失败：${error?.code || error}` };
   }
 }
@@ -119,15 +131,12 @@ function takeoverStaleGate(lockPath, staleGate, gate) {
  * 获取 gate。返回：
  *   {ok:true, gate}           成功
  *   {ok:false, busy:true}     活动 owner（bridge 或另一个维护命令）
- *   {ok:false, unsafe:true}   坏内容/读不到/EPERM（需要人工处理）
+ *   {ok:false, unsafe:true}   坏内容/读不到/EPERM/父目录不存在（需要人工处理）
  */
 export function acquireMaintenanceGate(lockPath, { command = '', kind = 'maintenance', retries = 2 } = {}) {
   if (!lockPath) return { ok: false, unsafe: true, reason: '无法确定 maintenance lock 路径' };
-  try {
-    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-  } catch (error) {
-    return { ok: false, unsafe: true, reason: `无法创建状态目录：${error?.code || error}` };
-  }
+  const dirProblem = requireParentDir(lockPath);
+  if (dirProblem) return { ok: false, unsafe: true, reason: dirProblem };
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     const gate = newGate({ command, kind });
     try {
@@ -153,50 +162,61 @@ export function acquireMaintenanceGate(lockPath, { command = '', kind = 'mainten
   return { ok: false, busy: true, reason: 'gate 竞争激烈（多次重试后仍未获得）' };
 }
 
-/** 释放 gate：只删「当前文件 owner 就是自己」的 gate，绝不删别人的。 */
+/**
+ * 释放 gate。返回结构化结果：
+ *   { released: true }
+ *   { lostOwnership: true }            文件已不是自己的（被别人接管/删除）
+ *   { retryable: true, error }         读不了/删不掉（EACCES/EIO）：保留 held token 供 exit hook 重试
+ */
 export function releaseMaintenanceGate(lockPath, gate) {
   const held = gate || (lockPath ? heldGates.get(lockPath) : null);
-  if (!lockPath || !held) return false;
+  if (!lockPath || !held) return { lostOwnership: true };
+  let raw;
   try {
-    const raw = fs.readFileSync(lockPath, 'utf8');
-    let current = null;
-    try { current = JSON.parse(raw); } catch { current = null; }
-    if (!current || current.owner !== held.owner) return false;
+    raw = fs.readFileSync(lockPath, 'utf8');
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      heldGates.delete(lockPath);
+      return { lostOwnership: true };
+    }
+    // 读不了：文件可能还是自己的，保留 token 让 exit hook 再试一次。
+    return { retryable: true, error: String(error?.code || error) };
+  }
+  let current = null;
+  try { current = JSON.parse(raw); } catch { current = null; }
+  if (!current || current.owner !== held.owner) {
+    heldGates.delete(lockPath);
+    return { lostOwnership: true };
+  }
+  try {
     fs.unlinkSync(lockPath);
     heldGates.delete(lockPath);
-    return true;
-  } catch {
-    heldGates.delete(lockPath);
-    return false;
+    return { released: true };
+  } catch (error) {
+    return { retryable: true, error: String(error?.code || error) };
   }
 }
 
-/** 兜底：进程退出/被信号打断时，释放尚未交出的所有 gate。 */
+/** 兜底：进程退出时同步释放尚未交出的所有 gate（唯一保留的进程级 hook）。 */
 export function releaseHeldMaintenanceGates() {
-  for (const [lockPath, gate] of [...heldGates.entries()]) releaseMaintenanceGate(lockPath, gate);
+  const results = [];
+  for (const [lockPath, gate] of [...heldGates.entries()]) {
+    results.push({ lockPath, ...releaseMaintenanceGate(lockPath, gate) });
+  }
+  return results;
 }
 
-// 最后防线：同步 exit hook（不能异步）。
+// 最后防线：同步 exit hook。不注册信号处理器 —— 那是宿主的职责。
 process.on('exit', () => { releaseHeldMaintenanceGates(); });
-for (const signal of ['SIGINT', 'SIGTERM']) {
-  process.on(signal, () => {
-    releaseHeldMaintenanceGates();
-    process.exit(130);
-  });
-}
-process.on('uncaughtException', (error) => {
-  releaseHeldMaintenanceGates();
-  console.error('[maintenance-gate] uncaughtException:', error?.message ?? error);
-  process.exit(1);
-});
 
 /**
  * 在 gate 内执行一段写操作。
  *
- * ⚠️ callback 里不能 `process.exit()` —— 会绕过 finally，gate 永远不释放。
- * callback 只返回结果/退出码；需要退出时由调用方在 wrapper 返回后做。
+ * ⚠️ callback 必须**同步**返回结果/退出码，且不能 `process.exit()`：
+ *   - async callback 会在 gate 已释放后才写盘（静默失去互斥）→ 这里直接抛 TypeError；
+ *   - process.exit 会绕过 finally → 由调用方在最外层退出。
  *
- * @returns {{ok:true, result:any} | {ok:false, busy?:boolean, unsafe?:boolean, reason?:string, holder?:object}}
+ * @returns {{ok:true, result:any, release?:object} | {ok:false, busy?:boolean, unsafe?:boolean, reason?:string, holder?:object}}
  */
 export function withMaintenanceGate(options, fn) {
   const lockPath = resolveMaintenanceLockPath(options);
@@ -206,13 +226,18 @@ export function withMaintenanceGate(options, fn) {
   let thrown = null;
   try {
     result = fn({ lockPath, gate: acquired.gate });
+    if (result && typeof result.then === 'function') {
+      throw new TypeError('withMaintenanceGate callback 必须是同步的（async 会在 gate 释放后才写盘）');
+    }
   } catch (error) {
     thrown = error;
-  } finally {
-    releaseMaintenanceGate(lockPath, acquired.gate);
   }
+  const release = releaseMaintenanceGate(lockPath, acquired.gate);
   if (thrown) throw thrown;
-  return { ok: true, result };
+  if (release.lostOwnership) {
+    return { ok: false, unsafe: true, reason: 'gate 在 callback 执行期间被别人接管/删除，本次结果不可信' };
+  }
+  return { ok: true, result, release };
 }
 
 /** 给 CLI 用的统一退出码：busy/unsafe → 2；callback 内部错误由调用方决定。 */

@@ -59,7 +59,9 @@ import {
   markStickerUsed
 } from './sticker-lib.js';
 import { createMemoryStore } from './core/memory-store.mjs';
-import { acquireMaintenanceGate, releaseMaintenanceGate } from './lib/maintenance-gate.mjs';
+import {
+  acquireMaintenanceGate, releaseMaintenanceGate, releaseHeldMaintenanceGates, inspectMaintenanceGate,
+} from './lib/maintenance-gate.mjs';
 import { canonicalV2Key, createConversationStateV2, defaultWakeConfigV2, hydrateConversationStateV2, normalizeSpeakerIdsV2, refreshDefaultWakeConfig, serializeSocialV2 } from './core/socialv2-store.mjs';
 import { createScheduler } from './core/socialv2-scheduler.mjs';
 import { createWakePromptBuilder } from './core/socialv2-prompt.mjs';
@@ -1042,108 +1044,165 @@ function consolePortInUse() {
   }
 }
 
+const BRIDGE_LOCK_OWNER = `${process.pid}-${crypto.randomUUID().slice(0, 8)}`;
+
+/**
+ * 读 bridge.lock：返回 {ok, kind:'json'|'legacy', pid, owner} 或
+ *   {ok:false, missing|unreadable|empty|corrupt, reason?}
+ * 兼容旧格式（纯 PID 字符串）：升级期间不因为读不懂就把锁当过期删掉。
+ */
+function readBridgeLock() {
+  let raw;
+  try {
+    raw = fs.readFileSync(LOCK_FILE, 'utf8');
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return { ok: false, missing: true };
+    return { ok: false, unreadable: true, reason: error?.code || String(error) };
+  }
+  const text = String(raw).trim();
+  if (!text) return { ok: false, empty: true };
+  try {
+    const obj = JSON.parse(text);
+    if (obj && typeof obj === 'object' && !Array.isArray(obj) && Number.isInteger(obj.pid) && obj.pid > 0) {
+      return { ok: true, kind: 'json', pid: obj.pid, owner: String(obj.owner ?? ''), raw: obj };
+    }
+    return { ok: false, corrupt: true };
+  } catch {
+    const pid = Number(text);
+    if (Number.isInteger(pid) && pid > 0) return { ok: true, kind: 'legacy', pid };
+    return { ok: false, corrupt: true };
+  }
+}
+
+function writeBridgeLockExclusive() {
+  fs.writeFileSync(
+    LOCK_FILE,
+    JSON.stringify({ version: 1, pid: process.pid, owner: BRIDGE_LOCK_OWNER, startedAt: Date.now() }),
+    { flag: 'wx', mode: 0o600 },
+  );
+}
+
+/** 只删「本次进程创建且 owner 能证明是自己的」bridge.lock。 */
+function releaseOwnedBridgeLock() {
+  try {
+    const info = readBridgeLock();
+    if (info.ok && info.kind === 'json' && info.owner === BRIDGE_LOCK_OWNER) fs.unlinkSync(LOCK_FILE);
+  } catch {}
+}
+
 function acquireLock() {
   fs.mkdirSync(STATE_DIR, { recursive: true });
   // 维护门：必须比 bridge.lock 先拿。
   //   维护命令持 gate 期间，bridge 不能进入「写 bridge.lock」阶段；
   //   bridge 正常运行后 gate 已释放，维护命令会读到 running 并拒绝。
-  // 拿不到就 exit 2（不等待）：守护脚本稍后重试；长时间无输出会被当成卡死。
+  // 拿不到就返回失败（exit 2，不等待）：守护脚本稍后重试。
   const gatePath = path.join(STATE_DIR, 'maintenance.lock');
   const gate = acquireMaintenanceGate(gatePath, { command: 'bridge-start', kind: 'bridge-start' });
   if (!gate.ok) {
     if (gate.busy) {
       const holder = gate.holder || {};
-      console.error(`[bridge] 维护任务正在运行（PID ${holder.pid ?? '?'}，${holder.command || 'maintenance'}）：本次启动退出，稍后重试。`);
-    } else {
-      console.error(`[bridge] 维护门状态未知（${gate.reason || '内容损坏/读不到'}）：需要人工处理，不能自动越过。`);
+      return { ok: false, exitCode: 2, message: `维护任务正在运行（PID ${holder.pid ?? '?'}，${holder.command || 'maintenance'}）：本次启动退出，稍后重试。` };
     }
-    process.exit(2);
+    return { ok: false, exitCode: 2, message: `维护门状态未知（${gate.reason || '内容损坏/读不到'}）：需要人工处理，不能自动越过。` };
   }
-  try {
-    acquireLockInner();
-  } finally {
-    // 正常路径由这里释放；异常/exit 路径由 gate 的 exit hook 兜底。
-    releaseMaintenanceGate(gatePath, gate.gate);
-  }
-}
 
-function acquireLockInner() {
-  // 原子创建锁文件：把 PID 一次性写入（flag 'wx'），避免“先建空文件再写 PID”的窗口被第二个进程当作过期锁偷走。
-  const tryCreate = () => {
+  const rollback = (exitCode, message) => {
+    // 失败路径：只能清理「本次创建且 owner 是自己的」bridge.lock。
+    releaseOwnedBridgeLock();
+    releaseMaintenanceGate(gatePath, gate.gate);
+    return { ok: false, exitCode, message };
+  };
+
+  const created = (() => {
     try {
-      fs.writeFileSync(LOCK_FILE, String(process.pid), { flag: 'wx', mode: 0o600 });
+      writeBridgeLockExclusive();
       return true;
     } catch (error) {
-      if (error?.code === 'EEXIST') return false;
-      throw error;
+      if (error && error.code === 'EEXIST') return false;
+      return null; // 其他错误
     }
-  };
-  if (tryCreate()) {
-    // 「刚建的锁」不代表「没有别的实例」：锁文件可能被人误删/被清理工具带走，
-    // 而控制台端口的占用才是「真的有一个桥接在跑」的权威证据。
-    // 不加这一道，锁一丢就会起出第二个实例，两个同时读写 state（真实事故过）。
-    if (consolePortInUse()) {
-      try { fs.unlinkSync(LOCK_FILE); } catch {}
-      console.error('[bridge] 控制台端口已被占用：已有实例在跑（锁文件缺失或被删）。不启动第二个，避免双实例同时读写 state。');
-      process.exit(2);
-    }
-    return;
+  })();
+  if (created === null) {
+    return rollback(1, `无法创建锁文件 ${LOCK_FILE}：${new Error('write-failed').message}`);
   }
-  // 锁文件已存在：检查 PID 是否仍存活；内容为空视为过期锁（仅兼容旧版本遗留），删除后重试一次。
-  let stale = false;
-  try {
-    const content = fs.readFileSync(LOCK_FILE, 'utf8').trim();
-    if (!content) {
+
+  if (!created) {
+    // 锁文件已存在：按四态处理。
+    const info = readBridgeLock();
+    if (info.unreadable) return rollback(1, `无法读取锁文件 ${LOCK_FILE}：${info.reason}`);
+    let stale = false;
+    if (info.empty) {
+      stale = true;
+    } else if (info.corrupt) {
+      // 内容损坏：不能当成「没有实例」，但也不能永久卡死启动。
+      // 归档保留证据后按过期处理（与 gate stale 同一协议）。
       stale = true;
     } else {
-      const pid = Number(content);
-      if (!Number.isInteger(pid) || pid <= 0) {
-        stale = true;
-      } else {
-        try {
-          process.kill(pid, 0);
-          // 没抛异常只说明「存在某个持有该 PID 的进程」，不能证明那就是桥接
-          // （PID 被回收给别的程序时会误判），所以再加一道端口探测。
-          if (!consolePortInUse()) stale = true;
-        } catch (error) {
-          if (error.code === 'ESRCH') {
-            stale = true;
-          } else if (error.code === 'EPERM') {
-            // EPERM = 该 PID 属于受保护/系统进程（权限不足，无法发信号）。
-            // 这**不能**证明桥接还在跑，但旧逻辑把它当成「已有实例」直接 exit(2)：
-            // 一旦锁文件里的 PID 被系统回收给一个受保护进程，桥接就永久起不来，
-            // 而且提示信息把人引向「已有实例在运行」这个错误方向。
-            // 这里改成按「疑似过期」处理，但要先确认控制台端口没有被占用。
-            if (consolePortInUse()) {
-              console.error(`[bridge] 控制台端口已被占用，判定已有实例在运行（锁文件 PID ${pid} 无权限探测）。`);
-              process.exit(2);
-            }
-            console.error(`[bridge] 锁文件 PID ${pid} 无权限探测（EPERM）且控制台端口空闲，按过期锁处理。`);
-            stale = true;
-          } else {
-            console.error(`[bridge] 已有实例在运行（PID ${pid}，锁文件 ${LOCK_FILE}）。若确认其已死，删除该文件后重试。`);
-            process.exit(2);
+      try {
+        process.kill(info.pid, 0);
+        // 没抛异常只说明「存在某个持有该 PID 的进程」，不能证明那就是桥接
+        // （PID 被回收给别的程序时会误判），所以再加一道端口探测。
+        if (!consolePortInUse()) stale = true;
+      } catch (error) {
+        if (error.code === 'ESRCH') {
+          stale = true;
+        } else if (error.code === 'EPERM') {
+          // EPERM = 该 PID 属于受保护/系统进程（权限不足，无法发信号）。
+          if (consolePortInUse()) {
+            return rollback(2, `控制台端口已被占用，判定已有实例在运行（锁文件 PID ${info.pid} 无权限探测）。`);
           }
+          log(`锁文件 PID ${info.pid} 无权限探测（EPERM）且控制台端口空闲，按过期锁处理。`);
+          stale = true;
+        } else {
+          return rollback(2, `已有实例在运行（PID ${info.pid}，锁文件 ${LOCK_FILE}）。若确认其已死，删除该文件后重试。`);
         }
       }
     }
-  } catch (readError) {
-    console.error(`[bridge] 无法读取锁文件 ${LOCK_FILE}：${readError?.message ?? readError}`);
-    process.exit(1);
+    if (!stale) {
+      return rollback(2, `已有实例在运行（锁文件 ${LOCK_FILE}）。若确认其已死，删除该文件后重试。`);
+    }
+    // stale：归档保留证据（不再静默 unlink），再原子创建一次。
+    const archive = `${LOCK_FILE}.stale-${Date.now()}-${crypto.randomUUID().slice(0, 6)}`;
+    try {
+      fs.renameSync(LOCK_FILE, archive);
+      log(`检测到过期锁文件（PID 不存在/为空/损坏），已归档为 ${path.basename(archive)}，重新创建…`);
+    } catch (renameError) {
+      if (renameError && renameError.code !== 'ENOENT') {
+        return rollback(1, `归档过期锁文件失败：${renameError?.message ?? renameError}`);
+      }
+    }
+    try {
+      writeBridgeLockExclusive();
+    } catch (error) {
+      return rollback(2, `已有实例在运行（重新创建锁文件失败：${error?.message ?? error}）。`);
+    }
   }
-  if (stale) {
-    console.error(`[bridge] 检测到过期锁文件（PID 不存在或为空），删除后重试…`);
-    try { fs.unlinkSync(LOCK_FILE); } catch {}
-    if (tryCreate()) return;
+
+  // 刚创建成功：控制台端口占用才是「真的有一个桥接在跑」的权威证据。
+  if (consolePortInUse()) {
+    return rollback(2, '控制台端口已被占用：已有实例在跑（锁文件缺失或被删）。不启动第二个，避免双实例同时读写 state。');
   }
-  console.error(`[bridge] 已有实例在运行（锁文件 ${LOCK_FILE}）。若确认其已死，删除该文件后重试。`);
-  process.exit(2);
+
+  // gate owner 校验：写 bridge.lock 之后确认维护门仍是自己的，
+  // 否则说明启动期间被维护命令接管过，本次启动必须退出。
+  const inspect = inspectMaintenanceGate(gatePath);
+  if (inspect.state !== 'held' || inspect.gate.owner !== gate.gate.owner) {
+    return rollback(2, '维护门在启动期间被其他进程接管：本次启动退出（避免与维护写操作并发）。');
+  }
+  const released = releaseMaintenanceGate(gatePath, gate.gate);
+  if (!released.released && !released.lostOwnership) {
+    // 释放失败（EACCES/EIO）：带着一个 PID 仍存活的 gate 运行会让 maintenance 永久 busy。
+    return rollback(1, `释放维护门失败（${released.error || '未知'}）：本次启动退出，避免维护命令被永久阻塞。`);
+  }
+  return { ok: true };
 }
 function releaseLock() {
   try {
-    if (fs.existsSync(LOCK_FILE) && Number(fs.readFileSync(LOCK_FILE, 'utf8').trim()) === process.pid) {
-      fs.unlinkSync(LOCK_FILE);
-    }
+    const info = readBridgeLock();
+    if (!info.ok) return;
+    if (info.kind === 'json' && info.owner === BRIDGE_LOCK_OWNER) { fs.unlinkSync(LOCK_FILE); return; }
+    // 旧格式（纯 PID）只在 PID 是本进程时删除：升级期间也要能正常收尾。
+    if (info.kind === 'legacy' && info.pid === process.pid) fs.unlinkSync(LOCK_FILE);
   } catch {}
 }
 
@@ -1334,7 +1393,11 @@ async function main() {
   const cfg = loadConfig();
   fs.mkdirSync(STATE_DIR, { recursive: true });
   hardenStateDirAcl();
-  acquireLock();
+  const acquired = acquireLock();
+  if (!acquired.ok) {
+    console.error(`[bridge] ${acquired.message}`);
+    process.exit(acquired.exitCode);
+  }
   loadState();
 
   // ── 群聊黑话/网络用语学习（slang） ──────────────────────────────────────
@@ -8661,11 +8724,14 @@ async function main() {
 
 process.on('SIGINT', () => {
   log('退出中…');
+  // 宿主自己负责退出生命周期：先释放维护门，再保存状态/删锁，最后才 exit。
+  try { releaseHeldMaintenanceGates(); } catch {}
   saveState();
   releaseLock();
   process.exit(0);
 });
 process.on('SIGTERM', () => {
+  try { releaseHeldMaintenanceGates(); } catch {}
   saveState();
   releaseLock();
   process.exit(0);
@@ -8685,6 +8751,7 @@ process.on('unhandledRejection', (error) => {
  */
 process.on('uncaughtException', (error) => {
   try { log('致命异常（进程即将退出）:', error?.stack ?? error?.message ?? error); } catch {}
+  try { releaseHeldMaintenanceGates(); } catch {}
   try { saveState(); } catch {}
   releaseLock();
   process.exit(1);

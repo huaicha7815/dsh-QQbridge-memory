@@ -105,11 +105,13 @@ export function parseMaintenanceArgs(argv) {
   };
   const dir = value('--dir');
   const bridgeLock = value('--bridge-lock');
+  const maintenanceLock = value('--maintenance-lock');
   return {
     apply: argv.includes('--apply'),
     forceUnlocked: argv.includes('--force-unlocked'),
     dir: dir ? path.resolve(dir) : null,
     bridgeLock: bridgeLock ? path.resolve(bridgeLock) : '',
+    maintenanceLock: maintenanceLock ? path.resolve(maintenanceLock) : null,
   };
 }
 

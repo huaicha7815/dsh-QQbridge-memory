@@ -67,15 +67,30 @@ const store = createMemoryStore({ dir: memDir, config: {} });
  * 拿不到门 → 2（busy/unsafe 都退出 2，但日志区分）。
  */
 function runGated(command, fn) {
-  const attempt = withMaintenanceGate({ bridgeLockFile, stateDir: path.dirname(memDir), command }, fn);
-  if (attempt.ok) return Number(attempt.result) || 0;
-  if (attempt.busy) {
-    const holder = attempt.holder || {};
-    console.error(`❌ 维护门被占用（PID ${holder.pid ?? '?'}，${holder.command || 'maintenance'}）：等它结束后重试。`);
-  } else {
-    console.error(`❌ 维护门状态未知（${attempt.reason || '读不到/内容损坏'}）：需要人工处理。`);
+  try {
+    const attempt = withMaintenanceGate({
+      bridgeLockFile,
+      maintenanceLockFile: maintArgs.maintenanceLock,
+      stateDir: path.dirname(memDir),
+      command,
+    }, fn);
+    if (attempt.ok) return Number(attempt.result) || 0;
+    if (attempt.busy) {
+      const holder = attempt.holder || {};
+      console.error(`❌ 维护门被占用（PID ${holder.pid ?? '?'}，${holder.command || 'maintenance'}）：等它结束后重试。`);
+    } else {
+      console.error(`❌ 维护门状态未知（${attempt.reason || '读不到/内容损坏'}）：需要人工处理。`);
+    }
+    return gateFailureCode(attempt);
+  } catch (error) {
+    // callback 里 requireBridgeIdle({throwOnBlock:true}) 抛出的阻塞错误：
+    // gate 已由 wrapper 释放，这里只负责翻译成退出码。
+    if (error && error.name === 'MaintenanceBlockedError') {
+      console.error(`❌ ${error.message || '桥接未停'}：先停桥接再 --apply。`);
+      return error.exitCode || 2;
+    }
+    throw error;
   }
-  return gateFailureCode(attempt);
 }
 
 // 恢复入口：以前只打印「可以用 replayWriteFailures()」但没有任何可执行入口，
@@ -87,7 +102,7 @@ function runGated(command, fn) {
 if (argv.includes('--ack-manifest-errors')) {
   // ack 是写操作（rename 诊断文件）：必须在维护门里，且再确认 bridge 没在跑。
   const code = runGated('ack', () => {
-    requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked });
+    requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked, throwOnBlock: true });
     const result = store.ackManifestErrors();
     reportMaintenance(result);
     return result.ok ? 0 : 1;
@@ -99,7 +114,7 @@ if (argv.includes('--migrate')) {
   const applyMigrate = apply;
   const runMigrate = () => {
     if (applyMigrate) {
-      requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked });
+      requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked, throwOnBlock: true });
     }
     const result = store.migrateLegacyRecords({ dryRun: !applyMigrate });
     reportMaintenance(result, {
@@ -180,7 +195,7 @@ if (argv.includes('--replay')) {
   const runReplay = () => {
     // 桥接本身也是失败清单的写者：它在跑的时候 replay 可能和它抢同一份清单。
     if (applyReplay) {
-      requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked });
+      requireBridgeIdle(bridgeLockFile, { explicit: Boolean(bridgeLockArg), forceUnlocked, throwOnBlock: true });
     }
     const result = store.replayWriteFailures({ dryRun: !applyReplay });
     reportMaintenance(result, {
@@ -213,6 +228,13 @@ const recalls = store.readRecallLog({ limit: 1000 });
 
 // 统计口径提示：stats() 只算活动日文件，归档月文件不计入。
 // 库活得久了之后「事件总数」会低估历史规模，这里显式说明，避免误读。
+// 维护门 stale 归档：不自动清理（审计数据），只做可观测。
+const gateStaleCount = (() => {
+  try {
+    const stateDir = path.dirname(memDir);
+    return fs.readdirSync(stateDir).filter((n) => n.startsWith('maintenance.lock.stale-')).length;
+  } catch { return 0; }
+})();
 const archiveMonths = (() => {
   try { return fs.readdirSync(path.join(memDir, 'events-archive')).filter((f) => f.endsWith('.jsonl')).length; } catch { return 0; }
 })();
@@ -480,6 +502,7 @@ if (overLimitPeople > 0) {
   say(`  ℹ️ 有 ${overLimitPeople} 个人物档位的事实数超过上限 ${PROFILE_LIMITS.maxFactsPerPerson}（isolated 只在可见范围内淘汰，不算异常）`);
 }
 if (st.eventDays >= 3 && st.events < 50) advice.push('事件量偏少：桥接可能没在跑，或最近很安静。');
+if (gateStaleCount > 0) advice.push(`维护门有 ${gateStaleCount} 个 stale 归档（maintenance.lock.stale-*）：是过去维护进程崩溃的审计记录，不自动删除；确认无用后可人工清理。`);
 if (st.failureManifestWriteError) advice.push('上次运行连失败清单都写不进去：检查 write-failures.manifest-error.jsonl，确认磁盘/权限恢复后再评估丢失范围。');
 if (st.pendingUnreadable) advice.push('恢复账本读不到（或隔离区不可读）：pendingRecoverable 不可信，先修权限再判断是否需要 replay。');
 if (st.parseErrorLines > 0) advice.push(`有 ${st.parseErrorLines} 条记忆记录解析失败：坏行还在原文件里，人工修好后重新读取会自动恢复计数。`);
