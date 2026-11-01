@@ -809,7 +809,9 @@ export async function handleSocialV2SendApi({
             if (st.sendTimes.length > 500) st.sendTimes = st.sendTimes.slice(-500);
             const sent = await sendStickerV2(key, stickerId, {
               replyToMessageId: actualReplyToMessageId,
-              atUserId
+              atUserId,
+              // 会话 C：表情由 AI 自己决定发时，才受情绪节奏（概率）限制；操作者手动发图不受影响。
+              moodGate: Boolean(req.headers['x-agent-token']),
             });
             // 记录到二代会话的 recentMessages，让 AI 知道自己发过这个表情
             const label = sent.entry?.desc || sent.entry?.localNote || '表情包';

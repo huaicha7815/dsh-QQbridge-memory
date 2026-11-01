@@ -1,4 +1,4 @@
-﻿// Execute the real bridge initialization/functions against temporary files and fake peers.
+// Execute the real bridge initialization/functions against temporary files and fake peers.
 // No production config, QQ connection, DSH process, or persistent home is accessed.
 import fs from 'node:fs';
 import os from 'node:os';
@@ -26,6 +26,7 @@ import * as socialv2Store from '../src/core/socialv2-store.mjs';
 import * as socialv2Wake from '../src/core/socialv2-wake.mjs';
 import * as socialv2Scheduler from '../src/core/socialv2-scheduler.mjs';
 import * as socialv2Prompt from '../src/core/socialv2-prompt.mjs';
+import * as mood from '../src/core/mood.mjs';
 // bridge.js 把 HTTP 路由拆成了 src/routes/*.mjs，VM 里剥掉 import 后这些 handler
 // 必须同样注入，否则 bridge 调 handleXxxApiRequest 时是 undefined → 全部端点 500。
 import * as routeMemoryApi from '../src/routes/memory-api.mjs';
@@ -107,6 +108,17 @@ export async function bridgeHarness({ config = {}, savedState, globals = {} } = 
       return { base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+k3ioAAAAASUVORK5CYII=' };
     }
     async request() { return { status: 'ok', retcode: 0, data: [{ emoji_id: 'fixture-sticker', url: 'https://public.invalid/sticker' }] }; }
+    // 引用解析用：bridge 的 resolveReplyInfo 会调 bot.getMessage(id) 拿被引用消息。
+    // 固定回一条「群 456 里由 AI（9999）发出」的消息，供 handleIncoming 的 quoteTargetIsSelf 路径测试。
+    async getMessage(id) {
+      return {
+        message_id: Number(id),
+        group_id: '456',
+        user_id: '9999',
+        sender: { user_id: '9999', nickname: '小鲸鱼', card: '' },
+        message: [{ type: 'text', data: { text: '（这是我之前说的话）' } }],
+      };
+    }
   }
   let source = fs.readFileSync(path.join(root, 'src/bridge.js'), 'utf8');
   // 去掉顶层 import（VM 里靠 context 注入提供这些绑定）。
@@ -131,7 +143,7 @@ export async function bridgeHarness({ config = {}, savedState, globals = {} } = 
   return {
     ensureSession, ensureSlangLearnerSession, resolvePresetName, deliverPrompt, drainPromptQueue,
     sendToQQ, sendStickerV2, handleIncoming, startConsoleServer, cfg, state, api, promptQueues,
-    getSocialV2State, appendSocialV2Message, recordSentMessagesV2,
+    getSocialV2State, appendSocialV2Message, appendSocialV2Poke, recordSentMessagesV2, saveSocialV2State,
     buildWakePromptV2, buildWakeSnapshotV2, sendWakePromptV2, socialV2,
     flushQueue, retireSession,
     voiceCfg, voiceLibrary, resolveVoicePathForV2, resolveVoicePathForOperator,
@@ -163,7 +175,11 @@ export async function bridgeHarness({ config = {}, savedState, globals = {} } = 
     ...modelPrices, ...tokenLedger, ...voiceLib, ...stateAcl,
     // 长期记忆：bridge.js 顶层 import 在这里被剥掉，必须把同一份实现注入 VM，
     // 否则 createMemoryStore 未定义会让整个 harness 起不来。
-    ...memoryLib, ...memoryStore, ...socialv2Store, ...socialv2Wake, ...socialv2Scheduler, ...socialv2Prompt,
+    ...memoryLib, ...memoryStore, ...socialv2Store, ...socialv2Wake, ...socialv2Scheduler, ...socialv2Prompt, ...mood,
+    // bridge.js 用 `import { evaluateWakeTriggerV2 as evaluateWakeTriggerV2Core }` 引入，
+    // VM 里 import 被剥掉后别名不会自动存在；不补这一行，任何走 handleIncoming 的测试都会
+    // ReferenceError: evaluateWakeTriggerV2Core is not defined（审查 r6 新问题）。
+    evaluateWakeTriggerV2Core: socialv2Wake.evaluateWakeTriggerV2,
     // 路由层（src/routes/*）：同样必须与 bridge.js 的 import 一一对应注入。
     ...routeMemoryApi, ...routeRolesApi, ...routeTokensApi, ...routeStickersApi,
     ...routeSocialV2MemoryApi, ...routeSocialV2StateApi, ...routeSocialV2ControlApi,

@@ -11,7 +11,7 @@
 
 | 文档 | 一句话说明 | 状态 |
 | --- | --- | --- |
-| [ROUTES.md](ROUTES.md) | **HTTP 接口清单**（132 个路由，按域分组，带源码位置）：由 `npm run routes:doc` 从源码自动生成，改端点后重跑即可 | ✅ |
+| [ROUTES.md](ROUTES.md) | **HTTP 接口清单**（135 个路由，按域分组，带源码位置）：由 `npm run routes:doc` 从源码自动生成，改端点后重跑即可 | ✅ |
 
 ## guides/ —— 面向使用者 / 运维
 

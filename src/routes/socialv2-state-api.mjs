@@ -1,4 +1,4 @@
-// socialV2 只读接口（state / prompt / unread / recent / states）。
+// socialV2 只读接口（state / prompt / unread / recent / states / mood / moods / relationship）。
 //
 // 只搬只读的：config / activity / reset / mark-read / wake-config 这些会改状态的端点
 // 仍留在 bridge.js —— 它们直接操作唤醒配置和读水位，属于状态机核心，不在这批里动。
@@ -6,7 +6,53 @@
 // 顺手修了一个既有 bug：prompt 端点原本调用不存在的 currentRoleHintV2()，
 // 导致该接口一直 500。真实实现是 roleHintForMode(v2|v1, roleName)。
 //
+// 情绪与关系状态（mood / relationship）的只读查询也挂在这里：
+// 状态本身在 src/core/mood.mjs + socialv2-store 里，这里只做视图与鉴权，
+// 不写状态、不触发任何行为（控制台刷新页面不该改变她的情绪）。
+//
 // 约定：返回 true 表示「这个请求我处理了」，调用方直接 return；false 继续往下走。
+import { createMoodLayer } from '../core/mood.mjs';
+
+/** 控制台只读视图：每次请求建一个轻量层（无状态，只做归一化/衰减计算）。 */
+function moodLayerFor(getSocialV2State, socialV2) {
+  return createMoodLayer({
+    getState: getSocialV2State,
+    peekState: (key) => {
+      const map = socialV2?.conversations;
+      if (!map || typeof map.get !== 'function') return null;
+      return map.get(key) ?? null;
+    },
+    conversations: () => socialV2?.conversations,
+    now: () => Date.now(),
+  });
+}
+
+/** 列表用的情绪摘要（不带 events，避免响应过大）。 */
+function moodSummary(view) {
+  if (!view) return null;
+  return {
+    valence: view.valence,
+    arousal: view.arousal,
+    energy: view.energy,
+    cause: view.cause,
+    causeType: view.causeType,
+    since: view.since,
+    ageMs: view.ageMs,
+    decayHalfLifeMs: view.decayHalfLifeMs,
+  };
+}
+
+/** 列表用的关系摘要。 */
+function relationshipSummary(view) {
+  if (!view) return null;
+  return {
+    intimacy: view.intimacy,
+    tension: view.tension,
+    lastInteraction: view.lastInteraction,
+    openLoopCount: Array.isArray(view.openLoops) ? view.openLoops.length : 0,
+  };
+}
+
 export async function handleSocialV2StateApi({
   acknowledgeMessagesV2, agentTokenOk, confirmedSlangListV2, cfg, computeWakeSafetyV2, buildSlangContext, buildStickerContext, buildStickerStrategyHint, ensureWakeableV2, formatMemoryV2, formatParticipationV2, getSocialV2State, isSleepingConfigV2, log, noteModelMessagesV2, preSleepWaitBlockedV2, readBody, readRoleState, readThroughSeqV2, replyTimingV2, requestedReadThroughSeqV2, roleHintForMode, roleNameFor, saveSocialV2State, sendJson, stickerEnabled, syncStickerLibrary, v2SessionAllowed, v2ToolEnabled, voiceCfg, voiceLibrary, socialV2,
   req, url,
@@ -14,6 +60,8 @@ export async function handleSocialV2StateApi({
   slangEntries: getSlangEntries,
   stickerEntries: getStickerEntries,
 }) {
+        // 情绪/关系只读视图（不写状态、不触发行为）。
+        const moodLayer = moodLayerFor(getSocialV2State, socialV2);
         if (req.method === 'GET' && url.pathname === '/api/socialV2/state') {
           const key = String(url.searchParams.get('key') ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return true; }
@@ -21,6 +69,9 @@ export async function handleSocialV2StateApi({
           if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return true; }
           if (req.headers['x-agent-token'] && !v2ToolEnabled('socialState')) { sendJson({ ok: false, error: '工具未启用：qq_social_state' }, 403); return true; }
           const st = getSocialV2State(key);
+          const moodView = moodLayer.getMood(key);
+          // 私聊的 key 本身就对应一个 QQ，可以直接给出「与这个人」的关系摘要；群聊没有唯一对象。
+          const relationshipUid = /^private:(\d+)$/.exec(key)?.[1] ?? null;
           sendJson({
             ok: true,
             key,
@@ -29,7 +80,14 @@ export async function handleSocialV2StateApi({
             unreadCount: st.unread.length,
             recentCount: st.recentMessages.length,
             lastWakeReason: st.lastWakeReason,
-            lastAiReplyAt: st.lastAiReplyAt
+            lastAiReplyAt: st.lastAiReplyAt,
+            // 落盘健康状态（审查 r5 P2）：null=最近一次保存成功；否则 {at,message} 说明内存态可能未落盘。
+            lastSaveError: socialV2?.lastSaveError ?? null,
+            mood: moodSummary(moodView),
+            relationship: relationshipUid ? relationshipSummary(moodLayer.getRelationship(relationshipUid)) : null,
+            // 会话 C：可解释性 —— 最近一次唤醒/发送用了哪份表达计划（为什么这样回应）。
+            // 运行时数据（不落盘）：含 moodBand、长度上限、表情/语音允许概率、主动倍率与逐条 reasons。
+            expression: socialV2?.lastExpression?.get?.(key) ?? null
           });
           return true;
         }
@@ -176,10 +234,85 @@ export async function handleSocialV2StateApi({
               recentCount: st.recentMessages.length,
               lastWakeReason: st.lastWakeReason,
               lastAiReplyAt: st.lastAiReplyAt,
-              noActionCount: st.wakeConfig.noActionCount || 0
+              noActionCount: st.wakeConfig.noActionCount || 0,
+              mood: moodSummary(moodLayer.getMood(key))
             });
           }
           sendJson({ ok: true, conversations: list });
+          return true;
+        }
+
+        // 只读：某会话的当前情绪状态 + 最近来源事件（控制台「情绪」查询）。
+        // 未知会话返回默认中性状态（known:false），不会顺手创建会话。
+        if (req.method === 'GET' && url.pathname === '/api/socialV2/mood') {
+          const key = String(url.searchParams.get('key') ?? '').trim();
+          if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return true; }
+          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return true; }
+          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return true; }
+          if (req.headers['x-agent-token'] && !v2ToolEnabled('socialState')) { sendJson({ ok: false, error: '工具未启用：qq_social_state' }, 403); return true; }
+          const view = moodLayer.getMood(key);
+          if (!view.valid) { sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400); return true; }
+          sendJson({
+            ok: true,
+            key: view.key,
+            known: view.known,
+            mood: {
+              valence: view.valence,
+              arousal: view.arousal,
+              energy: view.energy,
+              raw: view.raw,
+              cause: view.cause,
+              causeType: view.causeType,
+              since: view.since,
+              decayHalfLifeMs: view.decayHalfLifeMs,
+              ageMs: view.ageMs
+            },
+            events: view.events
+          });
+          return true;
+        }
+
+        // 只读：所有会话的情绪概览（控制台列表用，不含逐条来源事件）。
+        // 这是跨会话的全局视图：带 agent token 的请求一律拒绝（会话级主体只能查自己的 /mood）。
+        if (req.method === 'GET' && url.pathname === '/api/socialV2/moods') {
+          if (req.headers['x-agent-token']) { sendJson({ ok: false, error: '该接口仅控制台可用' }, 403); return true; }
+          const list = [];
+          const conversations = socialV2?.conversations;
+          if (conversations && typeof conversations[Symbol.iterator] === 'function') {
+            for (const [key] of conversations) {
+              const view = moodLayer.getMood(key);
+              list.push({
+                key,
+                known: view.known,
+                ...moodSummary(view)
+              });
+            }
+          }
+          sendJson({ ok: true, count: list.length, conversations: list });
+          return true;
+        }
+
+        // 只读：某个 QQ 的关系状态 + 最近来源事件 + 未了结的事（控制台「关系」查询）。
+        // 跨会话聚合的全局视图：带 agent token 的请求一律拒绝，防止任意会话 token 读取他人关系。
+        if (req.method === 'GET' && url.pathname === '/api/socialV2/relationship') {
+          if (req.headers['x-agent-token']) { sendJson({ ok: false, error: '该接口仅控制台可用' }, 403); return true; }
+          const uid = String(url.searchParams.get('uid') ?? '').trim();
+          if (!uid) { sendJson({ ok: false, error: 'uid 不能为空' }, 400); return true; }
+          const view = moodLayer.getRelationship(uid);
+          if (!view.valid) { sendJson({ ok: false, error: 'uid 必须是正整数 QQ 号' }, 400); return true; }
+          sendJson({
+            ok: true,
+            uid: view.uid,
+            known: view.known,
+            relationship: {
+              intimacy: view.intimacy,
+              tension: view.tension,
+              lastInteraction: view.lastInteraction,
+              openLoops: view.openLoops,
+              sources: view.sources
+            },
+            events: view.events
+          });
           return true;
         }
   return false;

@@ -6,6 +6,264 @@
 // 注意：**提示词内容一个字都不能改**——它决定她怎么说话。
 // 这里只做搬家，字符串顺序、标点、换行都保持原样。
 
+// ─── 情绪/关系 → 表达层（会话 C）────────────────────────────────────────────
+//
+// 状态层（src/core/mood.mjs，会话 B）只负责「她此刻什么心情、和这个人什么关系」；
+// 这里负责把状态翻译成**可执行的表达规则**：说多长、用不用表情/语音、什么语气、
+// 怎么称呼、要不要撒娇/吃醋/冷战、主动找人的概率。所有阈值都在 config.json 的
+// socialV2.moodExpression 里可调，缺省值见 DEFAULT_MOOD_EXPRESSION。
+//
+// 设计约束：
+// - 输出是「指令」不是「仪表盘」：提示词里不出现 valence=0.3 这种数字，
+//   而是「你今天有点低落，话少一点」；数字只留在 plan.inputs 里供控制台解释。
+// - 纯函数：不读时钟、不读全局状态、随机数可注入，单测能给固定 rng 和固定阈值。
+
+/** 表达层默认阈值（全部可被 config.socialV2.moodExpression 覆盖）。 */
+export const DEFAULT_MOOD_EXPRESSION = Object.freeze({
+  // 情绪分档边界
+  valenceLow: -0.15,
+  valenceHigh: 0.2,
+  energyLow: 0.35,
+  energyHigh: 0.6,
+  arousalHigh: 0.6,
+  // 关系分档边界
+  intimacyHigh: 0.6,
+  tensionHigh: 0.4,
+  // 回复长度上限（字符）
+  maxReplyCharsQuiet: 80,
+  maxReplyCharsNormal: 220,
+  maxReplyCharsChatty: 360,
+  // 表情 / 语音「允许概率」（1=总是允许，0=总是拒绝；不是发送频率）
+  stickerBase: 0.75,
+  stickerHappyBonus: 0.2,
+  stickerTensionPenalty: 0.5,
+  stickerLowFactor: 0.5,
+  voiceBase: 0.35,
+  voiceHappyBonus: 0.4,
+  voiceIntimateBonus: 0.2,
+  voiceLowPenalty: 0.5,
+  // 主动找人
+  proactiveBase: 1,
+  proactiveHappyBonus: 0.4,
+  proactiveIntimateBonus: 0.3,
+  proactiveTensionPenalty: 0.4,
+  proactiveLowPenalty: 0.3,
+  proactiveMin: 0.4,
+  proactiveMax: 1.8,
+  // 吃醋 / 冷战
+  jealousyCauseBonus: 0.3,
+  coldWarTension: 0.5,
+});
+
+function clampNum(value, min, max, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+/** 合并默认阈值与 config 里的覆盖值（config 缺省/非法项回落到默认）。 */
+export function mergeMoodExpressionConfig(cfg) {
+  const override = cfg?.socialV2?.moodExpression ?? cfg?.moodExpression ?? {};
+  const merged = { ...DEFAULT_MOOD_EXPRESSION };
+  for (const [key, fallback] of Object.entries(DEFAULT_MOOD_EXPRESSION)) {
+    const value = Number(override[key]);
+    if (Number.isFinite(value)) merged[key] = value;
+    else merged[key] = fallback;
+  }
+  return merged;
+}
+
+/**
+ * 把 mood/relationship 状态解析成一份表达计划（纯函数，可解释）。
+ *
+ * @param {object} input
+ * @param {string} [input.key] 会话 key（私聊才有 relationship）
+ * @param {object} [input.mood] getMood() 的返回值（valence/arousal/energy/causeType）
+ * @param {object|null} [input.relationship] getRelationship() 的返回值（intimacy/tension）
+ * @param {object} [input.cfg] 配置对象（读 socialV2.moodExpression）
+ * @param {() => number} [input.rng] 随机数源（默认 Math.random；测试固定传入）
+ * @returns {object} plan（含可解释的 reasons 与 inputs）
+ */
+export function resolveExpressionPlan({ key = '', mood, relationship = null, cfg, rng = Math.random } = {}) {
+  const c = mergeMoodExpressionConfig(cfg);
+  const m = mood ?? {};
+  const valence = clampNum(m.valence, -1, 1, 0);
+  const arousal = clampNum(m.arousal, 0, 1, 0.3);
+  const energy = clampNum(m.energy, 0, 1, 0.6);
+  const causeType = String(m.causeType ?? '');
+  const intimacy = clampNum(relationship?.intimacy, 0, 1, 0.3);
+  const tension = clampNum(relationship?.tension, 0, 1, 0);
+  const reasons = [];
+  const note = (field, value, rule) => { reasons.push({ field, value, rule }); };
+
+  // ── 1. 情绪档位 ──
+  let moodBand = '平静';
+  if (valence <= c.valenceLow || (energy <= c.energyLow && valence < 0)) {
+    moodBand = '低落';
+    note('moodBand', moodBand, `valence<=${c.valenceLow} 或 (energy<=${c.energyLow} 且 valence<0)`);
+  } else if (valence >= c.valenceHigh && energy >= c.energyHigh) {
+    moodBand = arousal >= c.arousalHigh ? '兴奋' : '开心';
+    note('moodBand', moodBand, `valence>=${c.valenceHigh} 且 energy>=${c.energyHigh}`);
+  } else {
+    note('moodBand', moodBand, '其余情况');
+  }
+
+  // ── 2. 回复长度 / 标点语气 ──
+  let maxReplyChars = c.maxReplyCharsNormal;
+  let lengthHint = '正常长度说话，两三句到一小段都行。';
+  if (moodBand === '低落') {
+    maxReplyChars = c.maxReplyCharsQuiet;
+    lengthHint = '话少一点：一条回复尽量短，能省的字就省，别展开。';
+    note('maxReplyChars', maxReplyChars, '低落 → 短回复');
+  } else if (moodBand === '开心' || moodBand === '兴奋') {
+    maxReplyChars = c.maxReplyCharsChatty;
+    lengthHint = '心情好，话可以多一点：多说两句、带点感叹，别端着。';
+    note('maxReplyChars', maxReplyChars, '开心/兴奋 → 长回复');
+  } else {
+    note('maxReplyChars', maxReplyChars, '平静 → 正常长度');
+  }
+  let punctuation = 'normal';
+  let punctuationHint = '标点自然，别每句都感叹号。';
+  if (moodBand === '低落') {
+    punctuation = 'quiet';
+    punctuationHint = '句末用句号或省略号收着，别用感叹号，也别硬装活泼。';
+  } else if (moodBand === '兴奋') {
+    punctuation = 'excited';
+    punctuationHint = '可以用感叹号和短促的句子，情绪放开一点。';
+  }
+
+  // ── 3. 表情 / 语音概率 ──
+  let stickerProbability = c.stickerBase;
+  if (moodBand === '兴奋' || moodBand === '开心') {
+    stickerProbability += c.stickerHappyBonus;
+    note('stickerProbability', '+happyBonus', '开心/兴奋 → 表情概率上升');
+  }
+  if (moodBand === '低落') {
+    stickerProbability *= c.stickerLowFactor;
+    note('stickerProbability', '×lowFactor', '低落 → 表情概率下降');
+  }
+  if (tension >= c.tensionHigh) {
+    stickerProbability *= (1 - c.stickerTensionPenalty);
+    note('stickerProbability', '×tensionPenalty', `tension>=${c.tensionHigh} → 情绪别扭时少发表情`);
+  }
+  stickerProbability = clampNum(stickerProbability, 0, 1, 0.1);
+
+  let voiceProbability = c.voiceBase;
+  if (moodBand === '兴奋' || moodBand === '开心') {
+    voiceProbability += c.voiceHappyBonus;
+    note('voiceProbability', '+happyBonus', '开心/兴奋 → 语音概率上升');
+  }
+  if (intimacy >= c.intimacyHigh) {
+    voiceProbability += c.voiceIntimateBonus;
+    note('voiceProbability', '+intimateBonus', `intimacy>=${c.intimacyHigh} → 语音概率上升`);
+  }
+  if (moodBand === '低落') {
+    voiceProbability *= c.voiceLowPenalty;
+    note('voiceProbability', '×lowPenalty', '低落 → 语音概率下降');
+  }
+  voiceProbability = clampNum(voiceProbability, 0, 1, 0.05);
+
+  // ── 4. 关系：称呼 / 撒娇 / 吃醋 / 冷战 ──
+  const addressForm = intimacy >= c.intimacyHigh ? 'close' : 'normal';
+  note('addressForm', addressForm, `intimacy>=${c.intimacyHigh} 为亲昵称呼`);
+  const clinginess = clampNum((intimacy - tension * 0.5), 0, 1, 0);
+  note('clinginess', clinginess, 'intimacy 高、tension 低时更黏人');
+  let jealousy = clampNum(tension * 0.2, 0, 1, 0);
+  if (causeType === 'jealous') {
+    jealousy = clampNum(jealousy + c.jealousyCauseBonus, 0, 1, 0);
+    note('jealousy', jealousy, '最近事件是吃醋 → 吃醋倾向上升');
+  }
+  const coldWar = tension >= c.coldWarTension ? clampNum(tension, 0, 1, 0) : 0;
+  if (coldWar > 0) note('coldWar', coldWar, `tension>=${c.coldWarTension} → 有点赌气/冷战`);
+
+  // ── 5. 主动联系概率 ──
+  let proactiveMultiplier = c.proactiveBase;
+  if (moodBand === '兴奋' || moodBand === '开心') {
+    proactiveMultiplier += c.proactiveHappyBonus;
+    note('proactiveMultiplier', '+happyBonus', '开心/兴奋 → 更愿意主动找人');
+  }
+  if (intimacy >= c.intimacyHigh) {
+    proactiveMultiplier += c.proactiveIntimateBonus;
+    note('proactiveMultiplier', '+intimateBonus', `intimacy>=${c.intimacyHigh} → 更愿意主动找人`);
+  }
+  if (tension >= c.tensionHigh) {
+    proactiveMultiplier -= c.proactiveTensionPenalty;
+    note('proactiveMultiplier', '-tensionPenalty', '关系别扭 → 少主动');
+  }
+  if (moodBand === '低落') {
+    proactiveMultiplier -= c.proactiveLowPenalty;
+    note('proactiveMultiplier', '-lowPenalty', '低落 → 少主动');
+  }
+  proactiveMultiplier = clampNum(proactiveMultiplier, c.proactiveMin, c.proactiveMax, 1);
+
+  // rng 只为「概率是否可以发」的调用方保留（不参与 plan 数值，保证可复现）。
+  void rng;
+
+  return {
+    key,
+    at: Date.now(),
+    moodBand,
+    maxReplyChars,
+    punctuation,
+    stickerProbability,
+    voiceProbability,
+    addressForm,
+    clinginess,
+    jealousy,
+    coldWar,
+    proactiveMultiplier,
+    reasons,
+    inputs: { valence, arousal, energy, intimacy, tension, causeType },
+    hints: { lengthHint, punctuationHint },
+  };
+}
+
+/** 把 plan 翻译成给模型的可执行指令段（不出现仪表盘数字）。 */
+export function buildMoodGuidance(plan) {
+  if (!plan || typeof plan !== 'object') return '';
+  const lines = [`【此刻心情】你${plan.moodBand === '平静' ? '情绪平稳' : '现在' + plan.moodBand}。${plan.hints?.lengthHint ?? ''}`];
+  lines.push(`【怎么说话】${plan.hints?.punctuationHint ?? ''}`);
+  if (plan.addressForm === 'close') lines.push('你和对方关系近，称呼可以亲昵、随便一点，不用客气。');
+  if (plan.clinginess >= 0.5) lines.push('可以自然地撒娇、黏一点，别端着。');
+  if (plan.jealousy >= 0.5) lines.push('你心里有点吃醋，可以说一句酸话点一下，但别翻旧账、别逼问。');
+  if (plan.coldWar > 0) lines.push('你们之间还有点别扭：话短一点、别硬找话题，也别主动撒娇，等对方先服软。');
+  if (plan.proactiveMultiplier < 0.8) lines.push('今天别太主动找人：真没话说就安静收尾。');
+  else if (plan.proactiveMultiplier > 1.2) lines.push('今天可以稍微主动一点：想找他说句话就自然开口。');
+  return lines.join('\n') + '\n\n';
+}
+
+/** 按 plan 概率决定「这次要不要真的发表情/语音」（纯函数，rng 可注入）。 */
+export function shouldAllowSticker(plan, rng = Math.random) {
+  const p = Number(plan?.stickerProbability);
+  if (!Number.isFinite(p)) return true;
+  if (p <= 0) return false;
+  if (p >= 1) return true;
+  return rng() < p;
+}
+
+export function shouldAllowVoice(plan, rng = Math.random) {
+  const p = Number(plan?.voiceProbability);
+  if (!Number.isFinite(p)) return true;
+  if (p <= 0) return false;
+  if (p >= 1) return true;
+  return rng() < p;
+}
+
+/**
+ * 主动机会调整：把 plan.proactiveMultiplier 翻译成「间隔因子 / 概率因子」。
+ * - 心情好/关系近 → 间隔缩短、概率提高；
+ * - 低落/别扭 → 间隔拉长、概率降低。
+ */
+export function computeProactiveAdjustment(plan) {
+  const raw = Number(plan?.proactiveMultiplier);
+  const multiplier = Number.isFinite(raw) && raw > 0 ? raw : 1;
+  return {
+    multiplier,
+    delayFactor: 1 / multiplier, // 乘在基础间隔上
+    probFactor: multiplier,      // 乘在基础概率上
+  };
+}
+
 export function createWakePromptBuilder({
   getState, cfg,
   formatMemoryInjectionV3, formatParticipationV2, readThroughSeqV2,
@@ -14,7 +272,39 @@ export function createWakePromptBuilder({
   buildDiaryDigestV2, profileDigestForRefine, threadClosureHints,
   stickerEntries: getStickerEntries,
   memoryStore,
+  // 会话 C：情绪/关系 → 表达。不传时完全不改变现有 prompt（向后兼容旧测试/部署）。
+  getMoodView = null,
+  getRelationshipView = null,
+  expressionCfg = null,
+  rng = Math.random,
 }) {
+
+  /** 当前会话的表达计划（没有注入状态视图时返回 null）。 */
+  function expressionPlanFor(key) {
+    if (typeof getMoodView !== 'function') return null;
+    let mood = null;
+    try {
+      mood = getMoodView(key);
+    } catch {
+      mood = null;
+    }
+    let relationship = null;
+    const privateUid = /^private:(\d+)$/.exec(String(key))?.[1] ?? null;
+    if (privateUid && typeof getRelationshipView === 'function') {
+      try {
+        relationship = getRelationshipView(privateUid);
+      } catch {
+        relationship = null;
+      }
+    }
+    return resolveExpressionPlan({
+      key,
+      mood,
+      relationship,
+      cfg: { socialV2: { moodExpression: typeof expressionCfg === 'function' ? expressionCfg() : (expressionCfg ?? {}) } },
+      rng,
+    });
+  }
 
   function replyTimingV2(st) {
     const minimum = Number(cfg.socialV2?.wait?.minQuietAfterNewMs);
@@ -160,7 +450,16 @@ export function createWakePromptBuilder({
     const privateCallLine = (String(key).startsWith('private:') && callEnabled)
       ? `【称呼】回他的第一条消息，开头带上「${callName}」。\n\n`
       : '';
-    const base = roleLine + tokenLine + privateCallLine + boundaryLine + antiAiLine + proactiveLine + stickerLine + replyLine + statusLine + wakeLine + memoryLine + memoryGuidanceLine + participationLine + preSleepLine;
+    // 会话 C：情绪/关系 → 表达指令段。放在【积极性】之后、【表情】之前。
+    // 没有注入状态视图时为空字符串，prompt 与旧版逐字节一致。
+    let moodLine = '';
+    try {
+      const plan = expressionPlanFor(key);
+      if (plan) moodLine = buildMoodGuidance(plan);
+    } catch {
+      moodLine = '';
+    }
+    const base = roleLine + tokenLine + privateCallLine + boundaryLine + antiAiLine + proactiveLine + moodLine + stickerLine + replyLine + statusLine + wakeLine + memoryLine + memoryGuidanceLine + participationLine + preSleepLine;
     if (reason === 'bootstrap') {
       return `${base}【引导唤醒】你已接入 QQ 会话 ${key}。\n当前是二代仿真模式：你的文本输出不会自动发送到 QQ，所有发言必须通过工具完成。\n请先调用 qq_get_prompt 查看角色、推荐值、可用工具和状态；有待回应的消息先按首回复节奏处理，最后才用 qq_set_wake_config 设置你希望如何被唤醒。`;
     }
@@ -242,5 +541,13 @@ export function createWakePromptBuilder({
     const preSleepMs = Math.max(0, Number(cfg.socialV2?.wake?.preSleepWaitMs) || 300000);
     return `${roleLine}${keyLine}${tokenLine}【提醒】你还没有完成回合收尾。请调用 qq_set_wake_config 设置下一次唤醒条件（例如继续潜水多久、@/名字/关键词/提问/概率/指定成员等），或者调用 qq_mark_read 表示你看过且决定不接。这是为了防止你忘记收尾后进入“永眠”。注意：设置潜水前先用 qq_wait_for_messages(timeoutMs=${preSleepMs}) 完成沉睡前观察；等待期间有人说话时查看 newMessages，判断不需要你参与即可收尾。`;
   }
-  return { buildWakeSnapshot, buildWakePrompt, buildWakeReminderPrompt, replyTimingV2, refreshDiaryPrevNotes };
+  return {
+    buildWakeSnapshot,
+    buildWakePrompt,
+    buildWakeReminderPrompt,
+    replyTimingV2,
+    refreshDiaryPrevNotes,
+    // 会话 C：控制台可解释性 —— 返回「这次为什么这样回应」的完整依据。
+    explainMood: expressionPlanFor,
+  };
 }

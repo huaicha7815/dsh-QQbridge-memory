@@ -31,6 +31,12 @@ const stamp = now.toLocaleString('zh-CN');
 const node = process.execPath;
 const suite = [
   {
+    // 记忆银河投影：类型元数据/ID 唯一/归档/约定状态/时间语义/S3 去重/路径守卫/前端转义
+    name: '记忆银河投影',
+    args: ['scripts/test-galaxy.mjs'],
+    expect: 0,
+  },
+  {
     name: '记忆库单测',
     args: ['--test', 'scripts/test-memory-lib.mjs'],
     expect: 0,
@@ -58,6 +64,34 @@ const suite = [
   {
     name: 'socialV2 提示词组装',
     args: ['--test', 'scripts/test-socialv2-prompt.mjs'],
+    expect: 0,
+  },
+  {
+    // 情绪与关系状态层：事件→状态、半衰期衰减、边界、未知会话默认值、
+    // 持久化重启恢复，以及控制台只读端点（mood / relationship / moods）。
+    name: '情绪与关系状态层',
+    args: ['--test', 'scripts/test-mood.mjs'],
+    expect: 0,
+  },
+  {
+    // 桥接接线层：入站文本分类、事件分发（消息/拍一拍/出站/冷落）、
+    // stale 预检与「消息→状态→落盘→重启恢复」端到端。
+    name: '情绪接线（消息→状态→重启）',
+    args: ['--test', 'scripts/test-mood-events.mjs'],
+    expect: 0,
+  },
+  {
+    // bridge 真实路径：通过 audit-bridge-harness 加载真实 bridge.js，
+    // 直接调用 appendSocialV2Message / appendSocialV2Poke / recordSentMessagesV2 验证接线。
+    name: '情绪接线（bridge 真实路径）',
+    args: ['--test', 'scripts/test-mood-bridge.mjs'],
+    expect: 0,
+  },
+  {
+    // 表达层（会话 C）：mood/relationship → 回复长度/表情/语音/称呼/撒娇/吃醋/冷战/
+    // 主动倍率，阈值可配，plan → 提示词指令段，概率闸门与 builder 集成（含可解释性）。
+    name: '情绪表达映射（状态→说话方式）',
+    args: ['--test', 'scripts/test-mood-expression.mjs'],
     expect: 0,
   },
   {

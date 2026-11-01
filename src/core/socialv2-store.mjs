@@ -7,6 +7,11 @@
 // 拆它的动机：`getSocialV2State` 在 bridge 里被调用 51 次、`saveSocialV2State` 49 次，
 // 状态有 24 个字段（含 4 个 setTimeout 句柄）。以前「哪条字段会落盘」只能靠读
 // saveSocialV2State 的实现猜，现在序列化白名单就写在 serializeSocialV2 里。
+//
+// 情绪与关系状态层（src/core/mood.mjs）也挂在这里：每个会话一个 `mood`，
+// 外加 `relationships`（uid → 关系状态）。它们的归一化/裁剪规则在 mood.mjs 里，
+// 本文件只负责「放进新建状态 / 从落盘重建 / 写回白名单」三件事。
+import { defaultMood, normalizeMood, serializeMood, normalizeRelationships, serializeRelationships } from './mood.mjs';
 
 /** 会话 key 规范化：`group:0123` → `group:123`；非法返回 null。 */
 export function canonicalV2Key(key) {
@@ -98,6 +103,9 @@ export function createConversationStateV2({ cfg, random = Math.random, token }) 
     activeTopics: [],
     pendingThoughts: [],
     memberImpressions: {},
+    // 情绪与关系状态（事件驱动，见 src/core/mood.mjs）。
+    mood: defaultMood(),
+    relationships: {},
   };
 }
 
@@ -149,6 +157,10 @@ export function hydrateConversationStateV2({ key, val, cfg, random = Math.random
       }
       return clean;
     })(),
+    // 旧数据没有这两个字段：归一化会把它们补成默认值（中性情绪 + 空关系表），
+    // 所以老版本落盘文件可以直接加载，不需要迁移脚本。
+    mood: normalizeMood(val.mood),
+    relationships: normalizeRelationships(val.relationships),
   };
   // 旧状态/异常状态里的指定成员名单也统一归一化，防止“null”/非法值污染。
   if (st.wakeConfig?.triggers && typeof st.wakeConfig.triggers === 'object') {
@@ -189,6 +201,8 @@ export function serializeSocialV2({ paused, conversations, seenForwardIds }) {
       activeTopics: Array.isArray(st.activeTopics) ? st.activeTopics.slice(-50) : [],
       pendingThoughts: Array.isArray(st.pendingThoughts) ? st.pendingThoughts.slice(-50) : [],
       memberImpressions: st.memberImpressions && typeof st.memberImpressions === 'object' ? st.memberImpressions : {},
+      mood: serializeMood(st.mood),
+      relationships: serializeRelationships(st.relationships),
       seenForwardIds: Array.from(seenForwardIds?.get?.(key) || []).slice(-1000),
     };
   }
@@ -201,6 +215,7 @@ export const PERSISTED_FIELDS = Object.freeze([
   'agentToken', 'bootstrapSent', 'wakeTimes', 'sendTimes', 'stickerCollectTimes',
   'lastIncomingAt', 'preSleepWaitSatisfiedAt', 'preSleepWaitObservedAt', 'preSleepWaitAccumMs',
   'lastUnreadSeq', 'lastReadThroughSeq', 'activeTopics', 'pendingThoughts', 'memberImpressions',
+  'mood', 'relationships',
   'seenForwardIds',
 ]);
 

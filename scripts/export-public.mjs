@@ -30,6 +30,7 @@ const TOP_WHITELIST = [
   'dsh',
   'plugins',
   'public',
+  'tools',
   'roles',
   '.github',
   'README.md',
@@ -64,6 +65,7 @@ const EXCLUDE_PATTERNS = [
   /\.r\d+bak$/,
   /\.routebak$|\.testbak$|\.origbak$/,
   /\.tmp$/,
+  /^galaxy-data\.json$/,   // 记忆银河导出物：含真实记忆内容，不导出
   /^\.env/,
   /^_tmp_/,
 ];
@@ -157,6 +159,9 @@ fs.writeFileSync(path.join(outDir, '.gitignore'), [
   '*.bak-*',
   '*.tmp',
   '_tmp_*',
+  '',
+  '# 记忆银河导出物（含真实记忆，只在本地预览）',
+  'galaxy-data*.json',
   '',
   '# 一次性探针/诊断产物',
   '_snowluma-catalog.json',
