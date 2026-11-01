@@ -60,6 +60,7 @@ import {
 } from './sticker-lib.js';
 import { createMemoryStore } from './core/memory-store.mjs';
 import { exportGalaxy } from '../scripts/lib/galaxy-export.mjs';
+import { createGalaxyCache } from './lib/galaxy-cache.mjs';
 import {
   acquireMaintenanceGate, releaseMaintenanceGate, releaseHeldMaintenanceGates, inspectMaintenanceGate,
 } from './lib/maintenance-gate.mjs';
@@ -72,6 +73,8 @@ import {
   shouldAllowSticker,
   shouldAllowVoice,
   computeProactiveAdjustment,
+  computeProactiveOutcome,
+  expressionVeto,
 } from './core/socialv2-prompt.mjs';
 import {
   computeWakeSafetyV2, evaluateWakeTriggerV2 as evaluateWakeTriggerV2Core,
@@ -100,34 +103,24 @@ const SLANG_SESSION_FILE = path.join(STATE_DIR, 'slang-session.json');
 const SOCIAL_V2_FILE = path.join(STATE_DIR, 'social-v2.json');
 const MEMORY_DIR = path.join(STATE_DIR, 'memory');
 
-// ── 记忆银河：只读投影缓存（stale-while-revalidate，避免请求线程同步扫描全部历史）──
+// ── 记忆银河：只读投影缓存（状态机在 src/lib/galaxy-cache.mjs，可注入测试）──
 const GALAXY_FILE = path.join(STATE_DIR, 'galaxy', 'galaxy-data.json');
 const GALAXY_TTL_MS = 60_000;
-let galaxyCache = { data: null, at: 0, building: false };
-function buildGalaxyInBackground() {
-  if (galaxyCache.building) return;
-  galaxyCache.building = true;
-  setImmediate(() => {
-    try {
-      exportGalaxy({ memoryDir: MEMORY_DIR, outFile: GALAXY_FILE, labels: { core: '鱼鱼', coreSub: '她自己' } });
-      galaxyCache.data = JSON.parse(fs.readFileSync(GALAXY_FILE, 'utf8'));
-      galaxyCache.at = Date.now();
-    } catch (error) {
-      log(`记忆银河导出失败：${error?.message ?? error}`);
-    } finally {
-      galaxyCache.building = false;
-    }
-  });
-}
+const galaxyCache = createGalaxyCache({
+  file: GALAXY_FILE,
+  ttlMs: GALAXY_TTL_MS,
+  build: (file) => exportGalaxy({ memoryDir: MEMORY_DIR, outFile: file, labels: { core: '鱼鱼', coreSub: '她自己' } }),
+  readFile: (file) => fs.readFileSync(file, 'utf8'),
+});
 function galaxyData() {
-  const fresh = galaxyCache.data && Date.now() - galaxyCache.at < GALAXY_TTL_MS;
-  if (!fresh) buildGalaxyInBackground();
-  if (galaxyCache.data) return galaxyCache.data;
-  // 首次请求：后台构建中，先返回一个明确的占位（前端会显示不完整横幅）
+  const r = galaxyCache.getData();
+  if (r.data) return r.data;   // fresh 或 stale（先给旧数据，后台重建）
+  // 没有缓存：后台构建中 / 构建失败，都要明确告诉前端（不能伪装成空库）
   return {
     stars: [], messages: [],
     meta: {
-      partial: true, errorCount: 1, errors: [{ file: 'galaxy', error: 'build-pending' }],
+      partial: true, errorCount: 1,
+      errors: [{ file: 'galaxy', error: r.state === 'error' ? 'build-failed' : 'build-pending' }],
       coreLabel: '鱼鱼', coreSub: '她自己', total: 0, pinned: 0, messages: 0,
       avgStrength: 0, sources: { memory: 0, diary: 0, message: 0 },
     },
@@ -1747,15 +1740,13 @@ async function main() {
   async function sendVoiceV2(key, filePath, { guard = false, audit = true, audio = null } = {}) {
     // 会话 C（AI 通道）：按情绪计划决定这次要不要真的发语音。操作者手动发不受影响（guard=false）。
     if (guard) {
-      try {
-        const plan = wakePromptBuilder.explainMood?.(key);
-        if (plan && !shouldAllowVoice(plan)) {
-          throw new Error('今天不想开口说话，用文字说吧（这是情绪节奏，不是你操作错了）。');
-        }
-      } catch (error) {
-        if (String(error?.message ?? '').includes('今天不想开口')) throw error;
-        // 计划计算失败不阻塞发送。
+      let plan = null;
+      try { plan = wakePromptBuilder.explainMood?.(key) ?? null; } catch { plan = null; }
+      if (plan?.hasMoodState && !shouldAllowVoice(plan)) {
+        recordExpression(key, { source: 'voice', plan, outcome: { kind: 'veto', reason: 'voiceProbability' } });
+        throw expressionVeto('今天不想开口说话，用文字说吧（这是情绪节奏，不是你操作错了）。', 'voice');
       }
+      if (plan) recordExpression(key, { source: 'voice', plan, outcome: { kind: 'allowed' } });
     }
     const vc = voiceCfg();
     // 注意：这里**不检查** vc.enabled —— 那是「AI 能不能发语音」的开关，判定放在
@@ -1948,15 +1939,13 @@ async function main() {
   async function sendStickerV2(key, stickerRef, options = {}) {
     // 会话 C（AI 通道）：按情绪计划决定这次要不要真的发表情。操作者手动发不受影响（moodGate 未传）。
     if (options.moodGate) {
-      try {
-        const plan = wakePromptBuilder.explainMood?.(key);
-        if (plan && !shouldAllowSticker(plan)) {
-          throw new Error('今天没什么心情发表情，用文字说吧（这是情绪节奏，不是你操作错了）。');
-        }
-      } catch (error) {
-        if (String(error?.message ?? '').includes('今天没什么心情')) throw error;
-        // 计划计算失败不阻塞发送。
+      let plan = null;
+      try { plan = wakePromptBuilder.explainMood?.(key) ?? null; } catch { plan = null; }
+      if (plan?.hasMoodState && !shouldAllowSticker(plan)) {
+        recordExpression(key, { source: 'sticker', plan, outcome: { kind: 'veto', reason: 'stickerProbability' } });
+        throw expressionVeto('今天没什么心情发表情，用文字说吧（这是情绪节奏，不是你操作错了）。', 'sticker');
       }
+      if (plan) recordExpression(key, { source: 'sticker', plan, outcome: { kind: 'allowed' } });
     }
     const assertSendAllowed = captureSendGuard(key);
     // 发送前强制同步一次，确保“刚新增的表情能立即用、刚删除的表情不会继续发”。
@@ -4471,6 +4460,8 @@ async function main() {
           wakeConfigMissCount.delete(key);
           forgetAgentToken(key);
           socialV2.conversations.delete(key);
+          // 会话 C：清掉该会话的表达解释缓存（避免 reset 后显示旧解释、Map 无界增长）。
+          forgetExpression(key);
           seenForwardIds.delete(key);
           saveSocialV2State();
           saveState();
@@ -4570,7 +4561,7 @@ async function main() {
     });
     server.listen(port, '127.0.0.1', () => {
       // 预热记忆银河缓存（后台线程，不阻塞启动）
-      buildGalaxyInBackground();
+      galaxyCache.warm();
       log(`本地控制台已启动：http://127.0.0.1:${port}`);
     });
     // 端口被占用说明已有实例在跑：以 exit 2 退出，守护脚本会识别为"已有实例"而不是无限重启
@@ -4609,19 +4600,8 @@ async function main() {
   function sendToQQ(key, msg) {
     const assertSendAllowed = captureSendGuard(key);
     const safeMsg = redactKnownTokensOnly(msg);
-    // 会话 C：情绪计划里的长度上限只做**可观测护栏**（不截断内容）——
-    // 截断会破坏语义，但超限要能在日志/控制台看出来，方便校准阈值。
-    try {
-      const plan = wakePromptBuilder.explainMood?.(key);
-      if (plan && safeMsg.length > plan.maxReplyChars) {
-        const previous = lastExpressionByKey.get(key) ?? {};
-        lastExpressionByKey.set(key, {
-          ...previous,
-          overLimit: { at: Date.now(), chars: safeMsg.length, maxReplyChars: plan.maxReplyChars },
-        });
-        log(`[expression] ${key} 回复 ${safeMsg.length} 字超过情绪上限 ${plan.maxReplyChars}（未截断，仅记录）`);
-      }
-    } catch {}
+    // 会话 C：情绪计划里的长度上限只做**可观测护栏**（不截断内容）。
+    observeReplyLength(key, safeMsg);
     const [kind, id] = key.split(':');
     const parts = splitForQQ(safeMsg);
     lastSendFailed.delete(key);
@@ -5265,6 +5245,9 @@ async function main() {
 
   function sendMessagesV2(key, messages, delays, replyToMessageId, atUserId = null) {
     const assertSendAllowed = captureSendGuard(key);
+    // 会话 C：reserved2 主 AI 文本通道（qq_send_message / qq_send_burst）也走同一份
+    // 长度观测——每条消息都记录，超限只记录不截断（审查 expression P1-1）。
+    for (const message of Array.isArray(messages) ? messages : []) observeReplyLength(key, message);
     const [kind, id] = key.split(':');
     const sent = [];
     const failed = [];
@@ -5818,10 +5801,56 @@ async function main() {
     getRelationshipView: (uid) => moodEvents.getRelationship(uid),
     expressionCfg: () => cfg.socialV2?.moodExpression ?? {},
   });
-  // 会话 C：控制台可解释性 —— 最近一次唤醒/发送用了哪份表达计划（运行时 Map，不落盘）。
+  // 会话 C：控制台可解释性 —— 最近一次表达决策（source + plan + outcome）。
+  // 运行时 Map，不落盘；按 key 记录、带上限、会话删除时清理。
   const lastExpressionByKey = new Map();
+  const lastProactiveByKey = new Map();
+  const MAX_EXPRESSION_KEYS = 200;
   // 挂到 socialV2 上供只读路由取（serialize 白名单不含该字段，不会落盘）。
   socialV2.lastExpression = lastExpressionByKey;
+  socialV2.lastProactiveByKey = lastProactiveByKey;
+
+  /** 记录一次表达决策；Map 超过上限时删最旧（有界）。 */
+  function recordExpression(key, entry) {
+    if (!key) return;
+    const previous = lastExpressionByKey.get(key) ?? {};
+    lastExpressionByKey.set(key, { ...previous, ...entry, at: Date.now() });
+    while (lastExpressionByKey.size > MAX_EXPRESSION_KEYS) {
+      const oldest = lastExpressionByKey.keys().next().value;
+      if (oldest === undefined) break;
+      lastExpressionByKey.delete(oldest);
+    }
+  }
+
+  /** 会话被 reset/删除时清掉解释缓存（避免旧解释与无界增长）。 */
+  function forgetExpression(key) {
+    lastExpressionByKey.delete(key);
+    lastProactiveByKey.delete(key);
+  }
+
+  /**
+   * 会话 C：回复长度观测（只记录、不截断）。
+   * sendToQQ（旧路径）与 sendMessagesV2（reserved2 主 AI 文本路径）共用同一份观察，
+   * 避免「主要 AI 工具发送绕过护栏」（审查 expression P1-1）。
+   */
+  function observeReplyLength(key, text) {
+    try {
+      const plan = wakePromptBuilder.explainMood?.(key);
+      if (!plan) return null;
+      const chars = String(text ?? '').length;
+      const overLimit = chars > plan.maxReplyChars;
+      recordExpression(key, {
+        source: 'send-text',
+        plan,
+        outcome: { kind: overLimit ? 'overLimit' : 'ok', chars, maxReplyChars: plan.maxReplyChars },
+      });
+      if (overLimit) log(`[expression] ${key} 回复 ${chars} 字超过情绪上限 ${plan.maxReplyChars}（未截断，仅记录）`);
+      return { overLimit, chars, maxReplyChars: plan.maxReplyChars };
+    } catch {
+      return null;
+    }
+  }
+
   function replyTimingV2(st) { return wakePromptBuilder.replyTimingV2(st); }
   function buildWakeSnapshotV2(key) { return wakePromptBuilder.buildWakeSnapshot(key); }
   function buildWakePromptV2(key, reason) {
@@ -5829,7 +5858,7 @@ async function main() {
     // 记录本次唤醒的表达依据，控制台可以回答「这次为什么这样回应」。
     try {
       const plan = wakePromptBuilder.explainMood(key);
-      if (plan) lastExpressionByKey.set(key, { at: Date.now(), reason, plan });
+      if (plan) recordExpression(key, { source: 'wake', reason, plan });
     } catch {}
     return prompt;
   }
@@ -7646,27 +7675,30 @@ async function main() {
       const idleThreshold = Number(isPrivate ? pp.idleThresholdMs : p.idleThresholdMs) || (isPrivate ? 8 * 60 * 1000 : 15 * 60 * 1000);
       const idle = Date.now() - (st.lastIncomingAt || 0);
       const probBase = Number(isPrivate ? pp.probability : p.probability);
-      let prob = Math.min(1, Math.max(0, Number.isFinite(probBase) ? probBase : (isPrivate ? 0.6 : 0.4)));
       const pendingThoughts = Array.isArray(st.pendingThoughts) ? st.pendingThoughts.filter((t) => t && (!t.expiresAt || Date.now() < Number(t.expiresAt))).length : 0;
-      if (pendingThoughts > 0) prob = Math.min(1, prob * 1.4);
-      if (st.lastAiReplyAt && Date.now() - Number(st.lastAiReplyAt) < 30 * 60 * 1000) prob *= 0.5;
       const hour = new Date().getHours();
-      if (hour >= 23 || hour < 8) prob *= 0.3;
       const recent = Array.isArray(st.recentMessages) ? st.recentMessages : [];
       const aiCount = recent.filter((m) => m && m.isSelf && Date.now() - Number(m.time || 0) < 60 * 60 * 1000).length;
-      // 会话 C：把情绪/关系因子乘进机会概率（在原有修正之后、判随机之前）。
-      prob = Math.min(1, Math.max(0, prob * proactiveAdj.probFactor));
-      socialV2.lastProactive = {
-        key,
-        at: Date.now(),
-        moodBand: expressionPlan?.moodBand ?? null,
-        multiplier: proactiveAdj.multiplier,
-        delayFactor: proactiveAdj.delayFactor,
-        probFactor: proactiveAdj.probFactor,
-        prob: Math.round(prob * 100) / 100,
-      };
+      // 会话 C：触发时重新计算当前 plan（创建定时器时的 plan 可能已过期）。
+      let currentPlan = null;
+      try { currentPlan = wakePromptBuilder.explainMood?.(key) ?? null; } catch { currentPlan = null; }
+      const minutesSinceAiReply = st.lastAiReplyAt ? (Date.now() - Number(st.lastAiReplyAt)) / 60000 : null;
+      // 顺序固定：原有全部修正（待说未说/刚回过/夜间/近一小时发言数）→ 最后乘情绪因子 → 随机判定。
+      const outcome = computeProactiveOutcome({
+        baseProb: Number.isFinite(probBase) ? probBase : (isPrivate ? 0.6 : 0.4),
+        plan: currentPlan,
+        aiCount,
+        pendingThoughts,
+        minutesSinceAiReply,
+        hour,
+        idle,
+        idleThreshold,
+        busy: isConversationBusyV2(key, st),
+        roll: Math.random(),
+      });
       // 私聊两种主动：他没回 → 追问；他回了但久没聊 → 主动开新话题
       let privateReason = 'proactiveCheck';
+      let suppressed = null;
       if (isPrivate) {
         const lastMsg = recent.length ? recent[recent.length - 1] : null;
         const followUps = Number(st.proactiveFollowUps) || 0;
@@ -7685,20 +7717,15 @@ async function main() {
             }
             saveSocialV2State();
           }
-          if (followUps >= maxFollowUps) {
-            scheduleProactiveCheckV2(key);
-            return;
-          }
+          if (followUps >= maxFollowUps) suppressed = 'followUps_limit';
         } else {
           privateReason = 'chatStart';
-          if (startCount >= maxStart) {
-            scheduleProactiveCheckV2(key);
-            return;
-          }
+          if (startCount >= maxStart) suppressed = 'chatStart_limit';
         }
       }
-      if (aiCount >= 5) prob *= 0.3;
-      if (idle >= idleThreshold && Math.random() < prob && !isConversationBusyV2(key, st)) {
+      // 实际触发 = 情绪/关系判定想触发 且 没有被「今日主动次数」上限压住。
+      const fired = !suppressed && outcome.fired;
+      if (fired) {
         if (isPrivate) {
           const today2 = localDayString();
           if (privateReason === 'chatStart') {
@@ -7711,6 +7738,24 @@ async function main() {
         }
         void sendWakePromptV2(key, isPrivate ? privateReason : 'proactiveCheck').catch((error) => log(`[reserved2] proactive 唤醒异常 ${key}:`, error?.message ?? error));
       }
+      // 会话 C：记录「这次为什么主动/没主动」的完整依据（按 key，供 /state 查询）。
+      lastProactiveByKey.set(key, {
+        at: Date.now(),
+        reason: privateReason,
+        suppressed,
+        moodBand: currentPlan?.moodBand ?? null,
+        multiplier: outcome.multiplier,
+        delayFactor: proactiveAdj.delayFactor,
+        probFactor: outcome.probFactor,
+        baseProb: outcome.baseProb,
+        finalProb: outcome.finalProb,
+        aiCount,
+        roll: outcome.roll,
+        fired,
+        idleEnough: outcome.idleEnough,
+        busy: outcome.busy,
+        steps: outcome.steps,
+      });
       scheduleProactiveCheckV2(key);
     }, delay);
     st.proactiveTimer.unref?.();
@@ -7913,6 +7958,8 @@ async function main() {
           wakeConfigMissCount.delete(key);
           forgetAgentToken(key);
           socialV2.conversations.delete(key);
+          // 会话 C：清掉该会话的表达解释缓存（避免 reset 后显示旧解释、Map 无界增长）。
+          forgetExpression(key);
           seenForwardIds.delete(key);
           saveSocialV2State();
           saveState();

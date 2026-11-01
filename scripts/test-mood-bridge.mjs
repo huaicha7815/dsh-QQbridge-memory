@@ -282,3 +282,53 @@ test('bridge 真实路径（会话 C）：两种 mood 下唤醒提示词可观�
     await h.close();
   }
 });
+
+test('bridge 真实路径（会话 C）：主 AI 文本通道超长被观测但不截断（审查 expression P1-1）', async () => {
+  const h = await bridgeHarness();
+  h.setMode('reserved2');
+  try {
+    const key = 'private:123';
+    // 先制造低落状态（上限 80 字）
+    h.appendSocialV2Message(key, '阿明', '我不喜欢你了', '我不喜欢你了', false, false, 5002, [], '123', []);
+    const st = h.getSocialV2State(key);
+    assert.ok(st.mood.valence < 0, '前置：应是低落状态');
+    const longText = '很'.repeat(200);
+    await h.sendMessagesV2(key, [longText], []);
+    const recorded = h.socialV2.lastExpression.get(key);
+    assert.equal(recorded.source, 'send-text', '主 AI 文本通道应记录长度决策');
+    assert.equal(recorded.outcome.kind, 'overLimit');
+    assert.equal(recorded.outcome.chars, 200, '观测到的是原文长度（未截断）');
+    assert.ok(recorded.outcome.maxReplyChars < 200, '低落状态上限应低于 200');
+  } finally {
+    await h.close();
+  }
+});
+
+test('bridge 真实路径（会话 C）：reset 后表达解释被清理（审查 expression P2-2）', async () => {
+  const h = await bridgeHarness();
+  try {
+    const key = 'private:7403';
+    h.appendSocialV2Message(key, '阿明', '你好可爱', '你好可爱', false, false, 5003, [], '7403', []);
+    h.buildWakePromptV2(key, 'replyCheck');
+    assert.ok(h.socialV2.lastExpression.get(key), '唤醒后应有解释记录');
+    h.forgetExpression(key);
+    assert.equal(h.socialV2.lastExpression.get(key), undefined, 'reset 后不能残留旧解释');
+    assert.equal(h.socialV2.lastProactiveByKey.get(key), undefined, 'reset 后不能残留旧主动解释');
+  } finally {
+    await h.close();
+  }
+});
+
+test('bridge 真实路径（会话 C）：默认平静状态不拦表情/语音（避免误伤无情绪会话）', async () => {
+  const h = await bridgeHarness();
+  try {
+    const key = 'private:7404';
+    h.appendSocialV2Message(key, '阿明', '今天吃什么', '今天吃什么', false, false, 5004, [], '7404', []);
+    h.buildWakePromptV2(key, 'replyCheck');
+    const plan = h.socialV2.lastExpression.get(key)?.plan;
+    assert.ok(plan, '应有表达计划');
+    assert.equal(plan.hasMoodState, false, '只有普通互动时不应视为有情绪状态');
+  } finally {
+    await h.close();
+  }
+});

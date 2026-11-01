@@ -35,6 +35,15 @@ function stableId(prefix, ...parts) {
   return `${prefix}:${sha1(...parts)}`;
 }
 
+/** 会话 key → 最小化投影：只有 scope（private/group）+ 不可逆短哈希 channel。 */
+function scopeOf(k) {
+  const s = String(k || '');
+  return s.startsWith('private') ? 'private' : 'group';
+}
+function channelOf(k) {
+  return 'c' + sha1(String(k || '')).slice(0, 8);
+}
+
 /** 只把 ENOENT 当空态；其它 IO 错误写进 errors。 */
 function readFileText(file, errors, { optional = true } = {}) {
   try {
@@ -206,7 +215,7 @@ export function exportGalaxy({ memoryDir, outFile, labels = {} }) {
         const msgKey = `${k}|${t}|${text}`;
         if (!seenMessages.has(msgKey)) {
           seenMessages.add(msgKey);
-          messages.push({ key: k, at: t || now, self: e.kind === 'self', text: text.slice(0, 60) });
+          messages.push({ scope: scopeOf(k), channel: channelOf(k), at: t || now, self: e.kind === 'self', text: text.slice(0, 60) });
         }
 
         const s = Number(e.s) || 0;
@@ -220,7 +229,7 @@ export function exportGalaxy({ memoryDir, outFile, labels = {} }) {
           at: t,
           title: text,
           text,
-          tags: [archived ? '归档' : k],
+          tags: [archived ? '归档' : (scopeOf(k) === 'private' ? '私聊' : '群聊')],
         });
       }
     }
@@ -311,6 +320,15 @@ export function exportGalaxy({ memoryDir, outFile, labels = {} }) {
   data.meta.errorCount = errors.length;
   data.meta.errors = errors.slice(0, 50);
   data.meta.tauByRaw = { schema: TAU_BY_RAW, observed };
+  // 数据指纹：覆盖所有影响视觉的字段（坐标/ageDays/strength 是派生的，不进指纹）
+  // 否则「同数量但文本/权重/tags 变了」会被误判成没变，页面不重绘。
+  data.meta.dataFingerprint = crypto.createHash('sha1').update(JSON.stringify({
+    stars: data.stars.map((s) => [s.id, s.kind, s.rawKind, s.weight, s.at, s.lastHitAt, s.pin, s.title, s.text, s.tags]),
+    messages: data.messages.map((m) => [m.scope, m.channel, m.at, m.self, m.text]),
+    counts: data.meta.counts,
+    partial: data.meta.partial,
+    errors: data.meta.errors,
+  })).digest('hex').slice(0, 16);
 
   // 原子写（tmp + rename），避免半截 JSON 被前端读到
   fs.mkdirSync(path.dirname(outFile), { recursive: true });

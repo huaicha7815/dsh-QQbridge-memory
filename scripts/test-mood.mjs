@@ -872,6 +872,27 @@ test('控制台可解释：/state 返回最近一次表达计划（expression）
   assert.equal(body.expression.plan.maxReplyChars, 80);
 });
 
+test('控制台可解释：/state 返回当前 key 的 lastProactive（审查 expression P2-3）', async () => {
+  const w = makeWorld();
+  const lastProactiveByKey = new Map([['private:1', {
+    at: T0,
+    reason: 'proactiveCheck',
+    moodBand: '低落',
+    baseProb: 0.6,
+    finalProb: 0.2,
+    fired: false,
+    suppressed: null,
+  }]]);
+  const api = fakeApi(w, {
+    socialV2: { conversations: w.conversations, paused: false, lastSaveError: null, lastProactiveByKey },
+  });
+  await api.call('/api/socialV2/state', { key: 'private:1' });
+  const body = api.responses[0].body;
+  assert.equal(body.lastProactive.reason, 'proactiveCheck');
+  assert.equal(body.lastProactive.finalProb, 0.2);
+  assert.equal(body.lastProactive.fired, false);
+});
+
 test('控制台只读端点：保存失败时 /state 暴露 lastSaveError（审查 r5 P2）', async () => {
   const w = makeWorld();
   w.layer.applyEmotionEvent('private:1', { type: 'praised' });

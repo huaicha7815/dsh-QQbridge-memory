@@ -46,6 +46,9 @@ import * as roleCard from '../src/role-card.js';
 import * as presetPrompt from '../src/preset-prompt.js';
 import * as qqModelView from '../src/qq-model-view.js';
 import * as snowlumaConn from '../src/snowluma-conn.js';
+// 记忆银河（并发会话新增）：bridge.js 顶层 import，VM 里必须注入同一份实现。
+import * as galaxyExport from '../scripts/lib/galaxy-export.mjs';
+import * as galaxyCache from '../src/lib/galaxy-cache.mjs';
 import { unwrap, createTurnCollector } from '../src/dsh-client.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -144,6 +147,7 @@ export async function bridgeHarness({ config = {}, savedState, globals = {} } = 
     ensureSession, ensureSlangLearnerSession, resolvePresetName, deliverPrompt, drainPromptQueue,
     sendToQQ, sendStickerV2, handleIncoming, startConsoleServer, cfg, state, api, promptQueues,
     getSocialV2State, appendSocialV2Message, appendSocialV2Poke, recordSentMessagesV2, saveSocialV2State,
+    sendMessagesV2, forgetExpression,
     buildWakePromptV2, buildWakeSnapshotV2, sendWakePromptV2, socialV2,
     flushQueue, retireSession,
     voiceCfg, voiceLibrary, resolveVoicePathForV2, resolveVoicePathForOperator,
@@ -167,6 +171,10 @@ export async function bridgeHarness({ config = {}, savedState, globals = {} } = 
     // 维护门：bridge.js 顶层 import 在 VM 里被剥掉，必须注入同一份实现。
     acquireMaintenanceGate, releaseMaintenanceGate, releaseHeldMaintenanceGates, inspectMaintenanceGate,
     setTimeout: (fn, ms) => { const timer = setTimeout(fn, ms); timers.add(timer); return timer; },
+    // 后台任务（记忆银河导出）会调 setImmediate；VM 里没有这个内建，
+    // 不注入会让 test-audit-bridge 在 handleIncoming 之后 ReferenceError（审查 expression P2）。
+    setImmediate: (fn, ...args) => { const timer = setTimeout(fn, 0, ...args); timers.add(timer); return timer; },
+    clearImmediate: (timer) => clearTimeout(timer),
     clearTimeout, setInterval: () => ({ unref() {} }), clearInterval: () => {},
     NodeApiClient: class { constructor() { return api; } },
     SnowLumaWebSocketClient: FakeBot, text: (s) => s,
@@ -186,6 +194,7 @@ export async function bridgeHarness({ config = {}, savedState, globals = {} } = 
     ...routeSocialV2ToolsApi, ...routeSocialV2WakeSlangApi, ...routeSocialV2SendApi,
     // 其余被 bridge.js 顶层 import、VM 里剥掉的模块（roleCharStats 等就是靠这里补齐的）。
     yaml, ...roleCard, ...presetPrompt, ...qqModelView, ...snowlumaConn,
+    ...galaxyExport, ...galaxyCache,
     // ACL 收紧会 spawn icacls 去改**真实**文件系统；测试不该做这件事（同理见下面的
     // cleanupTemp / processAudioVolume 桩）。桩成成功，让 hardenStateDirAcl 走正常分支。
     hardenDir: () => ({ ok: true, detail: 'stub' }),

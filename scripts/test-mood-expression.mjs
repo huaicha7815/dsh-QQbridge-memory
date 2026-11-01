@@ -13,6 +13,8 @@ import {
   shouldAllowSticker,
   shouldAllowVoice,
   computeProactiveAdjustment,
+  computeProactiveOutcome,
+  expressionVeto,
   createWakePromptBuilder,
 } from '../src/core/socialv2-prompt.mjs';
 
@@ -224,4 +226,138 @@ test('builder 集成：explainMood 返回可解释计划（控制台用）', () 
   assert.equal(exp.moodBand, '低落');
   assert.ok(Array.isArray(exp.reasons) && exp.reasons.length > 0);
   assert.equal(typeof exp.inputs.valence, 'number');
+});
+
+// ── 关系指令 precedence（审查 expression P1-3）────────────────────────────
+
+test('关系指令：默认关系 + 吃醋事件 → 提示词必须包含吃醋指令', () => {
+  const DEFAULT_REL = { intimacy: 0.3, tension: 0.05, lastInteraction: 1, openLoops: [], events: [], sources: [] };
+  const plan = resolveExpressionPlan({
+    key: 'private:1',
+    mood: { ...NEUTRAL_MOOD, causeType: 'jealous' },
+    relationship: DEFAULT_REL,
+    cfg: {},
+  });
+  assert.equal(plan.jealousyActive, true, '吃醋事件应直接置位 jealousyActive');
+  assert.ok(plan.jealousy > 0);
+  const text = buildMoodGuidance(plan);
+  assert.match(text, /吃醋|酸/, '默认关系 + 吃醋事件时提示词必须出现吃醋指令');
+});
+
+test('关系指令：高亲密 + 高张力不会同时要求撒娇和禁止撒娇', () => {
+  const plan = resolveExpressionPlan({
+    key: 'private:1',
+    mood: NEUTRAL_MOOD,
+    relationship: { intimacy: 0.9, tension: 0.8, lastInteraction: 1, openLoops: [], events: [], sources: [] },
+    cfg: {},
+  });
+  assert.ok(plan.coldWar > 0);
+  assert.equal(plan.clinginess, 0, '冷战期间 clinginess 必须归零');
+  const text = buildMoodGuidance(plan);
+  const wantsClingy = /可以自然地撒娇|黏一点/.test(text);
+  const forbidsClingy = /别主动撒娇/.test(text);
+  assert.equal(wantsClingy && forbidsClingy, false, `不能同时要求撒娇与禁止撒娇：\n${text}`);
+  assert.equal(forbidsClingy, true, '高张力应给出冷战/别扭指令');
+});
+
+// ── 配置范围校验（审查 expression P2-1）──────────────────────────────────
+
+test('配置校验：27 键逐项非法值/越界/类型错误都回落默认', () => {
+  const bad = {
+    maxReplyCharsQuiet: -50,
+    stickerBase: -3,
+    voiceBase: 99,
+    valenceHigh: -0.9,
+    proactiveMin: 5,
+    proactiveMax: 0.1,
+    intimacyHigh: 'abc',
+    coldWarTension: Number.NaN,
+    energyLow: 2,
+  };
+  const merged = mergeMoodExpressionConfig({ socialV2: { moodExpression: bad } });
+  assert.equal(merged.maxReplyCharsQuiet, DEFAULT_MOOD_EXPRESSION.maxReplyCharsQuiet);
+  assert.equal(merged.stickerBase, DEFAULT_MOOD_EXPRESSION.stickerBase);
+  assert.equal(merged.voiceBase, DEFAULT_MOOD_EXPRESSION.voiceBase);
+  assert.equal(merged.valenceHigh, DEFAULT_MOOD_EXPRESSION.valenceHigh);
+  assert.equal(merged.proactiveMin, DEFAULT_MOOD_EXPRESSION.proactiveMin);
+  assert.equal(merged.proactiveMax, DEFAULT_MOOD_EXPRESSION.proactiveMax);
+  assert.equal(merged.intimacyHigh, DEFAULT_MOOD_EXPRESSION.intimacyHigh);
+  assert.equal(merged.coldWarTension, DEFAULT_MOOD_EXPRESSION.coldWarTension);
+  assert.equal(merged.energyLow, DEFAULT_MOOD_EXPRESSION.energyLow);
+  // 越界配置不能产出无效 plan
+  const plan = resolveExpressionPlan({ key: 'private:1', mood: NEUTRAL_MOOD, relationship: CLOSE_REL, cfg: { socialV2: { moodExpression: bad } } });
+  assert.ok(plan.maxReplyChars > 0, '长度上限必须为正');
+  assert.ok(plan.stickerProbability >= 0 && plan.stickerProbability <= 1);
+});
+
+test('配置校验：跨字段倒置（长度/主动区间/情绪分档）整组回落默认', () => {
+  const merged = mergeMoodExpressionConfig({
+    socialV2: {
+      moodExpression: {
+        maxReplyCharsQuiet: 900, maxReplyCharsNormal: 220, maxReplyCharsChatty: 360,
+        proactiveMin: 5, proactiveMax: 0.1,
+        valenceLow: 0.5, valenceHigh: -0.5,
+      },
+    },
+  });
+  assert.equal(merged.maxReplyCharsQuiet, DEFAULT_MOOD_EXPRESSION.maxReplyCharsQuiet);
+  assert.equal(merged.proactiveMin, DEFAULT_MOOD_EXPRESSION.proactiveMin);
+  assert.equal(merged.proactiveMax, DEFAULT_MOOD_EXPRESSION.proactiveMax);
+  assert.ok(merged.valenceLow < merged.valenceHigh);
+});
+
+// ── 主动机会：顺序与最终概率（审查 expression P1-4）─────────────────────
+
+test('主动机会：原有修正全部应用后才乘情绪因子，并记录最终概率与随机判定', () => {
+  const plan = resolveExpressionPlan({ key: 'private:1', mood: LOW_MOOD, relationship: CLOSE_REL, cfg: {} });
+  // base 0.6；刚回过 ×0.5 → 0.3；夜间 ×0.3 → 0.09；近一小时 5 条 ×0.3 → 0.027；情绪倍率（低落约 0.7）→ 0.0189
+  const outcome = computeProactiveOutcome({
+    baseProb: 0.6,
+    plan,
+    aiCount: 6,
+    pendingThoughts: 0,
+    minutesSinceAiReply: 10,
+    hour: 2,
+    idle: 999999,
+    idleThreshold: 1000,
+    busy: false,
+    roll: 0.5,
+  });
+  assert.equal(outcome.baseProb, 0.6);
+  // 顺序断言：aiCount 修正在情绪倍率之前
+  const rules = outcome.steps.map((s) => s.rule);
+  assert.deepEqual(rules, ['刚回过他', '夜间', '近一小时发言>=5', '情绪/关系倍率']);
+  // 最终概率 = 各步连乘（用 steps 验证）
+  const product = outcome.steps.reduce((acc, s) => acc * s.factor, 1);
+  assert.ok(Math.abs(outcome.finalProb - Math.min(1, Math.max(0, 0.6 * product))) < 0.01);
+  assert.equal(outcome.rolled, 0.5 < outcome.finalProb);
+  assert.equal(outcome.fired, outcome.idleEnough && outcome.rolled && !outcome.busy);
+});
+
+test('主动机会：有没说出口的话提高概率、安静时按基础概率', () => {
+  const quiet = computeProactiveOutcome({ baseProb: 0.2, plan: null, roll: 0.5 });
+  assert.equal(quiet.finalProb, 0.2);
+  const eager = computeProactiveOutcome({ baseProb: 0.2, plan: null, pendingThoughts: 2, roll: 0.5 });
+  assert.ok(eager.finalProb > quiet.finalProb);
+  assert.equal(eager.fired, false, '不满足空闲阈值时不触发');
+});
+
+// ── hasMoodState：默认状态不拦表情/语音 ─────────────────────────────────
+
+test('默认平静且无事件时 hasMoodState=false（不拦表情/语音），有情绪时=true', () => {
+  const calm = resolveExpressionPlan({ key: 'private:1', mood: NEUTRAL_MOOD, relationship: { intimacy: 0.3, tension: 0, lastInteraction: 1, openLoops: [], events: [], sources: [] }, cfg: {} });
+  assert.equal(calm.hasMoodState, false);
+  const low = resolveExpressionPlan({ key: 'private:1', mood: LOW_MOOD, relationship: CLOSE_REL, cfg: {} });
+  assert.equal(low.hasMoodState, true);
+  const jealous = resolveExpressionPlan({ key: 'private:1', mood: { ...NEUTRAL_MOOD, causeType: 'jealous' }, relationship: CLOSE_REL, cfg: {} });
+  assert.equal(jealous.hasMoodState, true);
+});
+
+// ── expressionVeto：业务错误码 ───────────────────────────────────────────
+
+test('expressionVeto 返回带 code 的业务错误（不是普通 500 故障）', () => {
+  const error = expressionVeto('今天不想说话', 'voice');
+  assert.equal(error.code, 'expression_veto');
+  assert.equal(error.kind, 'voice');
+  assert.match(error.message, /今天不想说话/);
 });

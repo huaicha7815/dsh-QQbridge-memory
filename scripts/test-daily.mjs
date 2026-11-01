@@ -31,6 +31,12 @@ const stamp = now.toLocaleString('zh-CN');
 const node = process.execPath;
 const suite = [
   {
+    // 记忆银河缓存状态机：pending/fresh/stale/error、single-flight、旧缓存保留
+    name: '记忆银河缓存',
+    args: ['scripts/test-galaxy-cache.mjs'],
+    expect: 0,
+  },
+  {
     // 记忆银河投影：类型元数据/ID 唯一/归档/约定状态/时间语义/S3 去重/路径守卫/前端转义
     name: '记忆银河投影',
     args: ['scripts/test-galaxy.mjs'],
@@ -102,6 +108,13 @@ const suite = [
   {
     name: '路由调用点比对',
     args: ['--test', 'scripts/test-route-callsites.mjs'],
+    expect: 0,
+  },
+  {
+    // 审计套件：VM harness 加载真实 bridge.js，覆盖发送/语音/鉴权/模式隔离等真实路径。
+    // 曾因 harness 缺 setImmediate/galaxy 注入被静默打断，纳入 daily 防回归。
+    name: '审计套件（bridge 真实路径）',
+    args: ['--test', 'scripts/test-audit-bridge.mjs'],
     expect: 0,
   },
   {

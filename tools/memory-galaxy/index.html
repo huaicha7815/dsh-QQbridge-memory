@@ -103,10 +103,6 @@
   <h2>状态（随滑杆变化）</h2>
   <div class="stat" id="states"></div>
   <div id="linkbar"></div>
-  <h2>它记着的事</h2>
-  <div id="pinned"></div>
-  <h2>学到的做法</h2>
-  <div id="lessons"></div>
 </div>
 
 <div id="time" class="panel">
@@ -161,6 +157,8 @@ let linkGraphKind = null;
 let query = '';
 let msgMatch = '';
 let selected = null, hovered = null;
+let pendingRetries = 0;   // pending 重试计数（指数退避用）
+let galaxyTimer = null;   // 成功加载后的 60s 静默刷新定时器
 const placed = [];
 let labelQueue = [];
 const R = 1000;
@@ -282,7 +280,7 @@ function draw() {
     const hit = msgMatch ? msg.text.toLowerCase().includes(msgMatch) : false;
     const p = project(msg.x, msg.y, msg.z);
     if (p.s <= 0.02) continue;
-    const c = msg.self ? [255, 214, 160] : msg.key.startsWith('private') ? [150, 190, 255] : [140, 226, 190];
+    const c = msg.self ? [255, 214, 160] : String(msg.scope || '').startsWith('private') ? [150, 190, 255] : [140, 226, 190];
     ctx.globalAlpha = Math.min(0.95, (0.16 + 0.66 * ret) * (0.45 + p.s * 0.65) * (msg.self ? 1.1 : 1) * (msgMatch ? (hit ? 1.9 : 0.18) : 1));
     ctx.fillStyle = 'rgb(' + c.join(',') + ')';
     const sz = Math.max(1.1, (msgMatch && hit ? 2.8 : 1.35) + p.s * 1.2);
@@ -471,18 +469,8 @@ cv.addEventListener('pointerup', (e) => {
     if (hit) select(hit); else select(null);
   }
 });
-cv.addEventListener('dblclick', async (e) => {
-  const hit = pick(e.clientX, e.clientY);
-  if (!hit) return;
-  hit.pin = !hit.pin;
-  try {
-    const pbase = location.pathname.replace(/[^/]*$/, '');
-    try {
-      await fetch(`${pbase}api/pin`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: hit.id, pin: hit.pin }) });
-    } catch {}   // 插件版没有写回接口，本地翻转即可
-  } catch { /* 仅前端标记 */ }
-  select(hit);
-});
+// 双击 pin 已移除：服务端没有持久化接口，本地翻转会误导用户（等有持久协议再加）
+
 cv.addEventListener('wheel', (e) => {
   e.preventDefault();
   cam.dist = Math.max(40, Math.min(14000, cam.dist * (e.deltaY > 0 ? 1.16 : 0.84)));
@@ -523,8 +511,8 @@ function select(s) {
     el('dTitle').textContent = '对话消息';
     el('dText').textContent = s.text;
     el('dMeta').innerHTML = [
-      '<span>' + (String(s.key).startsWith('private') ? '私聊' : '群聊') + '</span>',
-      '<span>' + esc(s.key) + '</span>',
+      '<span>' + (String(s.scope || '').startsWith('private') ? '私聊' : '群聊') + '</span>',
+      '<span>' + esc(s.channel || '') + '</span>',
       '<span>' + (s.self ? '我说' : '对方') + '</span>',
       '<span>' + fullDate(s.at) + '</span>',
       '<span>留存 ' + (Math.exp(-(s.ageDays + tDays) / s.tau) * 100).toFixed(0) + '%</span>',
@@ -622,18 +610,6 @@ function renderStates() {
   el('tStats').textContent = tDays === 0 ? '' : `${n.vivid} 清晰 · ${n.faded} 模糊 · ${n.trace} 影子 · ${n.gone} 沉底`;
 }
 
-function renderLists() {
-  const pins = stars.filter((s) => s.pin).sort((a, b) => b.weight - a.weight).slice(0, 9);
-  el('pinned').innerHTML = pins.map((s) => `<div class="mini" data-id="${esc(s.id)}">· ${esc(s.title)}</div>`).join('');
-  const lessons = stars.filter((s) => s.rawKind === 'lesson')
-    .sort((a, b) => b.strength - a.strength).slice(0, 6);
-  el('lessons').innerHTML = lessons.map((s) => `<div class="mini" data-id="${esc(s.id)}">· ${esc(s.title)}</div>`).join('');
-  document.querySelectorAll('.mini').forEach((n) => n.addEventListener('click', () => {
-    const s = stars.find((x) => x.id === n.dataset.id);
-    if (s) select(s);
-  }));
-}
-
 /* ---------- 时间滑杆 ---------- */
 function localDate(d) {
   const p = (n) => String(n).padStart(2, '0');
@@ -700,17 +676,105 @@ async function boot() {
   }
   if (!data) throw new Error('数据源都不可用：' + cands.join(' , '));
   console.log('[galaxy] data from', used);
-  stars = data.stars; messages = (data.messages || []).map((m) => ({ ...m, isMessage: true })); links = data.links || []; meta = data.meta;
-  // 数据不完整横幅：投影层发现 IO/解析错误时不能装作银河是完整的
+  // galaxy-pending-retry：后台构建中。指数退避重拉，超过上限给明确提示，别让用户停在空星图。
+  const galaxyBuildBroken = data.meta && data.meta.partial && Array.isArray(data.meta.errors)
+    && data.meta.errors.some((e) => e && (e.error === 'build-pending' || e.error === 'build-failed'));
+  if (galaxyBuildBroken) {
+    if (data.meta.errors.some((e) => e && e.error === 'build-failed')) {
+      // 冷构建失败：直接给错误面板 + 重试按钮，不要退回退避等一轮
+      clearGalaxyTips();
+      pendingRetries = 7;
+    }
+    pendingRetries += 1;
+    if (pendingRetries > 6) {
+      clearGalaxyTips();
+      const tip = document.createElement('div');
+      tip.id = 'galaxy-error-tip';
+      tip.className = 'panel';
+      tip.setAttribute('role', 'alert');
+      tip.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:120;padding:14px 18px;color:#ffd7a8;background:rgba(30,20,8,.95);border:1px solid #a86;border-radius:10px;font-size:13px;display:flex;gap:12px;align-items:center;';
+      const text = document.createElement('span');
+      text.textContent = '记忆银河生成失败（后台导出连续报错）。';
+      const btn = document.createElement('button');
+      btn.textContent = '重新加载';
+      btn.style.cssText = 'cursor:pointer;padding:4px 10px;border-radius:6px;border:1px solid #a86;background:transparent;color:#ffd7a8;font-size:12px;';
+      btn.addEventListener('click', () => { clearGalaxyTips(); pendingRetries = 0; boot().catch(() => {}); });
+      tip.appendChild(text);
+      tip.appendChild(btn);
+      document.body.appendChild(tip);
+      return;
+    }
+    const delay = [1500, 3000, 5000, 8000, 12000, 20000][Math.min(pendingRetries - 1, 5)];
+    if (!document.getElementById('galaxy-pending-tip')) {
+      const msg = document.createElement('div');
+      msg.className = 'panel';
+      msg.id = 'galaxy-pending-tip';
+      msg.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:120;padding:12px 18px;color:#cfd8ff;background:rgba(10,14,26,.92);border:1px solid #4a5a8a;border-radius:10px;font-size:13px;';
+      msg.textContent = '正在生成记忆银河…（后台构建中）';
+      document.body.appendChild(msg);
+    }
+    setTimeout(() => { boot().catch(() => {}); }, delay);
+    return;
+  }
+  applyGalaxyData(data, { preserveView: false });
+  // 支持 ?t=180 直接看未来形态（也方便截图验收）
+  const q2 = new URLSearchParams(location.search);
+  if (q2.get('view') === 'top') { cam.pitch = -1.5607; cam.dist = 2100; }
+  const qq = q2.get('q');
+  if (qq) { el('search').value = qq; el('search').dispatchEvent(new Event('input')); }
+  const dq = Number(q2.get('dist'));
+  if (Number.isFinite(dq) && dq > 0) cam.dist = dq;
+
+  const tq = Number(q2.get('t'));
+  if (Number.isFinite(tq) && tq > 0) {
+    el('slider').value = Math.min(365, tq);
+    el('slider').dispatchEvent(new Event('input'));
+  }
+  select(null);
+  const kq = q2.get('kind');
+  if (kq && KIND[kq]) { linkKind = kq; renderKinds(); }
+  const selId = q2.get('sel');
+  if (selId) { const hit = stars.find((s) => s.id === selId); if (hit) select(hit); }
+  loop();
+  // 成功加载后每 60 秒静默刷新（保留相机/筛选/选中；linkGraph 失效重建）
+  if (!galaxyTimer) galaxyTimer = setInterval(refreshGalaxy, 60_000);
+}
+
+/** 清理「正在生成 / 生成失败」两种提示（成功或重试时都要清）。 */
+function clearGalaxyTips() {
+  for (const id of ['galaxy-pending-tip', 'galaxy-error-tip']) {
+    const node = document.getElementById(id);
+    if (node) node.remove();
+  }
+}
+
+/** 统一的数据落地：数据、统计、详情、横幅、linkGraph 失效都走这里。 */
+function applyGalaxyData(data, { preserveView = false } = {}) {
+  const keep = preserveView
+    ? { yaw: cam.yaw, pitch: cam.pitch, dist: cam.dist, sel: selected ? selected.id : null, link: linkKind }
+    : null;
+  clearGalaxyTips();
+  pendingRetries = 0;
+  stars = data.stars;
+  messages = (data.messages || []).map((m) => ({ ...m, isMessage: true }));
+  links = data.links || [];
+  meta = data.meta || meta;
+
+  // 数据不完整横幅：出现/更新/消失都要跟着数据走
+  const oldBanner = document.getElementById('data-incomplete-banner');
   if (meta.partial) {
-    const banner = document.createElement('div');
+    const banner = oldBanner || document.createElement('div');
     banner.id = 'data-incomplete-banner';
     banner.className = 'panel';
+    banner.setAttribute('role', 'status');
     banner.style.cssText = 'position:fixed;left:50%;top:10px;transform:translateX(-50%);z-index:99;padding:8px 14px;border:1px solid #a33;color:#ffb4b4;background:rgba(40,10,10,.92);font-size:12px;border-radius:8px;max-width:min(720px,calc(100vw - 32px));pointer-events:none;text-align:center;';
     const errs = Number.isFinite(meta.errorCount) ? meta.errorCount : (Array.isArray(meta.errors) ? meta.errors.length : 0);
     banner.textContent = '⚠ 数据不完整：投影时有 ' + errs + ' 处读取/解析错误，星图可能缺层';
-    document.body.appendChild(banner);
+    if (!oldBanner) document.body.appendChild(banner);
+  } else if (oldBanner) {
+    oldBanner.remove();
   }
+
   el('nStars').textContent = meta.total;
   el('avgS').textContent = meta.avgStrength;
   el('nPin').textContent = meta.pinned;
@@ -725,26 +789,48 @@ async function boot() {
       box.appendChild(span);
     }
   }
-  renderKinds(); renderStates(); renderLists();
-  // 支持 ?t=180 直接看未来形态（也方便截图验收）
-  const q2 = new URLSearchParams(location.search);
-  if (q2.get('view') === 'top') { cam.pitch = -1.5607; cam.dist = 2100; }
-  const qq = q2.get('q');
-  if (qq) { el('search').value = qq; el('search').dispatchEvent(new Event('input')); }
-  const dq = Number(q2.get('dist'));
-  if (Number.isFinite(dq) && dq > 0) cam.dist = dq;
-  
-  const tq = Number(q2.get('t'));
-  if (Number.isFinite(tq) && tq > 0) {
-    el('slider').value = Math.min(365, tq);
-    el('slider').dispatchEvent(new Event('input'));
+
+  if (preserveView && keep) {
+    cam.yaw = keep.yaw; cam.pitch = keep.pitch; cam.dist = keep.dist;
+    // 数据变了：邻接图必须失效重建（保留用户选择的 linkKind 本身）
+    linkGraph = null; linkGraphKind = null;
+    selected = keep.sel ? (stars.find((s) => s.id === keep.sel) || null) : null;
+    renderStates();
+    if (selected) select(selected);
+    else { selected = null; el('detail').classList.remove('show'); }
+    linkKind = keep.link;
+    if (linkKind && !stars.some((s) => s.kind === linkKind)) linkKind = null;
+    linkGraph = null; linkGraphKind = null;
+    renderKinds();
+  } else {
+    renderKinds(); renderStates();
   }
-  select(null);
-  const kq = q2.get('kind');
-  if (kq && KIND[kq]) { linkKind = kq; renderKinds(); }
-  const selId = q2.get('sel');
-  if (selId) { const hit = stars.find((s) => s.id === selId); if (hit) select(hit); }
-  loop();
+}
+
+/** 60 秒静默刷新：页面不可见时跳过；数据没变时跳过重绘。 */
+async function refreshGalaxy() {
+  if (document.hidden) return;
+  try {
+    const base = location.pathname.replace(/[^/]*$/, '');
+    const headers = { 'x-console-token': (() => { try { return localStorage.getItem('consoleToken') || ''; } catch { return ''; } })() };
+    const r = await fetch(base + 'api/data', { cache: 'no-store', headers });
+    if (!r.ok) return;
+    const j = await r.json();
+    if (!j || !Array.isArray(j.stars)) return;
+    // 后台构建中：保留当前视图，等下一轮，绝不把页面刷成空星图
+    const pending = j.meta && j.meta.partial && Array.isArray(j.meta.errors)
+      && j.meta.errors.some((e) => e && (e.error === 'build-pending' || e.error === 'build-failed'));
+    if (pending) return;
+    // 数据没变就跳过重绘（fingerprint 优先，generatedAt 兜底）
+    if (meta && j.meta) {
+      const same = j.meta.dataFingerprint && meta.dataFingerprint
+        ? j.meta.dataFingerprint === meta.dataFingerprint
+        : j.meta.generatedAt === meta.generatedAt;
+      if (same) return;
+    }
+    hovered = null;   // 鼠标没动时 tooltip 不能指向刷新前的旧对象
+    applyGalaxyData(j, { preserveView: true });
+  } catch { /* 静默失败，下一轮再试 */ }
 }
 boot();
 </script>

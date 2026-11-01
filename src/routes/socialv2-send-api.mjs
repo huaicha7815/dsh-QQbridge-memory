@@ -743,6 +743,11 @@ export async function handleSocialV2SendApi({
             });
           } catch (error) {
             // 额度只在真正发出后才记账（voiceBudgetCommit），所以失败路径无需回滚。
+            // 会话 C：情绪节奏拒绝是业务结果，不是服务故障——用 200 + code 返回，避免工具层当 5xx 重试。
+            if (error?.code === 'expression_veto') {
+              sendJson({ ok: false, code: 'expression_veto', kind: error.kind ?? 'voice', error: error?.message ?? '当前情绪不想发语音' });
+              return true;
+            }
             sendJson({ ok: false, error: error?.message ?? String(error) }, 500);
           }
           return true;
@@ -851,6 +856,11 @@ export async function handleSocialV2SendApi({
             if (idx >= 0) st.sendTimes.splice(idx, 1);
             if (st.sendTimes.length > 500) st.sendTimes = st.sendTimes.slice(-500);
             saveSocialV2State();
+            // 会话 C：情绪节奏拒绝是业务结果（不是服务故障）——回滚额度后 200 + code 返回。
+            if (error?.code === 'expression_veto') {
+              sendJson({ ok: false, code: 'expression_veto', kind: error.kind ?? 'sticker', error: error?.message ?? '当前情绪不想发表情' });
+              return true;
+            }
             log(`[sticker] 工具发送表情失败 ${key}: ${error?.message ?? error}`);
             sendJson({ ok: false, error: `发送表情失败：${error?.message ?? error}` }, 500);
           }

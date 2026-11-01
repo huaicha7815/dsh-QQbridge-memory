@@ -61,14 +61,65 @@ function clampNum(value, min, max, fallback) {
   return Math.min(max, Math.max(min, n));
 }
 
-/** 合并默认阈值与 config 里的覆盖值（config 缺省/非法项回落到默认）。 */
+/** 每个阈值键的合法范围（越界/非数值一律回落到默认，审查 expression P2-1）。 */
+const MOOD_EXPRESSION_RANGES = Object.freeze({
+  valenceLow: [-1, 1],
+  valenceHigh: [-1, 1],
+  energyLow: [0, 1],
+  energyHigh: [0, 1],
+  arousalHigh: [0, 1],
+  intimacyHigh: [0, 1],
+  tensionHigh: [0, 1],
+  maxReplyCharsQuiet: [20, 2000],
+  maxReplyCharsNormal: [20, 4000],
+  maxReplyCharsChatty: [20, 8000],
+  stickerBase: [0, 1],
+  stickerHappyBonus: [0, 1],
+  stickerTensionPenalty: [0, 1],
+  stickerLowFactor: [0, 1],
+  voiceBase: [0, 1],
+  voiceHappyBonus: [0, 1],
+  voiceIntimateBonus: [0, 1],
+  voiceLowPenalty: [0, 1],
+  proactiveBase: [0, 3],
+  proactiveHappyBonus: [0, 3],
+  proactiveIntimateBonus: [0, 3],
+  proactiveTensionPenalty: [0, 3],
+  proactiveLowPenalty: [0, 3],
+  proactiveMin: [0.01, 3],
+  proactiveMax: [0.01, 3],
+  jealousyCauseBonus: [0, 1],
+  coldWarTension: [0, 1],
+});
+
+/** 合并默认阈值与 config 里的覆盖值：逐项校验范围，跨字段不变量倒置时整组回退默认。 */
 export function mergeMoodExpressionConfig(cfg) {
   const override = cfg?.socialV2?.moodExpression ?? cfg?.moodExpression ?? {};
   const merged = { ...DEFAULT_MOOD_EXPRESSION };
   for (const [key, fallback] of Object.entries(DEFAULT_MOOD_EXPRESSION)) {
-    const value = Number(override[key]);
-    if (Number.isFinite(value)) merged[key] = value;
-    else merged[key] = fallback;
+    const range = MOOD_EXPRESSION_RANGES[key];
+    const raw = override[key];
+    if (raw === undefined || raw === null || raw === '') continue;
+    const value = Number(raw);
+    if (!Number.isFinite(value)) continue; // 非数值 → 默认
+    if (range && (value < range[0] || value > range[1])) continue; // 越界 → 默认
+    merged[key] = value;
+  }
+  // 跨字段不变量：长度 Quiet ≤ Normal ≤ Chatty（倒置则这组回退默认）。
+  if (!(merged.maxReplyCharsQuiet <= merged.maxReplyCharsNormal && merged.maxReplyCharsNormal <= merged.maxReplyCharsChatty)) {
+    merged.maxReplyCharsQuiet = DEFAULT_MOOD_EXPRESSION.maxReplyCharsQuiet;
+    merged.maxReplyCharsNormal = DEFAULT_MOOD_EXPRESSION.maxReplyCharsNormal;
+    merged.maxReplyCharsChatty = DEFAULT_MOOD_EXPRESSION.maxReplyCharsChatty;
+  }
+  // 主动区间 min ≤ max（倒置则两项回退默认）。
+  if (!(merged.proactiveMin <= merged.proactiveMax)) {
+    merged.proactiveMin = DEFAULT_MOOD_EXPRESSION.proactiveMin;
+    merged.proactiveMax = DEFAULT_MOOD_EXPRESSION.proactiveMax;
+  }
+  // 情绪分档 low < high（否则两项回退默认）。
+  if (!(merged.valenceLow < merged.valenceHigh)) {
+    merged.valenceLow = DEFAULT_MOOD_EXPRESSION.valenceLow;
+    merged.valenceHigh = DEFAULT_MOOD_EXPRESSION.valenceHigh;
   }
   return merged;
 }
@@ -166,15 +217,18 @@ export function resolveExpressionPlan({ key = '', mood, relationship = null, cfg
   // ── 4. 关系：称呼 / 撒娇 / 吃醋 / 冷战 ──
   const addressForm = intimacy >= c.intimacyHigh ? 'close' : 'normal';
   note('addressForm', addressForm, `intimacy>=${c.intimacyHigh} 为亲昵称呼`);
-  const clinginess = clampNum((intimacy - tension * 0.5), 0, 1, 0);
-  note('clinginess', clinginess, 'intimacy 高、tension 低时更黏人');
-  let jealousy = clampNum(tension * 0.2, 0, 1, 0);
-  if (causeType === 'jealous') {
-    jealousy = clampNum(jealousy + c.jealousyCauseBonus, 0, 1, 0);
-    note('jealousy', jealousy, '最近事件是吃醋 → 吃醋倾向上升');
-  }
+  // 冷战优先判定：高张力时先定冷战，再决定撒娇——避免「可以撒娇」与「别撒娇」同时出现。
   const coldWar = tension >= c.coldWarTension ? clampNum(tension, 0, 1, 0) : 0;
   if (coldWar > 0) note('coldWar', coldWar, `tension>=${c.coldWarTension} → 有点赌气/冷战`);
+  const clinginess = coldWar > 0 ? 0 : clampNum((intimacy - tension * 0.5), 0, 1, 0);
+  note('clinginess', clinginess, coldWar > 0 ? '冷战期间不撒娇' : 'intimacy 高、tension 低时更黏人');
+  // 吃醋：最近事件是吃醋就直接触发（不依赖 0.5 阈值），否则只按张力给倾向。
+  const jealousyActive = causeType === 'jealous';
+  let jealousy = clampNum(tension * 0.2, 0, 1, 0);
+  if (jealousyActive) {
+    jealousy = clampNum(jealousy + c.jealousyCauseBonus, 0, 1, 0);
+    note('jealousy', jealousy, '最近事件是吃醋 → 直接触发吃醋指令');
+  }
 
   // ── 5. 主动联系概率 ──
   let proactiveMultiplier = c.proactiveBase;
@@ -199,10 +253,15 @@ export function resolveExpressionPlan({ key = '', mood, relationship = null, cfg
   // rng 只为「概率是否可以发」的调用方保留（不参与 plan 数值，保证可复现）。
   void rng;
 
+  // 有没有「明确的情绪/关系状态」：没有的话（默认平静、无事件、无张力）不拦表情/语音——
+  // 否则默认状态也会随机拒绝，既反直觉又会把既有语音测试变得不稳定。
+  const hasMoodState = Boolean(causeType) || moodBand !== '平静' || coldWar > 0;
+
   return {
     key,
     at: Date.now(),
     moodBand,
+    hasMoodState,
     maxReplyChars,
     punctuation,
     stickerProbability,
@@ -210,6 +269,7 @@ export function resolveExpressionPlan({ key = '', mood, relationship = null, cfg
     addressForm,
     clinginess,
     jealousy,
+    jealousyActive,
     coldWar,
     proactiveMultiplier,
     reasons,
@@ -224,9 +284,13 @@ export function buildMoodGuidance(plan) {
   const lines = [`【此刻心情】你${plan.moodBand === '平静' ? '情绪平稳' : '现在' + plan.moodBand}。${plan.hints?.lengthHint ?? ''}`];
   lines.push(`【怎么说话】${plan.hints?.punctuationHint ?? ''}`);
   if (plan.addressForm === 'close') lines.push('你和对方关系近，称呼可以亲昵、随便一点，不用客气。');
-  if (plan.clinginess >= 0.5) lines.push('可以自然地撒娇、黏一点，别端着。');
-  if (plan.jealousy >= 0.5) lines.push('你心里有点吃醋，可以说一句酸话点一下，但别翻旧账、别逼问。');
-  if (plan.coldWar > 0) lines.push('你们之间还有点别扭：话短一点、别硬找话题，也别主动撒娇，等对方先服软。');
+  // 冷战优先：别扭时不出现撒娇指令，避免两条规则互相冲突。
+  if (plan.coldWar > 0) {
+    lines.push('你们之间还有点别扭：话短一点、别硬找话题，也别主动撒娇，等对方先服软。');
+  } else if (plan.clinginess >= 0.5) {
+    lines.push('可以自然地撒娇、黏一点，别端着。');
+  }
+  if (plan.jealousyActive || plan.jealousy >= 0.5) lines.push('你心里有点吃醋，可以说一句酸话点一下，但别翻旧账、别逼问。');
   if (plan.proactiveMultiplier < 0.8) lines.push('今天别太主动找人：真没话说就安静收尾。');
   else if (plan.proactiveMultiplier > 1.2) lines.push('今天可以稍微主动一点：想找他说句话就自然开口。');
   return lines.join('\n') + '\n\n';
@@ -262,6 +326,68 @@ export function computeProactiveAdjustment(plan) {
     delayFactor: 1 / multiplier, // 乘在基础间隔上
     probFactor: multiplier,      // 乘在基础概率上
   };
+}
+
+/**
+ * 主动机会的最终判定（纯函数）。
+ *
+ * 顺序固定：先应用原有全部修正（待说未说 / 刚回过 / 夜间 / 近一小时发言数），
+ * 最后才乘情绪/关系因子——避免「情绪因子被频次修正覆盖」或日志记录旧概率。
+ * 返回最终概率、随机判定与是否触发，供调度器记录「为什么这次主动/没主动」。
+ */
+export function computeProactiveOutcome({
+  baseProb = 0,
+  plan = null,
+  aiCount = 0,
+  pendingThoughts = 0,
+  minutesSinceAiReply = null,
+  hour = 12,
+  idle = 0,
+  idleThreshold = 0,
+  busy = false,
+  roll = Math.random,
+} = {}) {
+  const startBase = Math.min(1, Math.max(0, Number(baseProb) || 0));
+  let prob = startBase;
+  const steps = [];
+  const apply = (factor, rule) => {
+    const before = prob;
+    prob = Math.min(1, Math.max(0, prob * factor));
+    steps.push({ rule, factor, before: Math.round(before * 1000) / 1000, after: Math.round(prob * 1000) / 1000 });
+  };
+  if (pendingThoughts > 0) apply(1.4, '有没说出口的话');
+  if (minutesSinceAiReply != null && minutesSinceAiReply < 30) apply(0.5, '刚回过他');
+  if (hour >= 23 || hour < 8) apply(0.3, '夜间');
+  if (aiCount >= 5) apply(0.3, '近一小时发言>=5');
+  const adj = computeProactiveAdjustment(plan);
+  apply(adj.probFactor, '情绪/关系倍率');
+  const finalProb = prob;
+  const rolled = roll < finalProb;
+  const idleEnough = idle >= idleThreshold;
+  return {
+    baseProb: startBase,
+    finalProb: Math.round(finalProb * 1000) / 1000,
+    probFactor: adj.probFactor,
+    multiplier: adj.multiplier,
+    roll: Math.round(Number(roll) * 1000) / 1000,
+    rolled,
+    idleEnough,
+    fired: idleEnough && rolled && !busy,
+    busy: Boolean(busy),
+    aiCount,
+    steps,
+  };
+}
+
+/**
+ * 表达策略拒绝：情绪节奏决定「这次不发表情/语音」。这是业务结果，不是服务故障——
+ * 路由应返回 200 + `code:'expression_veto'`（不能当 500）。
+ */
+export function expressionVeto(message, kind = 'expression') {
+  const error = new Error(message);
+  error.code = 'expression_veto';
+  error.kind = kind;
+  return error;
 }
 
 export function createWakePromptBuilder({

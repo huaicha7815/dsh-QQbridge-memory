@@ -159,8 +159,8 @@ test('galaxy：拒绝把导出物写进记忆库，且导出不改记忆库字�
 test('galaxy：前端对记忆字段做转义（防 stored DOM XSS）', () => {
   const html = fs.readFileSync(path.join(ROOT, 'tools', 'memory-galaxy', 'index.html'), 'utf8');
   assert.ok(html.includes('function esc('), 'index.html 必须有转义函数');
-  assert.ok(html.includes('esc(s.id)'), 'data-id 必须转义');
-  assert.ok(html.includes('esc(s.title)'), '标题必须转义');
+  assert.ok(html.includes("esc(s.channel || '')"), 'channel 必须转义');
+  assert.ok(html.includes('esc(s.rawKind)'), 'rawKind 必须转义');
   assert.ok(html.includes('esc(t)'), '标签必须转义');
   assert.equal((html.match(/<span>#\$\{t\}/g) || []).length, 0, '不能再有未转义的标签拼接');
 });
@@ -179,7 +179,7 @@ test('galaxy：archive 与 live 同 ID 只投影一次（星和消息都不重�
   const r = exportGalaxy({ memoryDir: mem, outFile: outOf(base) });
   const data = JSON.parse(fs.readFileSync(r.out, 'utf8'));
   assert.equal(data.stars.filter((s) => s.id === 'dup-1').length, 1, '星只能有一颗');
-  assert.equal(data.messages.filter((m) => m.text === '同一条事件' && m.key === 'private:1').length, 1, '消息点只能有一条');
+  assert.equal(data.messages.filter((m) => m.text === '同一条事件' && m.scope === 'private').length, 1, '消息点只能有一条');
   fs.rmSync(base, { recursive: true, force: true });
 });
 
@@ -260,7 +260,7 @@ test('galaxy：thread 用文本 hash 当 ID（数组重排不改变身份）', (
 
 test('galaxy：前端详情面板与不完整横幅（XSS 闭合 + partial 可见）', () => {
   const html = fs.readFileSync(path.join(ROOT, 'tools', 'memory-galaxy', 'index.html'), 'utf8');
-  assert.ok(html.includes('esc(s.key)'), '消息详情 key 必须转义');
+  assert.ok(html.includes("esc(s.channel || '')"), '消息详情 channel 必须转义');
   assert.ok(html.includes('esc(s.rawKind)'), 'rawKind 必须转义');
   assert.ok(html.includes("esc((KIND[s.kind] || {}).label || s.kind)"), 'kind 标签必须转义');
   assert.ok(html.includes('data-incomplete-banner'), 'partial 时必须有可见横幅');
@@ -321,4 +321,62 @@ test('galaxy：横幅用未截断的 errorCount，sources 用 DOM 文本', () =>
   assert.ok(html.includes('meta.errorCount'), '横幅显示 errorCount');
   assert.ok(!html.includes("el('sources').innerHTML"), 'sources 不再用 innerHTML 拼字符串');
   assert.ok(html.includes("document.createElement('span')"), 'sources 用 DOM 节点');
+});
+
+
+test('galaxy：不返回原始会话 key（scope + 不可逆短哈希）', () => {
+  const { base, mem } = makeLib({
+    events: [{ t: T, k: 'private:1477325291', kind: 'msg', text: '私聊消息', s: 3 }],
+  });
+  const r = exportGalaxy({ memoryDir: mem, outFile: outOf(base) });
+  const data = JSON.parse(fs.readFileSync(r.out, 'utf8'));
+  const msg = data.messages[0];
+  assert.equal(msg.scope, 'private');
+  assert.ok(/^c[0-9a-f]{8}$/.test(msg.channel), 'channel 必须是短哈希');
+  assert.ok(!JSON.stringify(data.messages).includes('1477325291'), '消息里不能出现原始 QQ 号');
+  const star = data.stars.find((x) => x.kind === 'event');
+  assert.ok(!star.tags.some((t) => String(t).includes('1477325291')), '星标签不能含原始会话 key');
+  fs.rmSync(base, { recursive: true, force: true });
+});
+
+test('galaxy：前端已移除双击 pin（服务端无持久化接口）', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'tools', 'memory-galaxy', 'index.html'), 'utf8');
+  assert.ok(!html.includes("addEventListener('dblclick'"), '不能有双击 pin 交互');
+  assert.ok(!html.includes('api/pin'), '不能调用不存在的 pin 接口');
+});
+
+test('galaxy：前端对 build-pending 占位自动重试', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'tools', 'memory-galaxy', 'index.html'), 'utf8');
+  assert.ok(html.includes('galaxy-pending-retry'), '缺少 pending 重试逻辑');
+});
+
+
+function fpOf(mem, base) {
+  const r = exportGalaxy({ memoryDir: mem, outFile: outOf(base) });
+  return JSON.parse(fs.readFileSync(r.out, 'utf8')).meta.dataFingerprint;
+}
+
+test('galaxy：dataFingerprint 覆盖文本/权重/消息变化，同内容重建不变', () => {
+  // 1) 同数量、文本不同 → 指纹不同
+  const a = makeLib({ events: [{ id: 'x1', t: T, k: 'a', kind: 'msg', text: '文本甲', s: 3 }] });
+  const b = makeLib({ events: [{ id: 'x1', t: T, k: 'a', kind: 'msg', text: '文本乙', s: 3 }] });
+  const fpA = fpOf(a.mem, a.base);
+  const fpB = fpOf(b.mem, b.base);
+  assert.notEqual(fpA, fpB, '同数量文本变化必须改变指纹');
+
+  // 2) 同 ID 同文本、权重不同 → 指纹不同
+  const c = makeLib({ events: [{ id: 'x1', t: T, k: 'a', kind: 'msg', text: '文本甲', s: 2 }] });
+  assert.notEqual(fpA, fpOf(c.mem, c.base), '权重变化必须改变指纹');
+
+  // 3) 只加一条背景消息（不加星）→ 指纹不同
+  const d = makeLib({ events: [
+    { id: 'x1', t: T, k: 'a', kind: 'msg', text: '文本甲', s: 3 },
+    { t: T + 1, k: 'a', kind: 'msg', text: '一条 s=0 的背景消息', s: 0 },
+  ] });
+  assert.notEqual(fpA, fpOf(d.mem, d.base), '新背景消息也必须改变指纹');
+
+  // 4) 内容完全相同、只重建 → 指纹不变
+  assert.equal(fpA, fpOf(a.mem, a.base), '同内容重建指纹必须稳定');
+
+  for (const h of [a, b, c, d]) fs.rmSync(h.base, { recursive: true, force: true });
 });

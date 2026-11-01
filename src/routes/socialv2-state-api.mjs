@@ -87,7 +87,9 @@ export async function handleSocialV2StateApi({
             relationship: relationshipUid ? relationshipSummary(moodLayer.getRelationship(relationshipUid)) : null,
             // 会话 C：可解释性 —— 最近一次唤醒/发送用了哪份表达计划（为什么这样回应）。
             // 运行时数据（不落盘）：含 moodBand、长度上限、表情/语音允许概率、主动倍率与逐条 reasons。
-            expression: socialV2?.lastExpression?.get?.(key) ?? null
+            expression: socialV2?.lastExpression?.get?.(key) ?? null,
+            // 最近一次主动机会检查的完整依据（为什么这次主动/没主动）。
+            lastProactive: socialV2?.lastProactiveByKey?.get?.(key) ?? null
           });
           return true;
         }
