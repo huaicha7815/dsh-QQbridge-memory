@@ -147,7 +147,7 @@ export async function bridgeHarness({ config = {}, savedState, globals = {} } = 
     ensureSession, ensureSlangLearnerSession, resolvePresetName, deliverPrompt, drainPromptQueue,
     sendToQQ, sendStickerV2, handleIncoming, startConsoleServer, cfg, state, api, promptQueues,
     getSocialV2State, appendSocialV2Message, appendSocialV2Poke, recordSentMessagesV2, saveSocialV2State,
-    sendMessagesV2, forgetExpression,
+    sendMessagesV2, forgetExpression, recordExpression, setBounded, lastExpressionByKey, lastProactiveByKey,
     buildWakePromptV2, buildWakeSnapshotV2, sendWakePromptV2, socialV2,
     flushQueue, retireSession,
     voiceCfg, voiceLibrary, resolveVoicePathForV2, resolveVoicePathForOperator,

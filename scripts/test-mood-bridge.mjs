@@ -319,6 +319,62 @@ test('bridge 真实路径（会话 C）：reset 后表达解释被清理（审�
   }
 });
 
+test('bridge 真实路径（会话 C）：真实 retireSession 清理两张解释 Map（审查 expression-r2 P2）', async () => {
+  const h = await bridgeHarness();
+  try {
+    const key = 'private:123';
+    h.appendSocialV2Message(key, '阿明', '你好可爱', '你好可爱', false, false, 5003, [], '123', []);
+    h.buildWakePromptV2(key, 'replyCheck');
+    assert.ok(h.socialV2.lastExpression.get(key), '唤醒后应有解释记录');
+    // 真实退役路径（不是直接调 forgetExpression），否则只是辅助函数自测。
+    h.retireSession(key);
+    assert.equal(h.socialV2.lastExpression.get(key), undefined, 'retireSession 后不能残留解释');
+    assert.equal(h.socialV2.lastProactiveByKey.get(key), undefined, 'retireSession 后不能残留主动解释');
+  } finally {
+    await h.close();
+  }
+});
+
+test('bridge 真实路径（会话 C）：send-text → wake 连续记录不串用 outcome（审查 expression-r2 P2）', async () => {
+  const h = await bridgeHarness();
+  h.setMode('reserved2');
+  try {
+    const key = 'private:123';
+    h.appendSocialV2Message(key, '阿明', '我不喜欢你了', '我不喜欢你了', false, false, 5002, [], '123', []);
+    await h.sendMessagesV2(key, ['很'.repeat(200)], []);
+    const sent = h.socialV2.lastExpression.get(key);
+    assert.equal(sent.source, 'send-text');
+    assert.equal(sent.outcome.kind, 'overLimit');
+    // 随后生成 wake prompt：应整体替换，不能沿用上一条 send-text 的 outcome
+    h.buildWakePromptV2(key, 'replyCheck');
+    const wake = h.socialV2.lastExpression.get(key);
+    assert.equal(wake.source, 'wake');
+    assert.equal(wake.outcome, undefined, 'wake 记录不能沿用 send-text 的 outcome');
+    assert.equal(wake.reason, 'replyCheck');
+  } finally {
+    await h.close();
+  }
+});
+
+test('bridge 真实路径（会话 C）：两张解释 Map 都有 200 key 上限（审查 expression-r2 P2）', async () => {
+  const h = await bridgeHarness();
+  try {
+    for (let i = 0; i < 205; i++) {
+      const key = `private:${100000 + i}`;
+      h.recordExpression(key, { source: 'wake', plan: { moodBand: '平静' } });
+      h.setBounded(h.lastProactiveByKey, key, { at: 1 });
+    }
+    assert.equal(h.lastExpressionByKey.size, 200, 'lastExpression 必须有界');
+    assert.equal(h.lastProactiveByKey.size, 200, 'lastProactive 必须有界');
+    // 最旧的 key 被淘汰
+    assert.equal(h.lastExpressionByKey.has('private:100000'), false);
+    assert.equal(h.lastProactiveByKey.has('private:100000'), false);
+    assert.equal(h.lastExpressionByKey.has('private:100204'), true, '最新的 key 保留');
+  } finally {
+    await h.close();
+  }
+});
+
 test('bridge 真实路径（会话 C）：默认平静状态不拦表情/语音（避免误伤无情绪会话）', async () => {
   const h = await bridgeHarness();
   try {

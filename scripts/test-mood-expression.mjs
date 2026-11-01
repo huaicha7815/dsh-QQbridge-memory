@@ -262,32 +262,36 @@ test('关系指令：高亲密 + 高张力不会同时要求撒娇和禁止撒�
 
 // ── 配置范围校验（审查 expression P2-1）──────────────────────────────────
 
-test('配置校验：27 键逐项非法值/越界/类型错误都回落默认', () => {
-  const bad = {
-    maxReplyCharsQuiet: -50,
-    stickerBase: -3,
-    voiceBase: 99,
-    valenceHigh: -0.9,
-    proactiveMin: 5,
-    proactiveMax: 0.1,
-    intimacyHigh: 'abc',
-    coldWarTension: Number.NaN,
-    energyLow: 2,
-  };
-  const merged = mergeMoodExpressionConfig({ socialV2: { moodExpression: bad } });
-  assert.equal(merged.maxReplyCharsQuiet, DEFAULT_MOOD_EXPRESSION.maxReplyCharsQuiet);
-  assert.equal(merged.stickerBase, DEFAULT_MOOD_EXPRESSION.stickerBase);
-  assert.equal(merged.voiceBase, DEFAULT_MOOD_EXPRESSION.voiceBase);
-  assert.equal(merged.valenceHigh, DEFAULT_MOOD_EXPRESSION.valenceHigh);
-  assert.equal(merged.proactiveMin, DEFAULT_MOOD_EXPRESSION.proactiveMin);
-  assert.equal(merged.proactiveMax, DEFAULT_MOOD_EXPRESSION.proactiveMax);
-  assert.equal(merged.intimacyHigh, DEFAULT_MOOD_EXPRESSION.intimacyHigh);
-  assert.equal(merged.coldWarTension, DEFAULT_MOOD_EXPRESSION.coldWarTension);
-  assert.equal(merged.energyLow, DEFAULT_MOOD_EXPRESSION.energyLow);
+test('配置校验：27 键表驱动（布尔/空串/数组/字符串/NaN/越界全部回落默认）', () => {
+  const keys = Object.keys(DEFAULT_MOOD_EXPRESSION);
+  assert.equal(keys.length, 27, '默认配置应有 27 个键');
+  const invalidValues = [true, false, ' ', '0.5', [], Number.NaN, Number.POSITIVE_INFINITY];
+  for (const key of keys) {
+    const fallback = DEFAULT_MOOD_EXPRESSION[key];
+    for (const invalid of invalidValues) {
+      const merged = mergeMoodExpressionConfig({ socialV2: { moodExpression: { [key]: invalid } } });
+      assert.equal(merged[key], fallback, `${key} 收到 ${JSON.stringify(invalid)} 时应回落默认`);
+    }
+    // 越界值（范围外的大正/大负数）也应回落
+    for (const outOfRange of [fallback - 1e6, fallback + 1e6]) {
+      const merged = mergeMoodExpressionConfig({ socialV2: { moodExpression: { [key]: outOfRange } } });
+      assert.equal(merged[key], fallback, `${key} 越界 ${outOfRange} 时应回落默认`);
+    }
+  }
+  // 布尔值不能混进合法范围（true→1 / false→0 是原 bug）
+  const mergedBool = mergeMoodExpressionConfig({
+    socialV2: { moodExpression: { energyLow: true, energyHigh: false, energyLowFalse: false } },
+  });
+  assert.equal(mergedBool.energyLow, DEFAULT_MOOD_EXPRESSION.energyLow, 'true 不能被当成 1');
+  assert.equal(mergedBool.energyHigh, DEFAULT_MOOD_EXPRESSION.energyHigh, 'false 不能被当成 0');
   // 越界配置不能产出无效 plan
-  const plan = resolveExpressionPlan({ key: 'private:1', mood: NEUTRAL_MOOD, relationship: CLOSE_REL, cfg: { socialV2: { moodExpression: bad } } });
+  const plan = resolveExpressionPlan({
+    key: 'private:1', mood: NEUTRAL_MOOD, relationship: CLOSE_REL,
+    cfg: { socialV2: { moodExpression: { maxReplyCharsQuiet: -50, stickerBase: -3, voiceBase: 99 } } },
+  });
   assert.ok(plan.maxReplyChars > 0, '长度上限必须为正');
   assert.ok(plan.stickerProbability >= 0 && plan.stickerProbability <= 1);
+  assert.ok(plan.voiceProbability >= 0 && plan.voiceProbability <= 1);
 });
 
 test('配置校验：跨字段倒置（长度/主动区间/情绪分档）整组回落默认', () => {
@@ -340,6 +344,22 @@ test('主动机会：有没说出口的话提高概率、安静时按基础概�
   const eager = computeProactiveOutcome({ baseProb: 0.2, plan: null, pendingThoughts: 2, roll: 0.5 });
   assert.ok(eager.finalProb > quiet.finalProb);
   assert.equal(eager.fired, false, '不满足空闲阈值时不触发');
+});
+
+test('主动机会：roll 省略/传函数/传非法值都安全（审查 expression-r2 新问题）', () => {
+  // 省略 roll：必须产生 0..1 数值（不能是 NaN 或函数），且按概率正常触发
+  const noRoll = computeProactiveOutcome({ baseProb: 1, plan: null });
+  assert.ok(Number.isFinite(noRoll.roll) && noRoll.roll >= 0 && noRoll.roll <= 1, 'roll 必须是 0..1 数值');
+  assert.equal(noRoll.rolled, true, 'baseProb=1 时应触发');
+  // 传随机函数
+  const fnRoll = computeProactiveOutcome({ baseProb: 0.5, plan: null, roll: () => 0.1 });
+  assert.equal(fnRoll.roll, 0.1);
+  assert.equal(fnRoll.rolled, true);
+  // 非法值（NaN / 字符串 / null）回退为随机数，不能把函数或 NaN 当数字比较
+  for (const bad of [Number.NaN, 'abc', null]) {
+    const out = computeProactiveOutcome({ baseProb: 0.5, plan: null, roll: bad });
+    assert.ok(Number.isFinite(out.roll) && out.roll >= 0 && out.roll <= 1, `非法 roll ${String(bad)} 应回退随机`);
+  }
 });
 
 // ── hasMoodState：默认状态不拦表情/语音 ─────────────────────────────────

@@ -61,6 +61,7 @@ import {
 import { createMemoryStore } from './core/memory-store.mjs';
 import { exportGalaxy } from '../scripts/lib/galaxy-export.mjs';
 import { createGalaxyCache } from './lib/galaxy-cache.mjs';
+import { isAllowedGalaxyHost, isAgentRequest, galaxyCachePayload } from './lib/galaxy-security.mjs';
 import {
   acquireMaintenanceGate, releaseMaintenanceGate, releaseHeldMaintenanceGates, inspectMaintenanceGate,
 } from './lib/maintenance-gate.mjs';
@@ -113,18 +114,13 @@ const galaxyCache = createGalaxyCache({
   readFile: (file) => fs.readFileSync(file, 'utf8'),
 });
 function galaxyData() {
+  // 与 hermetic fixture 共享同一份投影：fresh/stale 带 cacheState，cold 失败给 build-failed
   const r = galaxyCache.getData();
-  if (r.data) return r.data;   // fresh 或 stale（先给旧数据，后台重建）
-  // 没有缓存：后台构建中 / 构建失败，都要明确告诉前端（不能伪装成空库）
-  return {
-    stars: [], messages: [],
-    meta: {
-      partial: true, errorCount: 1,
-      errors: [{ file: 'galaxy', error: r.state === 'error' ? 'build-failed' : 'build-pending' }],
-      coreLabel: '鱼鱼', coreSub: '她自己', total: 0, pinned: 0, messages: 0,
-      avgStrength: 0, sources: { memory: 0, diary: 0, message: 0 },
-    },
-  };
+  if (r.state === 'error' || r.state === 'pending') {
+    const diag = galaxyCache.diagnostics();
+    r.retryAfterMs = Math.max(0, diag.nextRetryAt - Date.now());
+  }
+  return galaxyCachePayload(r);
 }
 const STICKER_FILE = path.join(STATE_DIR, 'stickers.json');
 const FEEDBACK_FILE = path.join(STATE_DIR, 'feedback.json');
@@ -2832,6 +2828,8 @@ async function main() {
     // 按 key 记账的内存态在**有映射和无映射时都要清**：一条被移出白名单、
     // 但从未成功建过会话的 key 同样会留下限流时间戳与失败标记。
     forgetConversationCaches(key);
+    // 会话 C：表达解释缓存也按 key 清（真实退役路径，不只是控制台 reset）。
+    forgetExpression(key);
     if (!sessionId) return;
     reverse.delete(sessionId);
     collectors.delete(sessionId);
@@ -3300,6 +3298,10 @@ async function main() {
         }
         // ── 记忆银河（只读；页面与数据都在全局 Host + consoleToken 闸门之后）──
         if (req.method === 'GET' && (url.pathname === '/galaxy/' || url.pathname === '/galaxy')) {
+          if (!isAllowedGalaxyHost(req.headers.host, boundPort) || isAgentRequest(req.headers)) {
+            sendJson({ ok: false, error: '该接口仅控制台可用' }, 403);
+            return;
+          }
           try {
             const html = fs.readFileSync(path.join(ROOT, 'tools', 'memory-galaxy', 'index.html'), 'utf8');
             res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
@@ -3312,7 +3314,7 @@ async function main() {
         }
         if (req.method === 'GET' && url.pathname === '/galaxy/api/data') {
           // 银河数据含真实记忆：只给控制台（管理端），带 agent token 的会话一律拒绝
-          if (req.headers['x-agent-token'] || req.headers['x-agent-call'] !== undefined) {
+          if (!isAllowedGalaxyHost(req.headers.host, boundPort) || isAgentRequest(req.headers)) {
             sendJson({ ok: false, error: '该接口仅控制台可用' }, 403);
             return;
           }
@@ -5810,16 +5812,20 @@ async function main() {
   socialV2.lastExpression = lastExpressionByKey;
   socialV2.lastProactiveByKey = lastProactiveByKey;
 
-  /** 记录一次表达决策；Map 超过上限时删最旧（有界）。 */
+  /** 有界 Map 写入：超过上限删最旧（两张解释 Map 共用）。 */
+  function setBounded(map, key, value) {
+    map.set(key, value);
+    while (map.size > MAX_EXPRESSION_KEYS) {
+      const oldest = map.keys().next().value;
+      if (oldest === undefined) break;
+      map.delete(oldest);
+    }
+  }
+
+  /** 记录一次表达决策：整体替换（只表示「最近一次单次决策」，不跨来源合并）。 */
   function recordExpression(key, entry) {
     if (!key) return;
-    const previous = lastExpressionByKey.get(key) ?? {};
-    lastExpressionByKey.set(key, { ...previous, ...entry, at: Date.now() });
-    while (lastExpressionByKey.size > MAX_EXPRESSION_KEYS) {
-      const oldest = lastExpressionByKey.keys().next().value;
-      if (oldest === undefined) break;
-      lastExpressionByKey.delete(oldest);
-    }
+    setBounded(lastExpressionByKey, key, { ...entry, at: Date.now() });
   }
 
   /** 会话被 reset/删除时清掉解释缓存（避免旧解释与无界增长）。 */
@@ -7739,7 +7745,7 @@ async function main() {
         void sendWakePromptV2(key, isPrivate ? privateReason : 'proactiveCheck').catch((error) => log(`[reserved2] proactive 唤醒异常 ${key}:`, error?.message ?? error));
       }
       // 会话 C：记录「这次为什么主动/没主动」的完整依据（按 key，供 /state 查询）。
-      lastProactiveByKey.set(key, {
+      setBounded(lastProactiveByKey, key, {
         at: Date.now(),
         reason: privateReason,
         suppressed,

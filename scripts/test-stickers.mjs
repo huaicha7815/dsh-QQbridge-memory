@@ -116,10 +116,15 @@ console.log('## MCP 工具描述存在性');
   }
 }
 
-console.log('## bridge 路由/函数存在性');
+console.log('## 路由/函数存在性（路由已拆到 routes/，按归属文件检查）');
 {
   const bridge = fs.readFileSync(path.join(ROOT, 'src', 'bridge.js'), 'utf8');
-  for (const s of ['/api/socialV2/sticker-list', '/api/socialV2/sticker-image', '/api/socialV2/sticker-note', '/api/socialV2/send-sticker', '/api/socialV2/sticker-remark', '/api/stickers', 'syncStickerLibrary', 'sendStickerV2']) {
+  const sendRoutes = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'socialv2-send-api.mjs'), 'utf8');
+  // 表情相关端点已从 bridge.js 拆到 routes/socialv2-send-api.mjs，检查归属文件而不是 bridge 文本。
+  for (const s of ['/api/socialV2/sticker-list', '/api/socialV2/sticker-image', '/api/socialV2/sticker-note', '/api/socialV2/send-sticker', '/api/socialV2/sticker-remark']) {
+    ok(sendRoutes.includes(s), `路由文件包含 ${s}`);
+  }
+  for (const s of ['/api/stickers', 'syncStickerLibrary', 'sendStickerV2']) {
     ok(bridge.includes(s), `bridge 包含 ${s}`);
   }
 }

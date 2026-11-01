@@ -99,9 +99,9 @@ export function mergeMoodExpressionConfig(cfg) {
   for (const [key, fallback] of Object.entries(DEFAULT_MOOD_EXPRESSION)) {
     const range = MOOD_EXPRESSION_RANGES[key];
     const raw = override[key];
-    if (raw === undefined || raw === null || raw === '') continue;
-    const value = Number(raw);
-    if (!Number.isFinite(value)) continue; // 非数值 → 默认
+    // 只接受真正的 number：true/false、" "、"0.5"、数组都不算（否则 true→1、false→0 会混进合法范围）。
+    if (typeof raw !== 'number' || !Number.isFinite(raw)) continue;
+    const value = raw;
     if (range && (value < range[0] || value > range[1])) continue; // 越界 → 默认
     merged[key] = value;
   }
@@ -345,10 +345,13 @@ export function computeProactiveOutcome({
   idle = 0,
   idleThreshold = 0,
   busy = false,
-  roll = Math.random,
+  // roll 接受「数值」或「随机函数」；省略/非法值用 Math.random()（不能把函数当数字比较）。
+  roll,
 } = {}) {
   const startBase = Math.min(1, Math.max(0, Number(baseProb) || 0));
   let prob = startBase;
+  const rawRoll = typeof roll === 'function' ? roll() : roll;
+  const safeRoll = Number.isFinite(rawRoll) ? Math.min(1, Math.max(0, rawRoll)) : Math.random();
   const steps = [];
   const apply = (factor, rule) => {
     const before = prob;
@@ -362,14 +365,14 @@ export function computeProactiveOutcome({
   const adj = computeProactiveAdjustment(plan);
   apply(adj.probFactor, '情绪/关系倍率');
   const finalProb = prob;
-  const rolled = roll < finalProb;
+  const rolled = safeRoll < finalProb;
   const idleEnough = idle >= idleThreshold;
   return {
     baseProb: startBase,
     finalProb: Math.round(finalProb * 1000) / 1000,
     probFactor: adj.probFactor,
     multiplier: adj.multiplier,
-    roll: Math.round(Number(roll) * 1000) / 1000,
+    roll: Math.round(safeRoll * 1000) / 1000,
     rolled,
     idleEnough,
     fired: idleEnough && rolled && !busy,

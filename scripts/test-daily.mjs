@@ -31,6 +31,12 @@ const stamp = now.toLocaleString('zh-CN');
 const node = process.execPath;
 const suite = [
   {
+    // 记忆银河 HTTP hermetic fixture：401/403（Host、agent）/200/no-store/脱敏/状态投影
+    name: '记忆银河 HTTP',
+    args: ['scripts/test-galaxy-http.mjs'],
+    expect: 0,
+  },
+  {
     // 记忆银河缓存状态机：pending/fresh/stale/error、single-flight、旧缓存保留
     name: '记忆银河缓存',
     args: ['scripts/test-galaxy-cache.mjs'],
@@ -115,6 +121,18 @@ const suite = [
     // 曾因 harness 缺 setImmediate/galaxy 注入被静默打断，纳入 daily 防回归。
     name: '审计套件（bridge 真实路径）',
     args: ['--test', 'scripts/test-audit-bridge.mjs'],
+    expect: 0,
+  },
+  {
+    // 表情工具链：路由拆到 routes/ 之后曾腐化（断言查 bridge 文本），修复后纳入 daily。
+    name: '表情工具链（路由/函数存在性）',
+    args: ['scripts/test-stickers.mjs'],
+    expect: 0,
+  },
+  {
+    // MCP 层：表达策略拒绝（expression_veto）→ 非故障工具结果。
+    name: 'MCP 表达拒绝结果',
+    args: ['--test', 'scripts/test-mcp-expression-result.mjs'],
     expect: 0,
   },
   {

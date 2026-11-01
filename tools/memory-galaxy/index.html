@@ -697,6 +697,13 @@ async function boot() {
       text.textContent = '记忆银河生成失败（后台导出连续报错）。';
       const btn = document.createElement('button');
       btn.textContent = '重新加载';
+      const waitMs = Number.isFinite(data.meta.retryAfterMs) ? data.meta.retryAfterMs : 0;
+      if (waitMs > 2000) {
+        btn.disabled = true;
+        btn.style.opacity = '0.6';
+        btn.textContent = '重新加载（' + Math.ceil(waitMs / 1000) + ' 秒后可重试）';
+        setTimeout(() => { btn.disabled = false; btn.style.opacity = '1'; btn.textContent = '重新加载'; }, waitMs);
+      }
       btn.style.cssText = 'cursor:pointer;padding:4px 10px;border-radius:6px;border:1px solid #a86;background:transparent;color:#ffd7a8;font-size:12px;';
       btn.addEventListener('click', () => { clearGalaxyTips(); pendingRetries = 0; boot().catch(() => {}); });
       tip.appendChild(text);
@@ -805,6 +812,23 @@ function applyGalaxyData(data, { preserveView = false } = {}) {
   } else {
     renderKinds(); renderStates();
   }
+  renderCacheStatus();
+}
+
+/** stale 警告条：后台重建失败时提示「显示的是旧数据」，不遮挡交互。 */
+function renderCacheStatus() {
+  let tip = document.getElementById('galaxy-cache-tip');
+  const warn = meta && meta.cacheState === 'stale' && meta.cacheWarning;
+  if (!warn) { if (tip) tip.remove(); return; }
+  if (!tip) {
+    tip = document.createElement('div');
+    tip.id = 'galaxy-cache-tip';
+    tip.className = 'panel';
+    tip.setAttribute('role', 'status');
+    tip.style.cssText = 'position:fixed;left:50%;bottom:96px;transform:translateX(-50%);z-index:95;padding:6px 12px;color:#ffd7a8;background:rgba(30,20,8,.9);border:1px solid #a86;border-radius:8px;font-size:12px;pointer-events:none;max-width:calc(100vw - 32px);text-align:center;';
+    document.body.appendChild(tip);
+  }
+  tip.textContent = meta.cacheWarning;
 }
 
 /** 60 秒静默刷新：页面不可见时跳过；数据没变时跳过重绘。 */
@@ -826,7 +850,13 @@ async function refreshGalaxy() {
       const same = j.meta.dataFingerprint && meta.dataFingerprint
         ? j.meta.dataFingerprint === meta.dataFingerprint
         : j.meta.generatedAt === meta.generatedAt;
-      if (same) return;
+      if (same) {
+        // 数据没变：只更新缓存状态（stale 警告要在页面上可见），不重绘星图
+        meta.cacheState = j.meta.cacheState;
+        meta.cacheWarning = j.meta.cacheWarning;
+        renderCacheStatus();
+        return;
+      }
     }
     hovered = null;   // 鼠标没动时 tooltip 不能指向刷新前的旧对象
     applyGalaxyData(j, { preserveView: true });
