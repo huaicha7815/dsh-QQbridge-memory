@@ -14,6 +14,8 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 // 表达策略拒绝 → 非故障工具结果（纯函数；单测见 scripts/test-mcp-expression-result.mjs）。
 import { expressionVetoResult } from './mcp-expression-result.mjs';
+// HTTP 响应 → 带 statusCode/body/code/kind 的 Error（纯函数；单测同上）。
+import { apiErrorFromResponse } from './mcp-api-error.mjs';
 // 出站文本的敏感信息拦截**统一由桥接负责**（bridge.js 的 auditAndSend / 各发送端点的
 // SENSITIVE_RE 校验）：所有 QQ 发送都经由桥接 HTTP API，因此 MCP 侧不再重复实现一遍。
 // 这里 import 只用于「出站审计口径一致」的说明，不在 MCP 内做拦截——
@@ -144,22 +146,14 @@ async function agentApi(path, init = {}) {
   let body = null;
   try { body = await res.json(); } catch { body = null; }
   if (!res.ok) {
-    const error = new Error(body?.error || `桥接 API HTTP ${res.status}`);
-    error.statusCode = res.status;
-    error.body = body;
-    if (body?.code) error.code = body.code;
-    if (body?.kind) error.kind = body.kind;
-    throw error;
+    throw apiErrorFromResponse({ status: res.status, body, fallback: `桥接 API HTTP ${res.status}` });
   }
   // 桥接的部分端点会用 200 + {ok:false,error} 表达业务失败（例如发送被审计拦截）。
   // 不检查 body.ok 会把「被拦截」当成「发送成功」上报给模型 —— 模型据此认为消息已发出，
   // 于是不再重试也不告诉用户，是典型的静默错误。
   if (body && typeof body === 'object' && body.ok === false) {
-    const error = new Error(body.error || '桥接 API 返回 ok:false（未说明原因）');
-    error.body = body;
-    if (body.code) error.code = body.code;
-    if (body.kind) error.kind = body.kind;
-    throw error;
+    // statusCode 也要保留 200：业务拒绝不等于传输层成功（修复 R3 审查 P2）。
+    throw apiErrorFromResponse({ status: res.status, body, fallback: '桥接 API 返回 ok:false（未说明原因）' });
   }
   return body;
 }

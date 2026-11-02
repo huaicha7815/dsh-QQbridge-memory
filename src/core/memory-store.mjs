@@ -26,10 +26,13 @@ import {
   consolidateWeek,
   correctPersonFact,
   echoMatch,
+  emotionAnnotation,
   ensureProfile,
   filterProfileForSession,
+  normalizeEmotionQuery,
   normalizeMemoryConfig,
   pruneProfile,
+  rankByEmotion,
   rankDocuments,
   salience,
   summarizeDay,
@@ -470,12 +473,39 @@ export function createMemoryStore(options = {}) {
   // 追加日志会随故障时长增长：每 1000 次检查一次行数，超过上限就压缩成一行数字。
   // 压缩后文件从「N 行 1」变成「一行 N」，语义不变但体积回到常数级。
   let overflowAppendCount = 0;
+  /** 记录「诊断文件也写不进去」：内存 unknown + 尽力写替代诊断（重启后仍可见）。 */
+  function markManifestWriteFailure(phase, error) {
+    failureManifestWriteError = {
+      at: Date.now(),
+      phase,
+      code: String(error?.code ?? 'IO'),
+      error: String(error?.message ?? error),
+      history: 0,
+      byPhase: { event: 0, salient: 0, overflow: 0 },
+      unknown: true,
+      runtime: true,
+      reason: `诊断文件也写不进去（${String(error?.code ?? 'IO')}）：无法持久化未记录失败`,
+    };
+    console.warn('[memory] 失败清单写入失败:', error?.message ?? error);
+    try {
+      fs.appendFileSync(manifestErrorFile, JSON.stringify({
+        at: Date.now(), phase, id: null,
+        code: String(error?.code ?? 'IO'),
+        error: String(error?.message ?? error).slice(0, 300),
+      }) + '\n', 'utf8');
+      failureManifestWriteError = readManifestDiagnostics();
+    } catch { /* 磁盘完全不可写：保留内存 unknown 状态 + console */ }
+  }
+
   function bumpOverflowCount() {
     try {
       fs.appendFileSync(overflowFile, '1\n', 'utf8');
       overflowAppendCount += 1;
       if (overflowAppendCount % 1000 === 0) compactOverflowIfNeeded();
-    } catch { /* 连 append 都失败就只能靠内存计数 */ }
+    } catch (error) {
+      // 连 overflow 都写不进去：本次新增的不可恢复记录必须可观测，且重启后仍可见
+      markManifestWriteFailure('overflow', error);
+    }
   }
   function compactOverflowIfNeeded() {
     try {
@@ -509,7 +539,7 @@ export function createMemoryStore(options = {}) {
     if (text === null) {
       return {
         at: 0, phase: '', code: 'IO', error: `读不到诊断文件：${readError}`,
-        history: 0, byPhase: { event: 0, salient: 0 }, unknown: true,
+        history: 0, byPhase: { event: 0, salient: 0, overflow: 0 }, unknown: true,
         reason: `诊断文件读不到（${readError}）`,
       };
     }
@@ -517,11 +547,11 @@ export function createMemoryStore(options = {}) {
     if (!lines.length) {
       return {
         at: 0, phase: '', code: 'IO', error: '诊断文件存在但为空（半写/损坏）',
-        history: 0, byPhase: { event: 0, salient: 0 }, unknown: true,
+        history: 0, byPhase: { event: 0, salient: 0, overflow: 0 }, unknown: true,
         reason: '诊断文件存在但为空（半写/损坏）',
       };
     }
-    const byPhase = { event: 0, salient: 0 };
+    const byPhase = { event: 0, salient: 0, overflow: 0 };
     let last = null;
     let badLines = 0;
     for (const line of lines) {
@@ -530,7 +560,7 @@ export function createMemoryStore(options = {}) {
       // 语法合法 ≠ 诊断记录：null / 数组 / 字符串 / 缺 phase 都算坏行，
       // 否则计数会把垃圾行当成真实失败记录。
       if (!item || typeof item !== 'object' || Array.isArray(item)) { badLines += 1; continue; }
-      if (item.phase !== 'event' && item.phase !== 'salient') { badLines += 1; continue; }
+      if (item.phase !== 'event' && item.phase !== 'salient' && item.phase !== 'overflow') { badLines += 1; continue; }
       if (item.code !== undefined && typeof item.code !== 'string') { badLines += 1; continue; }
       if (item.error !== undefined && typeof item.error !== 'string') { badLines += 1; continue; }
       last = item;
@@ -757,7 +787,7 @@ export function createMemoryStore(options = {}) {
         code: String(manifestError?.code ?? 'IO'),
         error: String(manifestError?.message ?? manifestError),
         history: 0,
-        byPhase: { event: 0, salient: 0 },
+        byPhase: { event: 0, salient: 0, overflow: 0 },
         unknown: true,
         // runtime 标记：这次 unknown 来自「本次进程写入失败」，而不是磁盘上的旧诊断。
         runtime: true,
@@ -792,6 +822,28 @@ export function createMemoryStore(options = {}) {
     // 稳定 id：replay 靠它判重，避免「写了但清单没清掉」导致重复入 L1。
     const id = String(entry.id ?? '').trim() || `${ts.toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
     const row = { ...entry, t: ts, s: tier, id };
+    // 情绪标注（任务：关键事件标注 valence/arousal）：
+    // - 显式 valence/arousal：只接受有限 number，并钳制到字段契约区间，非法原值直接丢弃；
+    // - 调用方传 emotionType 时用情绪模块映射补齐缺失项；
+    // - 只有 valence/arousal 都拿到才写三个字段（emotionType 只在映射命中时写），
+    //   否则三个字段全部删除——没事件/暂停/未知类型的事件与旧数据形状完全一致。
+    const annotation = emotionAnnotation(row.emotionType);
+    const explicitValence = typeof row.valence === 'number' && Number.isFinite(row.valence)
+      ? Math.min(1, Math.max(-1, row.valence))
+      : null;
+    const explicitArousal = typeof row.arousal === 'number' && Number.isFinite(row.arousal)
+      ? Math.min(1, Math.max(0, row.arousal))
+      : null;
+    delete row.valence;
+    delete row.arousal;
+    delete row.emotionType;
+    const finalValence = explicitValence ?? annotation?.valence ?? null;
+    const finalArousal = explicitArousal ?? annotation?.arousal ?? null;
+    if (finalValence !== null && finalArousal !== null) {
+      row.valence = finalValence;
+      row.arousal = finalArousal;
+      if (annotation) row.emotionType = annotation.emotionType;
+    }
     delete row.day;
     // 回音标记：她把自己记得的事又当新消息说了一遍。
     // 不阻止归档（那还是她真实说过的话），只是让它在检索里降权，
@@ -1541,6 +1593,10 @@ export function createMemoryStore(options = {}) {
     // 会话作用域（可选）：传了 opts.key 就只检索该会话的事件。
     // 默认不传 = 保持原来的「跨会话记忆」行为（用户明确选择过保持现状）。
     const scopeKey = String(opts.key ?? '').trim();
+    // 情绪通道（可选）：只有显式传 opts.emotion = { valence, arousal } 才启用。
+    // 默认不传时下面的一切照旧——「不改变原排序的默认行为」是硬约束。
+    // 严格校验（不用 Number 强转）：null/字符串/布尔/缺字段一律视为未启用。
+    const emotionQuery = normalizeEmotionQuery(opts.emotion);
 
     let scopedEvents = readEvents({ days, now });
     // 严格匹配：无 k 的旧事件在 isolated 下不可见（和摘要层、档案层同一默认值）。
@@ -1550,6 +1606,9 @@ export function createMemoryStore(options = {}) {
       const text = `${who}：${String(e.text || '')}`;
       const tier = Number.isInteger(e.s) ? e.s : salience(e);
       const id = `e:${e.t}:${e.k || ''}`;
+      // 情绪标注（读取侧）：历史/外部 JSONL 可能带越界值，这里和写入侧用同一套规范化——
+      // 钳制后保留（越界 8/-3 → 1/0）；任一字段非法（null/字符串/缺）则整条视为无标注。
+      const emotion = normalizeEmotionQuery({ valence: e.valence, arousal: e.arousal });
       return {
         id,
         kind: 'event',
@@ -1560,6 +1619,11 @@ export function createMemoryStore(options = {}) {
         salience: tier,
         usageHits: usageOf(id),
         echo: !!e.echo,
+        // 情绪标注（可选）：坐标非法时整条视为无标注——emotionType 也一并清空，
+        // 否则「没有坐标但有类型」会让调用方误以为这条有情绪标注。
+        valence: emotion ? emotion.valence : null,
+        arousal: emotion ? emotion.arousal : null,
+        emotionType: emotion && typeof e.emotionType === 'string' ? e.emotionType : '',
         // 承诺/关系类事件额外加权：它们是最难被替代的记忆
         weight: (e.echo ? 0.4 : 1) * (/(答应|说好|欠|明天|下次|以后|约定|生日|喜欢|讨厌)/.test(String(e.text || '')) ? 1.35 : 1),
         tokens: tokensOf(e, text),
@@ -1683,13 +1747,56 @@ export function createMemoryStore(options = {}) {
       if (added) merged.sort((a, b) => b.score - a.score);
     }
     const diverse = applyDiversity(merged, topK);
-    recordHits(diverse);
-    appendRecallLog(q, diverse, now, opts.key);
-    return diverse;
+    // 情绪通道（任务：同类情绪场景召回）：与关键词/重要度检索并行。
+    // 硬约束（审查 memory-emotion P1）：
+    //   1) 只填空位——结果已满 topK 时不补，绝不替换/挤掉关键词命中；
+    //   2) 只追加到末尾、不排序不重排，既有命中的顺序与内容完全保持；
+    //   3) 补位同样受 perDay/perWho 多样性上限约束；
+    //   4) 默认（不传 opts.emotion）时这里完全不走。
+    let finalHits = diverse;
+    let emotionAdded = 0;
+    if (emotionQuery) {
+      const room = Math.max(0, topK - diverse.length);
+      if (room > 0) {
+        const perDayMax = Math.max(1, Number(cfg.perDayMax) || 3);
+        const perWhoMax = Math.max(1, Number(cfg.perWhoMax) || 2);
+        const dayCount = new Map();
+        const whoCount = new Map();
+        const countIn = (hit) => {
+          if (hit?.day) dayCount.set(hit.day, (dayCount.get(hit.day) || 0) + 1);
+          const who = String(hit?.who || '');
+          if (who && !['你', '人', '私聊', '群聊'].includes(who)) whoCount.set(who, (whoCount.get(who) || 0) + 1);
+        };
+        for (const hit of diverse) countIn(hit);
+        const recalled = rankByEmotion(emotionQuery, eventDocs, {
+          limit: topK,
+          now,
+          halfLifeDays: cfg.halfLifeDays,
+        });
+        const already = new Set(diverse.map((h) => h.id).filter(Boolean));
+        const floorScore = (diverse[0]?.score || 1) * 0.6;
+        const additions = [];
+        for (const hit of recalled) {
+          if (additions.length >= Math.min(2, room)) break;
+          if (already.has(hit.id)) continue;
+          if (hit.day && (dayCount.get(hit.day) || 0) >= perDayMax) continue;
+          const who = String(hit.who || '');
+          if (who && !['你', '人', '私聊', '群聊'].includes(who) && (whoCount.get(who) || 0) >= perWhoMax) continue;
+          already.add(hit.id);
+          countIn(hit);
+          additions.push({ ...hit, score: Math.min(hit.score, floorScore) });
+        }
+        emotionAdded = additions.length;
+        if (additions.length) finalHits = [...diverse, ...additions];
+      }
+    }
+    recordHits(finalHits);
+    appendRecallLog(q, finalHits, now, opts.key, emotionQuery ? { emotion: true, added: emotionAdded } : null);
+    return finalHits;
   }
 
   /** 检索质量日志（纯追加，供离线看漏检/调权重，不参与任何决策）。 */
-  function appendRecallLog(q, hits, now, sourceKey = '') {
+  function appendRecallLog(q, hits, now, sourceKey = '', extra = null) {
     try {
       const line = JSON.stringify({
         t: now,
@@ -1701,6 +1808,8 @@ export function createMemoryStore(options = {}) {
         related: hits.filter((h) => h.related).length,
         kinds: hits.map((h) => h.kind).join(','),
         top: hits[0] ? String(hits[0].id || hits[0].kind) : null,
+        // 情绪通道命中数（只有启用情绪检索时才出现）
+        ...(extra ? { emotion: true, emotionAdded: Number(extra.added) || 0 } : {}),
       });
       fs.appendFileSync(path.join(root, 'recall-log.jsonl'), `${line}\n`, 'utf8');
     } catch {
@@ -2013,12 +2122,55 @@ export function createMemoryStore(options = {}) {
    * 返回 { found, unknown }：读不到时 unknown=true —— 不能当成「没有」，
    * 否则 replay 会在 S3 里重复追加同一条副本。
    */
-  function salientHasId(id) {
-    const needle = '"id":' + JSON.stringify(id);
+  /** 规范化后的行内容（键序无关），用于「同 id 内容是否一致」的比较。 */
+  function rowSignature(row) {
+    try {
+      const o = {};
+      for (const k of Object.keys(row).sort()) {
+        // srcDay/day 是归档时附加的元数据，不是事件内容的一部分：
+        // 同一事件归档后与失败清单里的 row 必须视为一致。
+        if (k === 'srcDay' || k === 'day') continue;
+        o[k] = row[k];
+      }
+      return JSON.stringify(o);
+    } catch {
+      return null;
+    }
+  }
+  /**
+   * 在 jsonl 文本里找同 id 的「合法」记录：
+   * - 能找到且内容与 expectedRow 一致 → found；
+   * - 同 id 但内容不同 → conflict（调用方必须 fail-closed，保留待恢复记录）；
+   * - 只有含 id 的坏行、没有合法记录 → unknown（不能当成「已存在」）。
+   */
+  function matchEventRow(text, id, expectedRow) {
+    if (!text) return { found: false, unknown: false, conflict: false };
+    // 不能按字节格式预过滤：合法的 JSON 可能是 `"id" : "x"` 或带转义，
+    // 用固定子串 ""id":\"x\"" 判会漏掉这类记录，进而重复写入。
+    // 逐行解析是唯一可靠的判重方式。
+    let matched = 0;
+    let parseErrors = 0;
+    const expectedSig = expectedRow ? rowSignature(expectedRow) : null;
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue;
+      let row;
+      try { row = JSON.parse(line); } catch { parseErrors += 1; continue; }
+      if (!row || row.id === undefined) continue;
+      if (String(row.id) !== String(id)) continue;
+      matched += 1;
+      if (expectedSig && rowSignature(row) !== expectedSig) {
+        return { found: true, unknown: false, conflict: true, parseErrors };
+      }
+    }
+    if (matched > 0) return { found: true, unknown: false, conflict: false, parseErrors };
+    if (parseErrors > 0) return { found: false, unknown: true, conflict: false, parseErrors };
+    return { found: false, unknown: false, conflict: false };
+  }
+  function salientHasId(id, row) {
     const { text, error } = readTextStrict(salientFile);
     // text===null 且没有 error = 文件不存在（确实没有）；有 error = 读不到（未知）。
     if (text === null) return { found: false, unknown: Boolean(error) };
-    return { found: text.includes(needle), unknown: false };
+    return matchEventRow(text, id, row);
   }
 
   /**
@@ -2098,6 +2250,8 @@ export function createMemoryStore(options = {}) {
       const stageRank = (p) => (p === 'event' ? 2 : 1);
       const foldedById = new Map();
       const idConflicts = [];
+      // 冲突 ID 的所有候选都不得写入（fail-closed）：整组回填失败清单，等人工处理。
+      const conflictIds = new Set();
       const rowKeyOf = (row) => {
         try { return JSON.stringify(row); } catch { return ''; }
       };
@@ -2116,7 +2270,12 @@ export function createMemoryStore(options = {}) {
         }
         if (rowKeyOf(prev.row) !== rowKeyOf(row)) {
           // 同 id、不同内容：恢复入口遇到冲突必须 fail-closed，不能静默挑一条。
+          // 两条候选都回填失败清单，等人工处理（不写任何一条，也不丢记录）。
           idConflicts.push({ id, phase, conflictPhase: prev.phase });
+          conflictIds.add(id);
+          remaining.push(prev.line);
+          remaining.push(line);
+          foldedById.delete(id);
           continue;
         }
         if (rank > prev.rank) {
@@ -2142,10 +2301,22 @@ export function createMemoryStore(options = {}) {
         let phase = entry.phase;
         const day = entry.day;
         const tier = entry.tier;
+        // 同 id 内容冲突：所有候选都不处理，全部回填失败清单（不写任何一条）。
+        if (conflictIds.has(id)) {
+          remaining.push(line);
+          continue;
+        }
         // 幂等判断要覆盖「该 id 的两个阶段都完成」：
         // 只看 L1 有 id 就 skip，会漏掉「L1 已有但 S3 副本缺失」的情况。
         if (phase === 'event') {
-          const l1 = l1HasId(day, id);
+          const l1 = l1HasId(day, id, row);
+          if (l1.conflict) {
+            // 目标库已有同 id 但内容不同的记录：不覆盖、不跳过，保留待人工处理。
+            remaining.push(line);
+            idConflicts.push({ id, phase: 'content-conflict' });
+            lastWriteFailure = { at: Date.now(), error: 'L1 已有同 id 但内容不同，本条保留待处理', phase };
+            continue;
+          }
           if (l1.unknown) {
             // 读不到 = 不知道是否已存在；写下去可能重复 → 保留这条待恢复记录。
             remaining.push(line);
@@ -2153,7 +2324,13 @@ export function createMemoryStore(options = {}) {
             continue;
           }
           if (l1.found) {
-            const s3 = tier >= 3 && Boolean(cfg.salientFile) ? salientHasId(id) : { found: true, unknown: false };
+            const s3 = tier >= 3 && Boolean(cfg.salientFile) ? salientHasId(id, row) : { found: true, unknown: false };
+            if (s3.conflict) {
+              remaining.push(line);
+              idConflicts.push({ id, phase: 'content-conflict' });
+              lastWriteFailure = { at: Date.now(), error: 'S3 已有同 id 但内容不同，本条保留待处理', phase };
+              continue;
+            }
             if (s3.unknown) {
               remaining.push(line);
               lastWriteFailure = { at: Date.now(), error: 'S3 幂等判重读取失败（EACCES/EIO），本条保留待恢复', phase };
@@ -2164,7 +2341,13 @@ export function createMemoryStore(options = {}) {
           }
         }
         if (phase === 'salient') {
-          const s3 = salientHasId(id);
+          const s3 = salientHasId(id, row);
+          if (s3.conflict) {
+            remaining.push(line);
+            idConflicts.push({ id, phase: 'content-conflict' });
+            lastWriteFailure = { at: Date.now(), error: 'S3 已有同 id 但内容不同，本条保留待处理', phase };
+            continue;
+          }
           if (s3.unknown) {
             remaining.push(line);
             lastWriteFailure = { at: Date.now(), error: 'S3 幂等判重读取失败（EACCES/EIO），本条保留待恢复', phase };
@@ -2736,12 +2919,14 @@ export function createMemoryStore(options = {}) {
    * 返回 { found, unknown }：任何一层读不到都标记 unknown —— 不能「看不见就当没有」，
    * 否则 replay 会重复写同一条事件（L1 出现同 id 两条）。
    */
-  function l1HasId(day, id) {
-    const needle = '"id":' + JSON.stringify(id);
+  function l1HasId(day, id, row) {
     const dayFile = path.join(eventsDir, `${day}.jsonl`);
     const dayText = readTextStrict(dayFile);
     if (dayText.text === null && dayText.error) return { found: false, unknown: true };
-    if (dayText.text && dayText.text.includes(needle)) return { found: true, unknown: false };
+    if (dayText.text) {
+      const hit = matchEventRow(dayText.text, id, row);
+      if (hit.found || hit.unknown) return hit;
+    }
 
     // 2) 归档月文件：事件可能早已归档，「活动日里没有」不等于「库里没有」。
     // 目录枚举失败（EACCES/EIO）时 names=[] 但 error 非空 —— 必须当 unknown，
@@ -2757,11 +2942,12 @@ export function createMemoryStore(options = {}) {
         if (!isDefinitelyMissing(file)) unknown = true;
         continue;
       }
-      if (text.includes(needle)) return { found: true, unknown: false };
+      const hit = matchEventRow(text, id, row);
+      if (hit.found) return hit;
+      if (hit.unknown) unknown = true;
     }
     return { found: false, unknown };
   }
-
   function stats({ now = Date.now() } = {}) {
     // 写入失败计数：健康检查据此判断「L1 是否悄悄缺数据」
     const days = listEventDays();

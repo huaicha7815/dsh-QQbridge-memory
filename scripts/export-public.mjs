@@ -22,94 +22,9 @@ const dryRun = args.includes('--dry-run');
 const outIdx = args.indexOf('--out');
 const outDir = path.resolve(outIdx >= 0 ? args[outIdx + 1] : path.join(root, '..', 'qq-bridge-public'));
 
-// 顶层白名单：只复制这些（不在名单里的顶层项目一律不导出）
-const TOP_WHITELIST = [
-  'src',
-  'scripts',
-  'docs',
-  'dsh',
-  'plugins',
-  'public',
-  'tools',
-  'roles',
-  '.github',
-  'README.md',
-  'README.en.md',
-  'CHANGELOG.md',
-  'RULES.md',
-  'LICENSE',
-  'package.json',
-  'config.example.json',
-  'start.bat',
-  'restart.bat',
-  '.gitignore',
-  '.npmrc',
-];
+import { listPublicExportFiles, PUBLIC_GITIGNORE } from './lib/public-export.mjs';
 
-// 路径级排除（相对 root 的前缀）
-const EXCLUDE_PREFIXES = [
-  'node_modules',
-  'state',
-  'audio',
-  'assets/project-intro.mp4',
-  'config.json',
-  '_snowluma-catalog.json',
-  '.git',
-];
-
-// 文件名级排除
-const EXCLUDE_PATTERNS = [
-  /\.bak($|-)/,
-  // 审查轮次留下的一次性备份：memory-store.mjs.r26bak 这类命名（.bak 前带 rNN）
-  // 不在上面那条规则里，曾被导出到公开目录（git status 里出现过 ?? *.r26bak）。
-  /\.r\d+bak$/,
-  /\.routebak$|\.testbak$|\.origbak$/,
-  /\.tmp$/,
-  /^galaxy-data\.json$/,   // 记忆银河导出物：含真实记忆内容，不导出
-  /^\.env/,
-  /^_tmp_/,
-];
-
-// roles/ 只导出这几个（私人人格卡不进仓库）
-const ROLE_ALLOW = ['README.md', '示例女儿.md', '傲娇助手.md', '办事助手.md'];
-
-function shouldExclude(rel) {
-  const norm = rel.split(path.sep).join('/');
-  for (const pre of EXCLUDE_PREFIXES) {
-    if (norm === pre || norm.startsWith(`${pre}/`)) return true;
-  }
-  const base = path.basename(norm);
-  for (const re of EXCLUDE_PATTERNS) if (re.test(base)) return true;
-  if (norm.startsWith('roles/') && !ROLE_ALLOW.includes(base)) return true;
-  return false;
-}
-
-function walk(dir, relBase = '') {
-  const out = [];
-  let entries = [];
-  try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return out;
-  }
-  for (const e of entries) {
-    const rel = relBase ? `${relBase}/${e.name}` : e.name;
-    const abs = path.join(dir, e.name);
-    if (shouldExclude(rel)) continue;
-    if (e.isDirectory()) out.push(...walk(abs, rel));
-    else if (e.isFile()) out.push(rel);
-  }
-  return out;
-}
-
-const files = [];
-for (const top of TOP_WHITELIST) {
-  const abs = path.join(root, top);
-  if (!fs.existsSync(abs)) continue;
-  const stat = fs.statSync(abs);
-  if (stat.isDirectory()) files.push(...walk(abs, top));
-  else if (!shouldExclude(top)) files.push(top);
-}
+const files = listPublicExportFiles(root);
 
 const totalKB = files.reduce((s, rel) => s + (fs.statSync(path.join(root, rel)).size / 1024), 0);
 console.log(`将导出 ${files.length} 个文件，约 ${totalKB.toFixed(0)} KB → ${outDir}`);
@@ -141,42 +56,9 @@ for (const rel of files) {
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   fs.copyFileSync(path.join(root, rel), dest);
 }
+// .gitignore 用脱敏版（不含内部规划文档清单），公开仓库不应暴露内部文件名。
+try { fs.writeFileSync(path.join(outDir, '.gitignore'), PUBLIC_GITIGNORE, 'utf8'); } catch {}
 console.log(`✅ 已复制 ${files.length} 个文件`);
-
-// 补一份更严格的 .gitignore（防止以后有人把私人数据加回来）
-fs.writeFileSync(path.join(outDir, '.gitignore'), [
-  'node_modules/',
-  '',
-  '# ── 私人数据：绝对不要提交 ──────────────────────────',
-  'config.json',
-  'state/',
-  'audio/',
-  '.env',
-  '.env.*',
-  '',
-  '# 历史备份',
-  '*.bak',
-  '*.bak-*',
-  '*.tmp',
-  '_tmp_*',
-  '',
-  '# 记忆银河导出物（含真实记忆，只在本地预览）',
-  'galaxy-data*.json',
-  '',
-  '# 一次性探针/诊断产物',
-  '_snowluma-catalog.json',
-  'assets/project-intro.mp4',
-  '',
-  '# 本导出脚本自己的标记（不属于仓库内容）',
-  '.export-marker',
-  '',
-  '# 编辑器/系统',
-  '.DS_Store',
-  'Thumbs.db',
-  '.idea/',
-  '.vscode/',
-  '',
-].join('\n'), 'utf8');
 
 // 跑一遍隐私扫描（在导出目录里跑，独立于源仓库）
 console.log('\n运行隐私扫描…');

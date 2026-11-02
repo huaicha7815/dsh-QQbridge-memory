@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { exportGalaxy, assertOutOutsideMemory } from '../scripts/lib/galaxy-export.mjs';
+import { shouldExclude } from '../scripts/lib/public-export.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -157,7 +158,7 @@ test('galaxy：拒绝把导出物写进记忆库，且导出不改记忆库字�
 });
 
 test('galaxy：前端对记忆字段做转义（防 stored DOM XSS）', () => {
-  const html = fs.readFileSync(path.join(ROOT, 'tools', 'memory-galaxy', 'index.html'), 'utf8');
+  const html = readFrontend();
   assert.ok(html.includes('function esc('), 'index.html 必须有转义函数');
   assert.ok(html.includes("esc(s.channel || '')"), 'channel 必须转义');
   assert.ok(html.includes('esc(s.rawKind)'), 'rawKind 必须转义');
@@ -166,8 +167,11 @@ test('galaxy：前端对记忆字段做转义（防 stored DOM XSS）', () => {
 });
 
 test('galaxy：公开导出排除记忆数据文件', () => {
-  const src = fs.readFileSync(path.join(ROOT, 'scripts', 'export-public.mjs'), 'utf8');
-  assert.ok(/galaxy-data\\\.json|galaxy-data\*\.json/.test(src), 'export-public 必须排除 galaxy-data.json');
+  // 直接测试共享导出规则的「行为」，而不是源码字符串位置（规则在 public-export.mjs）。
+  assert.equal(shouldExclude('tools/memory-galaxy/galaxy-data.json'), true, 'galaxy-data.json 必须被排除');
+  assert.equal(shouldExclude('state/galaxy/galaxy-data.json'), true, 'state 下的导出物必须被排除');
+  assert.equal(shouldExclude('tools/memory-galaxy/app.js'), false, '正常银河资源不能被排除');
+  assert.equal(shouldExclude('tools/memory-galaxy/index.html'), false, 'index.html 不能被排除');
 });
 
 
@@ -259,7 +263,7 @@ test('galaxy：thread 用文本 hash 当 ID（数组重排不改变身份）', (
 });
 
 test('galaxy：前端详情面板与不完整横幅（XSS 闭合 + partial 可见）', () => {
-  const html = fs.readFileSync(path.join(ROOT, 'tools', 'memory-galaxy', 'index.html'), 'utf8');
+  const html = readFrontend();
   assert.ok(html.includes("esc(s.channel || '')"), '消息详情 channel 必须转义');
   assert.ok(html.includes('esc(s.rawKind)'), 'rawKind 必须转义');
   assert.ok(html.includes("esc((KIND[s.kind] || {}).label || s.kind)"), 'kind 标签必须转义');
@@ -317,7 +321,7 @@ test('galaxy：预览服务有 Host 白名单（防 DNS rebinding）', () => {
 });
 
 test('galaxy：横幅用未截断的 errorCount，sources 用 DOM 文本', () => {
-  const html = fs.readFileSync(path.join(ROOT, 'tools', 'memory-galaxy', 'index.html'), 'utf8');
+  const html = readFrontend();
   assert.ok(html.includes('meta.errorCount'), '横幅显示 errorCount');
   assert.ok(!html.includes("el('sources').innerHTML"), 'sources 不再用 innerHTML 拼字符串');
   assert.ok(html.includes("document.createElement('span')"), 'sources 用 DOM 节点');
@@ -339,15 +343,67 @@ test('galaxy：不返回原始会话 key（scope + 不可逆短哈希）', () =>
   fs.rmSync(base, { recursive: true, force: true });
 });
 
-test('galaxy：前端已移除双击 pin（服务端无持久化接口）', () => {
+/** 前端已拆分为 index.html + app.js：断言两类文件合并后的文本。 */
+function readFrontend() {
+  const dir = path.join(ROOT, 'tools', 'memory-galaxy');
+  return ['index.html', 'app.js']
+    .map((file) => (fs.existsSync(path.join(dir, file)) ? fs.readFileSync(path.join(dir, file), 'utf8') : ''))
+    .join('\n');
+}
+
+test('galaxy：样式外置为 /galaxy/app.css（CSP style-src-elem self）', () => {
   const html = fs.readFileSync(path.join(ROOT, 'tools', 'memory-galaxy', 'index.html'), 'utf8');
-  assert.ok(!html.includes("addEventListener('dblclick'"), '不能有双击 pin 交互');
-  assert.ok(!html.includes('api/pin'), '不能调用不存在的 pin 接口');
+  assert.ok(!html.includes('<style>'), '页面不含内联 <style>');
+  assert.ok(html.includes('/galaxy/app.css'), '页面引用 /galaxy/app.css');
+  assert.ok(fs.existsSync(path.join(ROOT, 'tools', 'memory-galaxy', 'app.css')), 'app.css 存在');
+});
+
+test('galaxy：kind 圆点七类色值与 KIND 对齐', () => {
+  const app = fs.readFileSync(path.join(ROOT, 'tools', 'memory-galaxy', 'app.js'), 'utf8');
+  const css = fs.readFileSync(path.join(ROOT, 'tools', 'memory-galaxy', 'app.css'), 'utf8');
+  const kindMatch = app.match(/const KIND = \{([\s\S]*?)\n\};/);
+  assert.ok(kindMatch, 'app.js 有 KIND 定义');
+  const kinds = [...kindMatch[1].matchAll(/(\w+):\s*\{ label:/g)].map((m) => m[1]);
+  assert.equal(kinds.length, 7, 'KIND 七类');
+  for (const k of kinds) {
+    assert.ok(css.includes(`kind-dot[data-kind="${k}"]`), `第 ${k} 类有 CSS 色值`);
+  }
+  // RGB 与 CSS hex 精确一致
+  for (const m of kindMatch[1].matchAll(/(\w+):\s*\{ label: '[^']*', color: \[(\d+), (\d+), (\d+)\] \}/g)) {
+    const [, k, r, gg, b] = m;
+    const hex = '#' + [r, gg, b].map((x) => Number(x).toString(16).padStart(2, '0')).join('');
+    const re = new RegExp(`kind-dot\\[data-kind="${k}"\\]\\s*\\{[^}]*${hex}`);
+    assert.ok(re.test(css), `${k} RGB(${r},${gg},${b}) 与 CSS ${hex} 一致`);
+  }
+  assert.ok(app.includes('class="dot kind-dot" data-kind="${k}"'), 'kind 模板无重复 class 且用 k');
+  for (const d of [0, 30, 90, 180, 365]) {
+    assert.ok(css.includes(`.tick-${d}`), `tick-${d} 有 CSS 档位`);
+  }
+  assert.ok(app.includes('tick-${v}'), 'tick 用固定天数类');
+  assert.ok((app.match(/getAnimations\(\)/g) || []).length >= 1, 'tooltip 动画前取消旧动画');
+});
+
+test('galaxy：前端已移除双击 pin（服务端无持久化接口）', () => {
+  const frontend = readFrontend();
+  assert.ok(!frontend.includes("addEventListener('dblclick'"), '不能有双击 pin 交互');
+  assert.ok(!frontend.includes('api/pin'), '不能调用不存在的 pin 接口');
 });
 
 test('galaxy：前端对 build-pending 占位自动重试', () => {
+  const frontend = readFrontend();
+  assert.ok(frontend.includes('galaxy-pending-retry'), '缺少 pending 重试逻辑');
+});
+
+test('galaxy：/galaxy 与 /galaxy/ 两种入口的脚本 URL 都命中 /galaxy/app.js（审查 r6 P1）', () => {
   const html = fs.readFileSync(path.join(ROOT, 'tools', 'memory-galaxy', 'index.html'), 'utf8');
-  assert.ok(html.includes('galaxy-pending-retry'), '缺少 pending 重试逻辑');
+  const match = html.match(/<script[^>]+src="([^"]+)"/);
+  assert.ok(match, '页面必须有外置脚本标签');
+  // 服务同时支持 /galaxy/ 与 /galaxy；浏览器按页面 URL 解析相对路径，
+  // 只有绝对路径 /galaxy/app.js 才能在两个入口都命中静态资源。
+  for (const base of ['http://127.0.0.1:1/galaxy', 'http://127.0.0.1:1/galaxy/']) {
+    const resolved = new URL(match[1], base).pathname;
+    assert.equal(resolved, '/galaxy/app.js', `入口 ${base} 解析脚本为 ${resolved}，应命中 /galaxy/app.js`);
+  }
 });
 
 

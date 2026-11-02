@@ -8,10 +8,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createGalaxyCache } from '../src/lib/galaxy-cache.mjs';
-import { isAllowedGalaxyHost, isAgentRequest, galaxyCachePayload } from '../src/lib/galaxy-security.mjs';
+import { isAllowedGalaxyHost, isAgentRequest, galaxyCachePayload, GALAXY_CSP } from '../src/lib/galaxy-security.mjs';
 
 const TOKEN = 'test-token-0123456789abcdef';
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 function startFixture({ failBuild = false } = {}) {
   let stored = null;
@@ -38,6 +42,25 @@ function startFixture({ failBuild = false } = {}) {
       res.end('forbidden host');
       return;
     }
+    // 静态 JS 在 token 闸门前（Host 校验后）：不含记忆数据，浏览器 <script src> 不带 token
+    if (req.method === 'GET' && req.url === '/galaxy/app.js') {
+      res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' });
+      res.end('console.log(1)');
+      return;
+    }
+    // 页面入口：/galaxy 与 /galaxy/ 都返回同一份真实 HTML（与 bridge 的双入口一致）。
+    if (req.method === 'GET' && (req.url === '/galaxy' || req.url === '/galaxy/')) {
+      let html = '';
+      try { html = fs.readFileSync(path.join(ROOT, 'tools', 'memory-galaxy', 'index.html'), 'utf8'); } catch { html = ''; }
+      res.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store',
+        'referrer-policy': 'no-referrer',
+        'content-security-policy': GALAXY_CSP,
+      });
+      res.end(html);
+      return;
+    }
     const supplied = String(new URL(req.url, 'http://localhost').searchParams.get('token') ?? req.headers['x-console-token'] ?? '');
     if (supplied !== TOKEN) {
       res.writeHead(401, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' });
@@ -50,7 +73,7 @@ function startFixture({ failBuild = false } = {}) {
       return;
     }
     const body = galaxyCachePayload(cache.getData());
-    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' });
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer', 'content-security-policy': GALAXY_CSP });
     res.end(JSON.stringify(body));
   });
 
@@ -157,4 +180,58 @@ test('galaxy-http：cacheState/cacheWarning 注入不改变 dataFingerprint', ()
   assert.equal(stale.meta.dataFingerprint, 'fp-stable', '状态注入不能改变内容指纹');
   assert.equal(data.meta.cacheState, undefined, '原始缓存对象不能被原地修改');
   assert.equal(data.meta.cacheWarning, undefined, '原始缓存对象不能被原地修改');
+});
+
+test('galaxy-http：冷失败占位必须带 retryAfterMs（否则前端倒计时永远不生效）', () => {
+  const failed = galaxyCachePayload({ state: 'error', data: null, error: 'boom', retryAfterMs: 2000 });
+  assert.equal(failed.meta.retryAfterMs, 2000);
+  const pending = galaxyCachePayload({ state: 'pending', data: null, error: null, retryAfterMs: 1500 });
+  assert.equal(pending.meta.retryAfterMs, 1500);
+  // stale 不需要该字段（仍有旧数据可看）
+  const stale = galaxyCachePayload({ state: 'stale', data: { stars: [], messages: [], meta: {} }, error: null });
+  assert.equal(stale.meta.retryAfterMs, undefined);
+});
+
+test('galaxy-http：静态 app.js 无 token 可加载（不进 token 闸门）', async () => {
+  const fx = await startFixture();
+  const r = await request(fx.port, { path: '/galaxy/app.js' });
+  assert.equal(r.status, 200);
+  assert.ok(String(r.headers['content-type']).includes('javascript'));
+  // 页面/数据仍要求 token
+  assert.equal((await request(fx.port)).status, 401);
+  fx.server.closeAllConnections?.();
+  fx.server.close();
+});
+
+test('galaxy-http：页面 CSP 收紧到 script-src self（无 unsafe-inline 脚本）', async () => {
+  const fx = await startFixture();
+  const r = await request(fx.port, { headers: { 'x-console-token': TOKEN } });
+  const csp = String(r.headers['content-security-policy'] || '');
+  assert.ok(csp.includes("script-src 'self'"), '必须限制 script-src self');
+  assert.ok(!/script-src[^;]*unsafe-inline/.test(csp), 'script-src 不能含 unsafe-inline');
+  fx.server.closeAllConnections?.();
+  fx.server.close();
+});
+
+test('galaxy-http：/galaxy 与 /galaxy/ 页面入口的脚本 URL 都命中静态资源（审查 r6 P1）', async () => {
+  const fx = await startFixture();
+  try {
+    for (const pagePath of ['/galaxy', '/galaxy/']) {
+      const page = await request(fx.port, { path: pagePath });
+      assert.equal(page.status, 200, `${pagePath} 应返回页面`);
+      assert.match(String(page.headers['content-security-policy'] || ''), /script-src 'self'/, `${pagePath} 页面应带 CSP`);
+      const src = /<script[^>]+src="([^"]+)"/.exec(page.body)?.[1];
+      assert.ok(src, `${pagePath} 页面必须有外置脚本`);
+      // 用真实页面 URL 解析脚本路径：/galaxy 入口下相对路径会变成 /app.js（404），
+      // 所以这里必须解析到 /galaxy/app.js。
+      const resolved = new URL(src, `http://127.0.0.1:${fx.port}${pagePath}`).pathname;
+      assert.equal(resolved, '/galaxy/app.js', `${pagePath} 入口脚本应解析为 /galaxy/app.js，实际 ${resolved}`);
+      const js = await request(fx.port, { path: resolved });
+      assert.equal(js.status, 200, `${pagePath} 解析出的 ${resolved} 应命中静态资源`);
+      assert.ok(String(js.headers['content-type'] || '').includes('javascript'), `${resolved} 应返回 JS`);
+    }
+  } finally {
+    fx.server.closeAllConnections?.();
+    fx.server.close();
+  }
 });

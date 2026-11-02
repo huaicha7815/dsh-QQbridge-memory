@@ -82,3 +82,8 @@
 | 知道某个目录/脚本是干什么的 | [FOLDER_MAP.md](FOLDER_MAP.md) |
 | 权限边界与安全承诺 | [../RULES.md](../RULES.md) |
 | 这个项目要往哪走（QSH） | 上位目录的 `../../QSH-plan/`（总索引 `README.md`；另有工具面/技能/云部署/新仓库与官网四份专项） |
+
+- [发布验收记录（RELEASE-SMOKE）](guides/RELEASE-SMOKE.md)
+- 发布前检查：`node scripts/release-preflight.mjs`（不会 tag/push）
+
+- [情绪与关系状态层（设计）](design/MOOD-RELATIONSHIP.md)

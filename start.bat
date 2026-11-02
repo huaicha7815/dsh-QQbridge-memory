@@ -7,8 +7,11 @@ rem WMI-launched supervisor died with "'X' is not recognized as a command").
 rem Harden state/ ACLs (never blocks startup; prints a fix command on denial).
 rem See docs/guides/SECURITY_BASELINE.md ("secrets at rest").
 node scripts\harden-state-acl.mjs --quiet
-rem Start local TTS service (qq_speak needs 127.0.0.1:3210; skips if running).
-powershell -NoProfile -ExecutionPolicy Bypass -File "C:\dsh work\tts-runtime\start-tts.ps1"
+rem Start local TTS service in background (qq_speak needs 127.0.0.1:3210).
+rem Must be async: start-tts.ps1 waits up to 30s for the port, and blocking here
+rem delayed bridge startup past the launcher's 90s window -> "qq-bridge not ready"
+rem false alarm (2026-11-02 12:38).
+start "" /min powershell -NoProfile -ExecutionPolicy Bypass -File "C:\dsh work\tts-runtime\start-tts.ps1"
 :loop
 node src\bridge.js
 set code=%errorlevel%

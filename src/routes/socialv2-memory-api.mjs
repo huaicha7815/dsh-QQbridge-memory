@@ -16,6 +16,8 @@
 //   memory-remove         session   ：只删该 key 的 hot 状态
 //   memory-clear          session   ：只清该 key 的 hot 状态
 // 唯一的 global-by-design 是控制台自己的健康页（走别的入口），不在本文件里。
+import { normalizeEmotionQuery } from '../core/memory-lib.mjs';
+
 export async function handleSocialV2MemoryApi({
   req, url, sendJson, readBody,
   getSocialV2State, saveSocialV2State,
@@ -26,7 +28,18 @@ export async function handleSocialV2MemoryApi({
   buildWriteScope, eventsVisibleToSession,
   auditProfile, groupSelfNotes, memoryQueryV3, formatMemoryInjectionV3,
   filterProfileBySource,
+  // 记忆检索的情绪通道：按会话取当前 decay 后的 mood（bridge 注入）。
+  getMoodFor = null,
 }) {
+        // 情绪检索通道：getMoodFor 由 bridge 注入；只有拿到合法 mood 才启用。
+        // 取不到（旧调用方/异常）时返回 null，检索按旧行为走。
+        const emotionQueryFor = (key) => {
+          try {
+            return normalizeEmotionQuery(getMoodFor?.(key));
+          } catch {
+            return null;
+          }
+        };
         if (req.method === 'POST' && url.pathname === '/api/socialV2/memory-append') {
           const body = await readBody();
           const key = String(body.key ?? '').trim();
@@ -68,10 +81,13 @@ export async function handleSocialV2MemoryApi({
           const memCfg = memoryStore.getConfig();
           // crossSessionPolicy=isolated 时只检索当前会话；默认 open 保持跨会话记忆。
           const isolate = memCfg.crossSessionPolicy === 'isolated';
+          // 情绪检索通道：正式路径必须带上当前会话的 mood（否则情绪检索在生产不可用）。
+          const emotionQuery = emotionQueryFor(key);
           const hits = memoryStore.search(q, {
             topK: topK || memCfg.searchTopK,
             days: days || memCfg.searchDays,
             ...(isolate ? { key } : {}),
+            ...(emotionQuery ? { emotion: emotionQuery } : {}),
           });
           const formatted = memoryStore.formatHits(hits, { maxChars: memCfg.searchMaxChars });
           // 底层有记忆文件读不出来、或有坏行解析不了时，结果可能不完整：必须明说，
@@ -290,10 +306,12 @@ export async function handleSocialV2MemoryApi({
           const query = memoryQueryV3(st);
           // isolated 时预览命中也要按会话过滤：命中数量本身就能透露别的会话有没有相关内容。
           const isolatePreview = memCfg.crossSessionPolicy === 'isolated';
+          const previewEmotionQuery = emotionQueryFor(key);
           const previewHits = query ? memoryStore.search(query, {
             topK: memCfg.searchTopK,
             days: memCfg.searchDays,
             ...(isolatePreview ? { key } : {}),
+            ...(previewEmotionQuery ? { emotion: previewEmotionQuery } : {}),
           }) : [];
           const previewInjection = formatMemoryInjectionV3(key, st);
           sendJson({
@@ -301,9 +319,12 @@ export async function handleSocialV2MemoryApi({
             key,
             // isolated 时检索历史和人物统计都只看本会话：
             // 检索日志里有查询原文，跨会话看到等于内容泄漏。
+            // inspect 的 global 模式会返回 root、salient.file、config、pending/corrupt 诊断
+            // —— 这些是管理面信息。agent（QQ 侧模型）必须只看自己这个会话：
+            // crossSessionPolicy=open 允许「跨会话检索」，不等于允许把管理字段交出去。
             inspect: memoryStore.inspect({
               recallLimit: 8,
-              ...(memCfg.crossSessionPolicy === 'isolated' ? { sourceKey: key } : {}),
+              ...((Boolean(req.headers['x-agent-token']) || memCfg.crossSessionPolicy === 'isolated') ? { sourceKey: key } : {}),
             }),
             preview: {
               query,

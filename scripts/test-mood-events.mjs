@@ -16,6 +16,7 @@ import {
   NEGLECT_REPEAT_GAP_MS,
   EMOTION_EVENTS,
   RELATIONSHIP_EVENTS,
+  MAX_MOOD_EVENTS,
 } from '../src/core/mood.mjs';
 import {
   canonicalV2Key,
@@ -519,4 +520,23 @@ test('reset 语义：主记录落在群会话时，reset 该群即重置这份�
   const after = w.dispatcher.getRelationship('9301');
   assert.equal(after.known, false, 'reset 群会清掉落在这里的关系（已确认的产品契约，见 FIX-REPORT）');
   assert.deepEqual(after.openLoops, []);
+});
+
+test('情绪事件保留上限 40 条（超过上限只保留最新，重启后仍是 40）', () => {
+  const w = makeWorld();
+  // 轮换不同事件类型 + 每次推进 60 秒（超过同类事件 30 秒冷却，否则会被 cooldown 跳过）。
+  const phrases = ['你好可爱啊', '抱抱，别难过', '想你了', '谢谢你', '笑死'];
+  for (let i = 0; i < 60; i += 1) {
+    w.dispatcher.dispatchIncoming({
+      key: 'private:1001', uid: '1001', text: phrases[i % phrases.length], directedAtSelf: true, at: w.now(),
+    });
+    w.tick(60 * 1000);
+  }
+  const events = w.dispatcher.getMood('private:1001').events;
+  assert.equal(MAX_MOOD_EVENTS, 40, '上限必须是 40');
+  assert.equal(events.length, 40, '超过上限只保留最新 40 条');
+  assert.ok(events.every((e) => e && e.at), '事件结构完整');
+  // 序列化 → hydrate（模拟重启）后仍是 40 条
+  const rebuilt = reboot(w.conversations);
+  assert.equal(rebuilt.get('private:1001').mood.events.length, 40, '重启恢复后仍保留 40 条');
 });

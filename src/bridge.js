@@ -59,9 +59,11 @@ import {
   markStickerUsed
 } from './sticker-lib.js';
 import { createMemoryStore } from './core/memory-store.mjs';
+import { normalizeEmotionQuery } from './core/memory-lib.mjs';
 import { exportGalaxy } from '../scripts/lib/galaxy-export.mjs';
 import { createGalaxyCache } from './lib/galaxy-cache.mjs';
-import { isAllowedGalaxyHost, isAgentRequest, galaxyCachePayload } from './lib/galaxy-security.mjs';
+import { isAllowedGalaxyHost, isAgentRequest, galaxyCachePayload, GALAXY_CSP } from './lib/galaxy-security.mjs';
+import { isTokenlessStatusProbe, isAgentAllowedRoute } from './lib/agent-route-policy.mjs';
 import {
   acquireMaintenanceGate, releaseMaintenanceGate, releaseHeldMaintenanceGates, inspectMaintenanceGate,
 } from './lib/maintenance-gate.mjs';
@@ -3098,7 +3100,7 @@ async function main() {
       }
       const SECURITY_HEADERS = {
         'X-Frame-Options': 'DENY',
-        'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'",
+        'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self'; style-src-elem 'self'; style-src-attr 'none'",
         'Cache-Control': 'no-store',
         'X-Content-Type-Options': 'nosniff',
         'Referrer-Policy': 'no-referrer'
@@ -3183,10 +3185,54 @@ async function main() {
         sendJson({ ok: false, error: `Host 头不被允许（${hostHeader || '缺失'}）：控制台只接受本机回环访问` }, 403);
         return;
       }
-      // 控制台鉴权：所有请求需带 x-console-token 或 ?token=
+      // 控制台静态 CSS：不含数据，放在 token 闸门前（浏览器 <link> 无法携带 token）
+      if (req.method === 'GET' && url.pathname === '/console.css') {
+        try {
+          const css = fs.readFileSync(path.join(ROOT, 'public', 'console.css'), 'utf8');
+          res.writeHead(200, { 'content-type': 'text/css; charset=utf-8', 'cache-control': 'no-store', ...SECURITY_HEADERS });
+          res.end(css);
+        } catch {
+          res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8', ...SECURITY_HEADERS });
+          res.end('控制台样式缺失：public/console.css');
+        }
+        return;
+      }
+      // 记忆银河静态 JS：不含记忆数据，放在 token 闸门前（仍在 Host 校验后），
+      // 这样 <script src="/galaxy/app.js"> 不需要携带 token；数据接口仍然要求 x-console-token。
+      if (req.method === 'GET' && url.pathname === '/galaxy/app.css') {
+        try {
+          const css = fs.readFileSync(path.join(ROOT, 'tools', 'memory-galaxy', 'app.css'), 'utf8');
+          res.writeHead(200, { 'content-type': 'text/css; charset=utf-8', 'cache-control': 'no-store', ...SECURITY_HEADERS });
+          res.end(css);
+        } catch {
+          res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8', ...SECURITY_HEADERS });
+          res.end('记忆银河样式缺失：tools/memory-galaxy/app.css');
+        }
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/galaxy/app.js') {
+        try {
+          const js = fs.readFileSync(path.join(ROOT, 'tools', 'memory-galaxy', 'app.js'), 'utf8');
+          res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store', ...SECURITY_HEADERS });
+          res.end(js);
+        } catch {
+          res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8', ...SECURITY_HEADERS });
+          res.end('记忆银河脚本缺失：tools/memory-galaxy/app.js');
+        }
+        return;
+      }
+      // 控制台鉴权：header 为主；?token= 只用于「页面引导」。
+      // 页面引导 = 浏览器首次打开控制台或独立打开银河页面（此时还没有 localStorage）。
+      // API 一律只认 header：URL 里的令牌会进浏览器历史、被截图/分享，攻击面更大。
       // 定长比较：`!==` 会在第一个不同的字符处短路，理论上可被本机进程用响应时延逐字节试探。
       // 令牌是 192 bit 随机值且只监听回环，所以这是纵深防御而非在野漏洞。
-      const suppliedToken = String(url.searchParams.get('token') ?? req.headers['x-console-token'] ?? '');
+      const tokenBootPaths = new Set(['/', '/galaxy', '/galaxy/']);
+      const queryTokenAllowed = req.method === 'GET' && tokenBootPaths.has(url.pathname);
+      const suppliedToken = String(
+        (queryTokenAllowed ? url.searchParams.get('token') : null)
+        ?? req.headers['x-console-token']
+        ?? ''
+      );
       const tokenMatches = (() => {
         if (!consoleToken) return false; // 上面已拒绝空令牌；真出现也只许失败关闭，绝不 return true
         const a = Buffer.from(suppliedToken, 'utf8');
@@ -3215,7 +3261,10 @@ async function main() {
       // 现在 MCP 端一律带上 x-agent-call: 1（缺令牌时 x-agent-token 为空串），这里只要看到
       // 这个声明就要求令牌必须命中某个活跃会话，端点自己漏写校验也不会退回管理端。
       if (req.headers['x-agent-call'] !== undefined) {
-        if (!isLiveAgentToken(req.headers['x-agent-token'])) {
+        // 例外：旧只读工具（qq_list_groups 等）在拿不到会话令牌时会探测 GET /api/status
+        // 来确认运行模式。它必须走 status 的「最小对象」分支，不能拿到管理端字段。
+        const tokenlessStatusProbe = isTokenlessStatusProbe(req.method, url.pathname);
+        if (!tokenlessStatusProbe && !isLiveAgentToken(req.headers['x-agent-token'])) {
           sendJson({ ok: false, error: '未授权：智能体调用必须携带有效的会话令牌' }, 403);
           return;
         }
@@ -3225,8 +3274,17 @@ async function main() {
       // /api/restart、/api/workspace/reset、/api/role 等破坏性接口。
       if (req.method !== 'GET') {
         const ctype = String(req.headers['content-type'] ?? '');
-        if (!ctype.toLowerCase().includes('application/json')) {
+        // 严格媒体类型：必须就是 application/json（允许 ; charset=...）。
+        // 不能用 includes：text/application/json、application/json-patch+json 这类都不该算。
+        if (!/^application\/json\s*(;|$)/i.test(ctype.trim())) {
           sendJson({ ok: false, error: '请求必须是 application/json' }, 415);
+          return;
+        }
+        // Sec-Fetch-Site 是浏览器自动加的、页面伪造不了：跨站 (cross-site / same-site) 一律拒绝。
+        // 现代浏览器都带它；老客户端缺这个头时继续走 Origin + bearer token 校验。
+        const fetchSite = String(req.headers['sec-fetch-site'] ?? '').toLowerCase();
+        if (fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'none') {
+          sendJson({ ok: false, error: '跨站请求被拒绝（Sec-Fetch-Site）' }, 403);
           return;
         }
         const origin = req.headers['origin'];
@@ -3276,13 +3334,10 @@ async function main() {
         // agent token 默认拒绝：MCP 的 v2 工具同时携带 x-console-token 与 x-agent-token，
         // 因此仅靠控制台令牌挡不住 AI。这里改成白名单：只有 AI 真正需要的面放行，
         // 其余（人格/提示词/思考强度/白名单/重启…）一律 403——避免以后新增管理端点时忘记拉黑。
+        // agent 工具面：method + 精确 path 白名单（默认拒绝）。
+        // 不能用前缀放行：新增 /api/socialV2/export-all 之类的路径会自动变成 agent 可访问。
         if (req.headers['x-agent-token']) {
-          const agentAllowed = url.pathname === '/api/status'
-            || url.pathname.startsWith('/api/socialV2/')
-            || url.pathname.startsWith('/api/send/')
-            || url.pathname.startsWith('/api/images/')
-            || url.pathname === '/api/authorize/read';
-          if (!agentAllowed) {
+          if (!isAgentAllowedRoute(req.method, url.pathname)) {
             sendJson({ ok: false, error: '该接口仅控制台可用' }, 403);
             return;
           }
@@ -3304,7 +3359,7 @@ async function main() {
           }
           try {
             const html = fs.readFileSync(path.join(ROOT, 'tools', 'memory-galaxy', 'index.html'), 'utf8');
-            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
+            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', ...SECURITY_HEADERS, 'Content-Security-Policy': GALAXY_CSP, 'X-Frame-Options': 'SAMEORIGIN' });
             res.end(html);
           } catch {
             res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8', ...SECURITY_HEADERS });
@@ -4176,6 +4231,10 @@ async function main() {
           currentMode: () => currentMode,
           slangEntries: () => slangEntries,
           stickerEntries: () => stickerEntries,
+          // 控制台「她的情绪」页：最近每句话的情绪快照（只读，agent token 看不到）。
+          readMoodHistory,
+          isMoodHistoryDegraded,
+          canonicalV2Key,
         })) return;
         // socialV2 唤醒与黑话端点已拆到 src/routes/socialv2-wake-slang-api.mjs
         if (await handleSocialV2WakeSlangApi({
@@ -4234,31 +4293,10 @@ async function main() {
           buildWriteScope, eventsVisibleToSession,
           auditProfile, groupSelfNotes, memoryQueryV3, formatMemoryInjectionV3,
           filterProfileBySource,
+          // 记忆检索的情绪通道：按会话取当前 decay 后的 mood。
+          getMoodFor: (key) => moodEvents.getMood(key),
         })) return;
         // ── 二代黑话学习（reserved2）：AI 查询/提交黑话候选 ─────────────────
-        if (req.method === 'POST' && url.pathname === '/api/authorize/read') {
-          const body = await readBody();
-          const key = String(body.key ?? '').trim();
-          const token = String(body.token ?? '').trim();
-          const keyMatch = /^(group|private):(\d+)$/.exec(key);
-          if (!keyMatch) { sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400); return; }
-          if (!token || !agentTokenOk(key, token)) {
-            // 空 token 一律拒绝：该端点对 agent 流量开放（见 startConsoleServer 里的
-            // agent 白名单），而 MCP 的 agentApi 总是带着真实控制台令牌，
-            // 所以「不传 token 就跳过校验」等于把它变成免鉴权端点。
-            sendJson({ ok: false, error: token ? 'agent token 无效' : '缺少会话令牌；旧只读工具在需要令牌的模式下不可用，请改用带会话令牌的 v2 读工具' }, 403);
-            return;
-          }
-          const kind = keyMatch[1];
-          const id = Number(keyMatch[2]);
-          if (!Number.isFinite(id) || id <= 0 || !modeAllowed(key, kind, id, cfg, currentMode)) {
-            sendJson({ ok: false, error: '当前模式不允许读取该会话' }, 403);
-            return;
-          }
-          sendJson({ ok: true, key });
-          return;
-        }
-        // ── 图片/表情查询端点（MCP qq_get_message_images 走这里） ────────────
         if (req.method === 'GET' && url.pathname === '/api/images/message') {
           const key = String(url.searchParams.get('key') ?? '').trim();
           const messageId = String(url.searchParams.get('messageId') ?? '').trim();
@@ -5681,9 +5719,10 @@ async function main() {
       // 健康状态（审查 r5 P2）：落盘成功即清空最近失败标记，控制台可区分「内存态」和「已落盘态」。
       socialV2.lastSaveError = null;
     } catch (error) {
+      // 只记录可安全外发的错误码；原始 message 可能含绝对路径，只写本地日志。
       socialV2.lastSaveError = {
         at: Date.now(),
-        message: String(error?.message ?? error).slice(0, 200),
+        code: typeof error?.code === 'string' ? error.code : 'IO',
       };
       log('保存 socialV2 状态失败:', error?.message ?? error);
     }
@@ -5812,8 +5851,10 @@ async function main() {
   socialV2.lastExpression = lastExpressionByKey;
   socialV2.lastProactiveByKey = lastProactiveByKey;
 
-  /** 有界 Map 写入：超过上限删最旧（两张解释 Map 共用）。 */
+  /** 有界 Map 写入（LRU：最近更新保留）。两张解释 Map 共用，上限 200。 */
   function setBounded(map, key, value) {
+    // Map.set 对已存在的 key 不会刷新插入顺序；先删再插，更新才会被当作「最近使用」。
+    if (map.has(key)) map.delete(key);
     map.set(key, value);
     while (map.size > MAX_EXPRESSION_KEYS) {
       const oldest = map.keys().next().value;
@@ -5928,10 +5969,19 @@ async function main() {
       const query = memoryQueryV3(st);
       // isolated 时自动注入也必须按当前会话过滤，否则检索接口隔离了、注入却没隔离。
       const isolateInjection = memCfg.crossSessionPolicy === 'isolated';
+      // 情绪检索通道（任务需求闭环）：取当前会话 decay 后的 mood 传给检索，
+      // 让「她难过时想起上次难过时对方说的话」在真实唤醒注入里生效。
+      let emotionQuery = null;
+      try {
+        emotionQuery = normalizeEmotionQuery(moodEvents.getMood(key));
+      } catch {
+        emotionQuery = null;
+      }
       const hits = query ? memoryStore.search(query, {
         topK: memCfg.searchTopK,
         days: memCfg.searchDays,
         ...(isolateInjection ? { key } : {}),
+        ...(emotionQuery ? { emotion: emotionQuery } : {}),
       }) : [];
       const hot = {
         topics: Array.isArray(st?.activeTopics) ? st.activeTopics.filter((t) => t && t.text) : [],
@@ -7215,16 +7265,8 @@ async function main() {
       time: Date.now()
     };
     appendDiaryEntry(key, msg);
-    archiveMemoryEventV3({
-      t: msg.time,
-      k: key,
-      kind: 'msg',
-      who: msg.sender || '',
-      uid: msg.userId || null,
-      owner: !!msg.isOwner,
-      text: msg.text,
-      mid: msg.messageId || null
-    });
+    // 记忆归档移到情绪分发之后（见下）：只有拿到「这条消息触发了哪类情绪事件」，
+    // 才能把 emotionType 写进记忆事件、让情绪检索通道可用。
     st.proactiveFollowUps = 0; // 他回话了，私聊追问计数归零
     st.lastUnreadSeq = msg.seq;
     st.lastIncomingAt = Date.now();
@@ -7246,19 +7288,35 @@ async function main() {
     // - 群聊只处理明确指向 AI（@/引用）的消息（审查 r5 P1：别人之间的聊天不改变「我和她」）；
     // - AI 暂停时冻结状态（审查 r5 P2：暂停期间不累积情绪，恢复后不会被「补算」）。
     // 分发器判不出情绪时只记互动（不猜）；失败只记日志，不能影响消息入库与唤醒。
+    let incomingEmotionType = null;
     if (!socialV2.paused) {
       try {
-        moodEvents.dispatchIncoming({
+        const moodResult = moodEvents.dispatchIncoming({
           key,
           uid: msg.userId ?? null,
           text: msg.plain || msg.text,
           directedAtSelf: !!directedAtSelf,
           at: msg.time,
         });
+        // 记忆标注：这条消息若触发情绪事件，把事件类型一并写进记忆事件。
+        // 未知/无事件时 store 侧会自动跳过（旧数据形状不变）。
+        incomingEmotionType = moodResult?.eventType ?? null;
       } catch (error) {
         log(`[mood] 入站情绪事件失败 ${key}: ${error?.message ?? error}`);
       }
     }
+    // 记忆归档（情绪分发之后）：emotionType → store.appendEvent 自动标注 valence/arousal。
+    archiveMemoryEventV3({
+      t: msg.time,
+      k: key,
+      kind: 'msg',
+      who: msg.sender || '',
+      uid: msg.userId || null,
+      owner: !!msg.isOwner,
+      text: msg.text,
+      mid: msg.messageId || null,
+      emotionType: incomingEmotionType,
+    });
     saveSocialV2State();
   }
 
@@ -7302,18 +7360,24 @@ async function main() {
     st.unread.push(msg);
     if (st.unread.length > unreadLimit) st.unread.splice(0, st.unread.length - unreadLimit);
     // 情绪与关系：拍到自己才算「被拍」情绪事件；拍别人只记一次互动。
+    let pokeEmotionType = null;
     try {
-      moodEvents.dispatchPoke({
+      const pokeResult = moodEvents.dispatchPoke({
         key,
         uid: msg.userId ?? null,
         targetIsSelf: msg.poke?.targetIsSelf === true,
         at: msg.time,
       });
+      if (pokeResult && pokeResult.ok === false) {
+        // fail-closed：uid_mismatch 等异常不静默，留日志排查上游路由/解析问题
+        log(`[mood] 拍一拍未标注 ${key}：${pokeResult.reason ?? 'unknown'}`);
+      }
+      pokeEmotionType = pokeResult?.eventType ?? null;
     } catch (error) {
       log(`[mood] 拍一拍情绪事件失败 ${key}: ${error?.message ?? error}`);
     }
     saveSocialV2State();
-    archiveMemoryEventV3({ t: msg.time, k: key, kind: 'poke', who: actor, text, targetIsSelf: !!targetIsSelf });
+    archiveMemoryEventV3({ t: msg.time, k: key, kind: 'poke', who: actor, text, targetIsSelf: !!targetIsSelf, emotionType: pokeEmotionType });
     return msg;
   }
 
@@ -7325,6 +7389,9 @@ async function main() {
     for (let i = 0; i < list.length; i++) {
       const text = redactKnownTokensOnly(String(list[i] ?? '')).slice(0, 200);
       archiveMemoryEventV3({ t: now + i * 1000, k: key, kind: 'self', text });
+      // 控制台「她的情绪」页：记录这句话发出时的情绪快照（当前 mood + 表达计划）。
+      // 批量发送时先只记内存，循环结束统一写一次盘（避免每条消息同步重写整份文件）。
+      recordMoodSnapshot(key, text, { save: false });
       st.recentMessages.push({
         sender: '我',
         text,
@@ -7337,6 +7404,8 @@ async function main() {
       });
     }
     if (st.recentMessages.length > recentLimit) st.recentMessages.splice(0, st.recentMessages.length - recentLimit);
+    // 批量快照只写一次盘（list 为空则不必写）。
+    if (list.length > 0) saveMoodHistoryFile();
     // AI 实际发言/参与了，说明这轮选择“继续回复”，沉睡前观察状态作废；下次想睡需重新走 5 分钟等待。
     st.preSleepWaitSatisfiedAt = 0;
     st.preSleepWaitObservedAt = 0;
@@ -7350,6 +7419,113 @@ async function main() {
       }
     }
     saveSocialV2State();
+  }
+
+  // ── 情绪轨迹：控制台「她的情绪」页 ─────────────────────────────────────
+  // 每发一句话记一条「当时的情绪快照」：mood 是衰减后的当前值，plan 是表达计划
+  // （心情档位 / 回复长度上限 / 表情语音概率）。只记 AI 自己发出的消息。
+  // 存储：state/mood-history.json；每会话最多 120 条、最多保留 24 个会话
+  // （按最后记录时间淘汰），紧凑 JSON（不 pretty-print），一次发送批量保存一次。
+  // 上限估算：24×120 条 × 单条上限（text 160 + cause 120 个中文字）≈ 3 MB，低于 5 MB 监控线。
+  const MOOD_HISTORY_FILE = path.join(STATE_DIR, 'mood-history.json');
+  const MOOD_HISTORY_LIMIT = 1000;
+  const MOOD_HISTORY_MAX_SESSIONS = 24;
+  let moodHistoryCache = null;
+  // 坏文件降级标记：解析失败时备份原文件并「不自动覆盖」，直到人工恢复（重启后重新判断）。
+  let moodHistoryDegraded = false;
+  function loadMoodHistoryFile() {
+    if (moodHistoryCache) return moodHistoryCache;
+    if (!fs.existsSync(MOOD_HISTORY_FILE)) {
+      moodHistoryCache = { version: 1, byKey: {} };
+      return moodHistoryCache;
+    }
+    try {
+      const raw = JSON.parse(fs.readFileSync(MOOD_HISTORY_FILE, 'utf8'));
+      const byKey = raw && typeof raw === 'object' && raw.byKey && typeof raw.byKey === 'object' ? raw.byKey : {};
+      moodHistoryCache = { version: 1, byKey };
+      return moodHistoryCache;
+    } catch (error) {
+      // 备份损坏文件（固定名，避免每次启动堆一份），然后降级：本次运行不再自动写盘。
+      moodHistoryDegraded = true;
+      const backup = `${MOOD_HISTORY_FILE}.corrupt`;
+      try {
+        if (!fs.existsSync(backup)) fs.renameSync(MOOD_HISTORY_FILE, backup);
+        log(`[mood] 情绪轨迹文件损坏，已备份到 ${backup}；本次运行不会覆盖它（需人工恢复）`);
+      } catch (backupError) {
+        log('[mood] 情绪轨迹文件损坏且备份失败:', backupError?.message ?? backupError);
+      }
+      moodHistoryCache = { version: 1, byKey: {} };
+      return moodHistoryCache;
+    }
+  }
+  function trimMoodHistorySessions(history) {
+    const keys = Object.keys(history.byKey);
+    if (keys.length <= MOOD_HISTORY_MAX_SESSIONS) return;
+    const lastAt = (key) => {
+      const list = history.byKey[key];
+      return Array.isArray(list) && list.length ? Number(list[list.length - 1].at) || 0 : 0;
+    };
+    keys.sort((a, b) => lastAt(b) - lastAt(a));
+    for (const key of keys.slice(MOOD_HISTORY_MAX_SESSIONS)) delete history.byKey[key];
+  }
+  function saveMoodHistoryFile() {
+    if (moodHistoryDegraded) return; // 损坏文件不自动覆盖（等人工恢复）
+    try {
+      const history = loadMoodHistoryFile();
+      trimMoodHistorySessions(history);
+      // 紧凑 JSON：快照字段多，pretty-print 会让文件无谓膨胀 ~20%。
+      atomicWriteText(MOOD_HISTORY_FILE, JSON.stringify(history));
+    } catch (error) {
+      log('[mood] 写情绪轨迹失败:', error?.message ?? error);
+    }
+  }
+  function recordMoodSnapshot(key, text, options = {}) {
+    const save = options.save !== false;
+    try {
+      const view = moodEvents.getMood(key);
+      if (!view || !view.valid) return;
+      let plan = null;
+      try { plan = wakePromptBuilder.explainMood?.(key) ?? null; } catch { plan = null; }
+      const snapshot = {
+        at: Date.now(),
+        text: String(text ?? '').slice(0, 160),
+        valence: Number(view.valence) || 0,
+        arousal: Number(view.arousal) || 0,
+        energy: Number(view.energy) || 0,
+        cause: String(view.cause || '').slice(0, 120),
+        causeType: view.causeType || '',
+        moodBand: plan?.moodBand ?? null,
+        maxReplyChars: plan?.maxReplyChars ?? null,
+        stickerProbability: plan?.stickerProbability ?? null,
+        voiceProbability: plan?.voiceProbability ?? null,
+      };
+      const history = loadMoodHistoryFile();
+      if (!Array.isArray(history.byKey[key])) history.byKey[key] = [];
+      history.byKey[key].push(snapshot);
+      if (history.byKey[key].length > MOOD_HISTORY_LIMIT) {
+        history.byKey[key].splice(0, history.byKey[key].length - MOOD_HISTORY_LIMIT);
+      }
+      if (save) saveMoodHistoryFile();
+    } catch (error) {
+      // 记录失败绝不能影响发送
+      log('[mood] 记录情绪快照失败:', error?.message ?? error);
+    }
+  }
+  function readMoodHistory(key, limit = 60) {
+    const history = loadMoodHistoryFile();
+    const list = Array.isArray(history.byKey[key]) ? history.byKey[key] : [];
+    const parsed = Math.trunc(Number(limit));
+    const n = Number.isFinite(parsed) ? Math.max(1, Math.min(MOOD_HISTORY_LIMIT, parsed)) : 60;
+    // 深拷贝：调用方修改返回值不能污染内部缓存
+    return list.slice(-n).map((item) => ({ ...item }));
+  }
+  function isMoodHistoryDegraded() {
+    return moodHistoryDegraded;
+  }
+  /** 测试用：清空内存缓存，模拟「重启后从文件恢复」。 */
+  function resetMoodHistoryCacheForTest() {
+    moodHistoryCache = null;
+    moodHistoryDegraded = false;
   }
 
   function readFeedbackEntries() {

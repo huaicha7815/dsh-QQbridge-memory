@@ -111,8 +111,9 @@ for (const [g, list] of sorted) {
 const content = body.join('\n');
 
 if (CHECK) {
+  const norm = (s) => String(s).replace(/\r\n?/g, '\n').trim();
   const prev = fs.existsSync(OUT) ? fs.readFileSync(OUT, 'utf8') : '';
-  if (prev.trim() !== content.trim()) {
+  if (norm(prev) !== norm(content)) {
     console.error('docs/ROUTES.md 已过期：跑 node scripts/gen-routes-doc.mjs 更新');
     process.exit(1);
   }

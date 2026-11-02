@@ -148,7 +148,10 @@ export function buildPatches({ check = false, log = () => {} } = {}) {
     const file = patchFileFor(name);
     const content = renderPatch(name);
     const current = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
-    const changed = current !== content;
+    // 比较前归一化换行：生成器写 LF，worktree 在 Windows 上可能被 core.autocrlf 改成 CRLF，
+    // 直接 !== 会把「内容没变」误判成「需重新生成」。
+    const norm = (s) => (s == null ? null : String(s).replace(/\r\n?/g, '\n'));
+    const changed = norm(current) !== norm(content);
     if (changed && !check) {
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(file, content, 'utf8');

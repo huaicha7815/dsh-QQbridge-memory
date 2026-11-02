@@ -3,6 +3,11 @@
 // 目的：路由级测试不能再依赖「本机 3100 正在运行」——
 // 把 Host 白名单、agent 请求判定抽成纯函数，测试就能起最小 server 复刻同一语义。
 
+/** 记忆银河页面专用 CSP：脚本全部外置到 /galaxy/app.js（不含记忆数据），
+ * 不需要 'unsafe-inline'；style 暂时保留（页面有运行时动态样式）。
+ * frame-ancestors 'self'：只允许同源（控制台 iframe 内嵌）。 */
+export const GALAXY_CSP = "default-src 'self'; script-src 'self'; style-src 'self'; style-src-elem 'self'; style-src-attr 'none'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
+
 /** Host 头是否属于本机回环（含端口的精确匹配；大小写不敏感）。 */
 export function isAllowedGalaxyHost(hostHeader, port) {
   const host = String(hostHeader || '').toLowerCase();
@@ -32,14 +37,15 @@ export function galaxyCachePayload(cacheResult) {
     }
     return { ...data, meta };
   }
-  return {
-    stars: [], messages: [],
-    meta: {
-      partial: true, errorCount: 1,
-      errors: [{ file: 'galaxy', error: cacheResult && cacheResult.state === 'error' ? 'build-failed' : 'build-pending' }],
-      cacheState: cacheResult ? cacheResult.state : 'pending',
-      coreLabel: '鱼鱼', coreSub: '她自己', total: 0, pinned: 0, messages: 0,
-      avgStrength: 0, sources: { memory: 0, diary: 0, message: 0 },
-    },
+  const meta = {
+    partial: true, errorCount: 1,
+    errors: [{ file: 'galaxy', error: cacheResult && cacheResult.state === 'error' ? 'build-failed' : 'build-pending' }],
+    cacheState: cacheResult ? cacheResult.state : 'pending',
+    coreLabel: '鱼鱼', coreSub: '她自己', total: 0, pinned: 0, messages: 0,
+    avgStrength: 0, sources: { memory: 0, diary: 0, message: 0 },
   };
+  if (Number.isFinite(cacheResult && cacheResult.retryAfterMs) && cacheResult.retryAfterMs > 0) {
+    meta.retryAfterMs = cacheResult.retryAfterMs;
+  }
+  return { stars: [], messages: [], meta };
 }

@@ -896,13 +896,29 @@ test('控制台可解释：/state 返回当前 key 的 lastProactive（审查 ex
 test('控制台只读端点：保存失败时 /state 暴露 lastSaveError（审查 r5 P2）', async () => {
   const w = makeWorld();
   w.layer.applyEmotionEvent('private:1', { type: 'praised' });
-  const saveError = { at: T0, message: 'ENOSPC: no space left on device' };
+  const saveError = { at: T0, code: 'ENOSPC' };
   const api = fakeApi(w, {
     socialV2: { conversations: w.conversations, paused: false, lastSaveError: saveError },
   });
   await api.call('/api/socialV2/state', { key: 'private:1' });
   const body = api.responses[0].body;
-  assert.deepEqual(body.lastSaveError, saveError, '保存失败必须能从状态接口看出来（区分内存态和已落盘态）');
+  assert.deepEqual(body.lastSaveError, { at: T0, code: 'ENOSPC' }, '保存失败必须能从状态接口看出来（区分内存态和已落盘态）');
+
+  // 脱敏：即使内部 message 含绝对路径，响应也只能出白名单错误码
+  const w2 = makeWorld();
+  w2.layer.applyEmotionEvent('private:1', { type: 'praised' });
+  const api2 = fakeApi(w2, {
+    socialV2: {
+      conversations: w2.conversations, paused: false,
+      lastSaveError: { at: T0, message: 'ENOSPC: no space left on device, write C:\\Users\\1\\state\\memory\\sessions.json' },
+    },
+  });
+  await api2.call('/api/socialV2/state', { key: 'private:1' });
+  const body2 = api2.responses[0].body;
+  assert.deepEqual(body2.lastSaveError, { at: T0, code: 'IO' }, '非白名单错误码必须映射为 IO');
+  const raw = JSON.stringify(body2);
+  assert.ok(!raw.includes('C:\\') && !raw.includes('state\\memory') && !raw.includes('no space left'),
+    '响应里不能出现绝对路径或原始 message');
 });
 
 test('控制台只读端点：参数缺失 / 非法返回 400，不静默成功', async () => {

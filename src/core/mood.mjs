@@ -39,7 +39,7 @@ export const DEFAULT_INTIMACY = 0.3;
 export const DEFAULT_TENSION = 0;
 
 /** 各数组/映射的上限，避免长期运行后状态无限膨胀。 */
-export const MAX_MOOD_EVENTS = 20;
+export const MAX_MOOD_EVENTS = 40;
 export const MAX_RELATIONSHIP_EVENTS = 12;
 export const MAX_OPEN_LOOPS = 20;
 export const MAX_RELATIONSHIP_UIDS = 50;

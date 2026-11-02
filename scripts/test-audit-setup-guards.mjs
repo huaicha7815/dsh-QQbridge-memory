@@ -42,6 +42,24 @@ import fs from 'node:fs';
   // 提权递归防护：被自己拉起的那一次必须跳过提权重试。
   assert.ok(/!isElevatedRun/.test(helper), '提权重试必须被 --elevated 标记短路，防止递归');
 
+  // 所有批处理都必须 CRLF（Linux 检出/export ZIP 时也不能变成 LF）
+  const batFiles = [];
+  const walkBat = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'state') continue;
+      const p = path.join(dir, entry.name);
+      if (entry.isDirectory()) { walkBat(p); continue; }
+      if (/\.(bat|cmd)$/i.test(entry.name)) batFiles.push(p);
+    }
+  };
+  walkBat(root);
+  assert.ok(batFiles.length >= 3, '应至少找到 start.bat / restart.bat / run-daily-check.bat');
+  for (const file of batFiles) {
+    const buf = fs.readFileSync(file);
+    const text = buf.toString('latin1');
+    const bareLf = (text.match(/(?<!\r)\n/g) ?? []).length;
+    assert.equal(bareLf, 0, path.basename(file) + ' 必须使用 CRLF（不允许裸 LF）');
+  }
   const bat = fs.readFileSync(path.join(root, 'start.bat'));
   const batText = bat.toString('latin1');
   const nonAscii = [...bat].filter((b) => b > 127).length;
@@ -49,7 +67,10 @@ import fs from 'node:fs';
   assert.equal(batText.match(/(?<!\r)\n/g)?.length ?? 0, 0, 'start.bat 必须使用 CRLF');
   assert.ok(batText.includes('harden-state-acl.mjs'), 'start.bat 必须在启动桥接前调用 ACL 助手');
   // 助手必须排在 node src/bridge.js 之前，否则"启动时收紧"就不成立
-  assert.ok(batText.indexOf('harden-state-acl.mjs') < batText.indexOf('node src/bridge.js'), 'ACL 助手必须先于桥接启动');
+  // .bat 里是 Windows 反斜杠路径（node src\\bridge.js），断言统一按正则找
+  const bridgeInvoke = batText.search(/node\s+src[\\/]bridge\.js/);
+  assert.ok(bridgeInvoke > 0, 'start.bat 必须在启动桥接（node src\\bridge.js）');
+  assert.ok(batText.indexOf('harden-state-acl.mjs') < bridgeInvoke, 'ACL 助手必须先于桥接启动');
   console.log('state ACL hardening: helper is non-blocking, recursion-guarded, and wired into start.bat');
 }
 

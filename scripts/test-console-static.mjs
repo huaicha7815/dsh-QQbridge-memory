@@ -23,6 +23,72 @@ for (const id of ['voiceList', 'voiceRefreshBtn', 'voiceSendBtn', 'voiceSendTarg
   ok(n === 1, `语音面板元素 ${id}`, `${n} 处`);
 }
 
+console.log('## 静态资源外置');
+ok(!html.includes('<style>'), '控制台页面不含内联 <style>（已外置 console.css）');
+ok(html.includes('/console.css'), '控制台引用 /console.css');
+
+console.log('## 样式预算');
+const settingsBlocks = [...html.matchAll(/<details class="settings-group"[\s\S]*?<\/details>/g)].map((m) => m[0]);
+const settingsStyles = settingsBlocks.reduce((sum, b) => sum + (b.match(/style="/g) || []).length, 0);
+ok(settingsStyles === 0, 'settings 范围 style 属性为 0', settingsStyles ? `剩余 ${settingsStyles} 处` : '0');
+const allStyles = (html.match(/style="/g) || []).length;
+const jsTemplateStyles = (html.slice(html.lastIndexOf('<script>')).match(/style="/g) || []).length;
+const htmlStaticStyles = allStyles - jsTemplateStyles;
+ok(htmlStaticStyles === 0, 'HTML 静态 style 属性为 0', `当前 ${htmlStaticStyles}`);
+ok(jsTemplateStyles === 0, 'JS 模板 style 为 0', `当前 ${jsTemplateStyles}`);
+
+console.log('## class/规则契约（样式类必须有 CSS 定义）');
+{
+  // 枚举所有 tag.field-* 组合（枚举所有 field-* 组合，避免固定 4 项漏检）
+  const cssPath = path.join(ROOT, 'public', 'console.css');
+  const cssText = fs.existsSync(cssPath) ? fs.readFileSync(cssPath, 'utf8') : '';
+  const combos = new Set();
+  for (const m of html.matchAll(/<([a-zA-Z][\w-]*)([^>]*?)\bclass="([^"]*\bfield-[a-z0-9-]+[^"]*)"/g)) {
+    const tag = m[1].toLowerCase();
+    for (const cls of m[3].split(/\s+/)) if (/^field-/.test(cls)) combos.add(tag + '.' + cls);
+  }
+  for (const combo of [...combos].sort()) {
+    const [tag, cls] = combo.split('.');
+    let re;
+    if (tag === 'input') re = new RegExp('input\\[type\\]\\.' + cls + '(?![a-z0-9-])');
+    else if (tag === 'select') re = new RegExp('select\\.' + cls + '(?![a-z0-9-])');
+    else if (tag === 'textarea') re = new RegExp('textarea\\.' + cls + '(?![a-z0-9-])');
+    else re = new RegExp('(^|\\n)\\.' + cls + '\\s*\\{');
+    ok(re.test(cssText), combo + ' 有 CSS 规则');
+  }
+}
+
+console.log('## 情绪页运行时契约');
+{
+  // emotionMetric 内部不能引用外层 v（曾经导致 ReferenceError，整页渲染失败）
+  const fnMatch = html.match(/function emotionMetric\([\s\S]*?\n\}/);
+  ok(!!fnMatch, 'emotionMetric 函数存在');
+  ok(fnMatch && !/moodClassOf\(v\)/.test(fnMatch[0]), 'emotionMetric 不引用外层 v');
+  ok(html.includes("emotionMetric('心情 valence', v, moodClassOf(v)"), '心情指标传 moodClassOf(v)');
+  ok(html.includes('progress class="emotion-bar-fill'), '情绪指标条用 progress 元素');
+}
+
+console.log('## 运行时样式写入');
+{
+  ok(!/\.style\.[a-zA-Z]+\s*=/.test(html), 'console.html 无 element.style 写入');
+  ok(!/cssText/.test(html), 'console.html 无 cssText');
+  ok(!/setAttribute\(['"]style['"]/.test(html), 'console.html 无 setAttribute(style)');
+}
+
+console.log('## 重复 class 属性');
+{
+  const dupTags = [...html.matchAll(/<[a-zA-Z][^>]*?\sclass="[^"]*"[^>]*?\sclass="/g)];
+  ok(dupTags.length === 0, '同一标签 class 属性不超过 1 个', dupTags.length ? `${dupTags.length} 处` : '0');
+}
+
+console.log('## usage progress 契约');
+{
+  const cssText = fs.readFileSync(path.join(ROOT, 'public', 'console.css'), 'utf8');
+  ok(!cssText.includes('.usage-bar-track'), '旧 .usage-bar-track 已删除');
+  ok(cssText.includes('#section-usage progress.usage-bar-fill'), 'usage progress 有专属规则');
+  ok(!/usage-bar-fill[^"]*mood-neutral/.test(html), 'usage bar 不挂 mood-neutral');
+}
+
 console.log('## 视图 / 页面契约');
 const views = [...new Set([...html.matchAll(/data-view="([a-z0-9-]+)"/g)].map((m) => m[1]))].sort();
 const pages = [...new Set([...html.matchAll(/data-page="([a-z0-9-]+)"/g)].map((m) => m[1]))].sort();
@@ -48,7 +114,12 @@ catch (e) { ok(false, '主 script 语法', e.message); }
 
 console.log('## 语音图形界面的音量控件');
 {
-  const voice = fs.readFileSync(path.join(VOICE_TOOL, 'public', 'voice.html'), 'utf8');
+  const voiceHtmlPath = path.join(VOICE_TOOL, 'public', 'voice.html');
+  if (!fs.existsSync(voiceHtmlPath)) {
+    console.log('## 语音图形界面');
+    console.log('  SKIP  voice-tool 不在仓库内（独立外部工具），跳过其静态检查');
+  } else {
+    const voice = fs.readFileSync(voiceHtmlPath, 'utf8');
   const ids = [...voice.matchAll(/\sid="([A-Za-z0-9_-]+)"/g)].map((m) => m[1]);
   const dups = [...new Set(ids.filter((v, i) => ids.indexOf(v) !== i))];
   ok(dups.length === 0, 'voice.html ID 唯一', dups.length ? `重复：${dups.join(', ')}` : `共 ${ids.length} 个`);
@@ -63,6 +134,7 @@ console.log('## 语音图形界面的音量控件');
   const scripts = [...voice.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
   try { new Function(scripts[0]); ok(true, 'voice.html 前端 JS 可解析'); }
   catch (e) { ok(false, 'voice.html 前端 JS 可解析', e.message); }
+  }
 }
 
 console.log('## fixture mock 覆盖');

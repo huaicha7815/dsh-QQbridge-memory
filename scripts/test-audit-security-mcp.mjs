@@ -5,6 +5,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { test } from 'node:test';
 import { z } from 'zod';
+import { apiErrorFromResponse } from '../src/mcp-api-error.mjs';
 
 function loadWebTools(safeFetch) {
   const tools = new Map();
@@ -91,6 +92,8 @@ function loadSnowlumaTools(fetchImpl, fixtureConfig = null) {
     path,
     fs: fixtureFs,
     SENSITIVE_RE: { test: () => false },
+    // mcp-snowluma-safe.js 的 import 在上方被整段剥掉，这里补上它依赖的纯函数。
+    apiErrorFromResponse,
     serializeModelData: (value) => JSON.stringify(value),
   });
   return async (name, arguments_ = {}) => {

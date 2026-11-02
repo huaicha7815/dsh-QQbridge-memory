@@ -59,7 +59,7 @@
 | 机制 | 位置 | 行为 |
 | --- | --- | --- |
 | 只监听回环 | `server.listen(port, '127.0.0.1')` | 永不绑 `0.0.0.0` |
-| 令牌门 | 请求最前面 | **所有**路由（读+写）都要 `x-console-token` 或 `?token=`；未配置时启动自动生成 192 bit 随机值 |
+| 令牌门 | 请求最前面 | 页面引导（GET `/`、`/galaxy`、`/galaxy/`）接受 `?token=`；API 只接受 `x-console-token` header；非 GET 额外校验 `Sec-Fetch-Site`/Origin；未配置时启动自动生成 192 bit 随机值 |
 | 定长比较 | `crypto.timingSafeEqual` | 比较前先比长度，避免 `!==` 短路带来的时延侧信道 |
 | Host 校验 | 请求最前面 | Host 必须是 `127.0.0.1:<port>` / `localhost:<port>` / `[::1]:<port>`，否则 403（DNS rebinding 硬化） |
 | CSRF | 非 GET 请求 | 必须 `content-type: application/json`；若带 `Origin`，其 host 必须等于本机 |

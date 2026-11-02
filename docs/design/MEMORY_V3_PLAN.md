@@ -1403,3 +1403,15 @@ bridge.js:  11955 → 11537 行（-418）
 
 - `scripts/test-routes-inject.mjs`：mock 依赖后调用 39 个端点 handler，断言不抛 `ReferenceError`（已进每日自检）；
 - `verify-claims.cjs`：逐符号核对 bridge 调用点是否真的传了参数。
+
+
+## 附：情绪检索通道（与心情页的集成）
+
+记忆库与「情绪与关系状态层」的集成只有两条边，边界清晰：
+
+1. **写入侧标注**：事件带 `emotionType` → `emotionAnnotation()` 生成 `valence/arousal` 字段（未知类型不标注、越界先钳制）；
+2. **读取侧召回**：`store.search(query, { emotion })` 与主检索并行，只填空位、最多补 2 条、受 perDay/perWho 上限；默认不传 emotion 时行为与旧版完全一致。
+
+`crossSessionPolicy` 同时约束内容与情绪召回（isolated 只召回本会话）；agent 的 `memory-inspect` 管理字段始终 session-only。
+
+完整设计见 [MOOD-RELATIONSHIP.md](MOOD-RELATIONSHIP.md)。

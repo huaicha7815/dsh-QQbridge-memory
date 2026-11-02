@@ -1,0 +1,8 @@
+# 生成物固定 LF：Windows core.autocrlf=true 会把 worktree 改成 CRLF，
+# 让「重新生成后内容相同、--check 却喊过期」变成假失败。
+docs/ROUTES.md text eol=lf
+plugins/qq-agent-presets/presets/*.patch.yml text eol=lf
+public/console.html text eol=lf
+public/console.css text eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf

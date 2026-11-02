@@ -7,6 +7,13 @@
 
 ---
 
+- `docs/design/MOOD-RELATIONSHIP.md`：情绪与关系状态层（模块边界、数据结构、事件表、与记忆库的集成边界、测试清单）。
+
+## 发布
+
+- `docs/guides/RELEASE-SMOKE.md`：发布环境人工验收记录模板（浏览器/ACL/TTS/外部集成/export/tag）。
+- `scripts/release-preflight.mjs`：发布前只读检查（HEAD/clean/忽略规则/批处理行尾/ROUTES/route audit/daily/audit），不 tag 不 push。
+
 ## 一、顶层布局
 
 ```

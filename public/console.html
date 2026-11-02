@@ -18,1856 +18,7 @@
   document.documentElement.dataset.theme = theme;
 })();
 </script>
-<style>
-:root {
-  /* 基础面 */
-  --bg:#f7f8fb;
-  --surface:#fff;
-  --surface-subtle:#fafbfe;
-  --surface-sunken:#f8f9fc;
-  --surface-hover:#f5f6fa;
-  --surface-chip:#f6f8fc;
-  --surface-chip-strong:#e9edf5;
-  --surface-open:#fafbff;
-  --card:#fff;
-  --topbar-bg:rgba(255,255,255,.96);
-  --save-bar-bg:#f3f6fff5;
-  --overlay:#202e4966;
-  /* 边框 */
-  --card-border:#e4e9f1;
-  --border:#dfe4ed;
-  --border-input:#dce2ec;
-  --border-chip:#e1e6ef;
-  --border-strong:#d1d8e5;
-  --border-dashed:#e0e6ef;
-  --border-subtle:#edf0f5;
-  /* 文字 */
-  --text:#202635;
-  --text-strong:#293044;
-  --text-input:#283347;
-  --text-secondary:#5f6a7d;
-  --label:#566174;
-  --muted:#5d6878;
-  --muted-soft:#828da1;
-  --placeholder:#929bad;
-  --icon:#77839a;
-  --eyebrow:#8995af;
-  --code-fg:#596b92;
-  --code-fg-strong:#455b8b;
-  --pre-fg:#626f83;
-  /* 品牌强调色 */
-  --accent:#4d6bfe;
-  --accent-hover:#405de5;
-  --accent-border:#4d6bfe;
-  --accent-soft-bg:#edf1ff;
-  --accent-soft-bg-active:#f2f5ff;
-  --accent-soft-fg:#405ee6;
-  --accent-soft-fg-muted:#687cb9;
-  --accent-border-soft:#c8d4ff;
-  --accent-border-soft-hover:#bdc8e9;
-  --accent-border-active:#7c92ff;
-  --accent-border-hover:#98aaff;
-  --accent-border-focus:#7e96ff;
-  --accent-ring:#4d6bfe0c;
-  /* 语义状态 */
-  --danger:#fff5f4;
-  --danger-border:#f1d4d1;
-  --danger-hover-bg:#ffebe8;
-  --err:#bd3b3b;
-  --ok:#168467;
-  --pill-blue-bg:#edf1ff;
-  --pill-blue-fg:#435de0;
-  --pill-green-bg:#eaf7f1;
-  --pill-green-fg:#22775f;
-  --pill-red-bg:#fff0ed;
-  --pill-red-fg:#b64a3e;
-  --warn-bg:#fff8ee;
-  --warn-border:#f3d6ad;
-  --warn-fg:#8e652a;
-  --warn-fg-strong:#b47720;
-  --dot-idle:#86a19a;
-  --dot-offline:#a1aab9;
-  /* 其它 */
-  --focus-ring:#a7b5ff;
-  --focus-ring-modal:#b4c3ff;
-  --toast-bg:#27334a;
-  --toast-fg:#fff;
-  --shadow-card:0 1px 2px #172d5108,0 10px 28px #172d5108;
-  --shadow-md:0 4px 15px #293b7410;
-  --shadow-pop:0 15px 45px #26366b1c;
-  --shadow-modal:0 24px 80px #172d5133;
-  --shadow-log:0 6px 30px #23365a26;
-  /* 背景点缀 */
-  --decor-a:#4d6bfe14;
-  --decor-b:#7c5cff0f;
-  --radius:16px;
-  color-scheme:light
-}
-* {
-  box-sizing:border-box
-}
-html {
-  scroll-behavior:smooth;
-  scroll-padding-top:90px
-}
-body {
-  margin:0;
-  background:var(--bg);
-  color:var(--text);
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
-  font-size:14px;
-  line-height:1.65
-}
-button,input,textarea,select {
-  font:inherit
-}
-button,a,input,textarea,select,summary {
-  -webkit-tap-highlight-color:transparent
-}
-button {
-  cursor:pointer
-}
-button:disabled {
-  opacity:.5;
-  cursor:not-allowed
-}
-button,a,input,textarea,select,summary {
-  outline-offset:4px
-}
-:focus-visible {
-  outline:3px solid var(--focus-ring)
-}
-[hidden] {
-  display:none!important
-}
-a {
-  color:var(--accent);
-  text-decoration:none
-}
-p {
-  margin:0
-}
-button {
-  background:var(--surface);
-  border:1px solid var(--border);
-  border-radius:9px;
-  color:var(--text);
-  padding:9px 15px;
-  transition:background .15s,border-color .15s,color .15s
-}
-button:hover {
-  background:var(--surface-hover);
-  border-color:var(--accent-border-soft-hover)
-}
-button.active,.primary {
-  background:var(--accent);
-  border-color:var(--accent);
-  color:#fff
-}
-button.danger {
-  background:var(--danger);
-  border-color:var(--danger-border);
-  color:var(--err)
-}
-button.danger:hover {
-  background:var(--danger-hover-bg)
-}
-button.small {
-  font-size:12px;
-  padding:7px 11px
-}
-button.planned {
-  border-style:dashed;
-  color:var(--muted)
-}
-.sidebar {
-  position:fixed;
-  inset:0 auto 0 0;
-  width:234px;
-  background:var(--surface);
-  border-right:1px solid var(--card-border);
-  padding:32px 18px 20px;
-  display:flex;
-  flex-direction:column;
-  z-index:20;
-  overflow-y:auto
-}
-.brand {
-  display:flex;
-  align-items:center;
-  gap:11px;
-  padding:0 10px 24px;
-  color:var(--text-strong);
-  font-size:21px;
-  letter-spacing:-.6px;
-  font-weight:700;
-  line-height:1.3
-}
-.brand small {
-  display:block;
-  color:var(--muted);
-  font-size:10px;
-  font-weight:400;
-  letter-spacing:.2px;
-  margin-top:5px
-}
-.brand-mark {
-  position:relative;
-  font-size:35px;
-  color:var(--accent);
-  font-weight:650;
-  line-height:1;
-  letter-spacing:-6px;
-  width:32px
-}
-.brand-mark span {
-  font-size:20px;
-  position:absolute;
-  right:0;
-  top:0
-}
-.nav-label {
-  font-size:10px;
-  letter-spacing:1.2px;
-  color:var(--muted-soft);
-  margin:22px 14px 8px
-}
-.sidebar>.nav-label {
-  margin-top:10px
-}
-.nav-item {
-  border:0;
-  background:transparent;
-  display:flex;
-  align-items:center;
-  gap:12px;
-  width:100%;
-  padding:11px 14px;
-  margin:3px 0;
-  text-align:left;
-  font-size:13px;
-  border-radius:9px;
-  color:var(--text-secondary);
-  white-space:nowrap
-}
-.nav-item:hover {
-  background:var(--surface-hover)
-}
-.nav-item.active {
-  background:var(--accent-soft-bg);
-  color:var(--accent-soft-fg);
-  font-weight:600
-}
-.nav-icon {
-  width:18px;
-  text-align:center;
-  font-size:19px;
-  line-height:1;
-  font-weight:400
-}
-.nav-count,.nav-note {
-  margin-left:auto;
-  font-size:10px;
-  color:var(--muted-soft)
-}
-.nav-count {
-  background:var(--surface-chip-strong);
-  padding:0 6px;
-  border-radius:5px;
-  min-width:20px;
-  text-align:center
-}
-.sidebar-bottom {
-  border-top:1px solid var(--card-border);
-  margin:30px 10px 0;
-  padding-top:20px;
-  font-size:12px;
-  color:var(--text-secondary);
-  margin-top:auto
-}
-.sidebar-bottom small {
-  display:block;
-  font-size:10px;
-  color:var(--muted-soft);
-  margin:4px 0 0 14px
-}
-.local-dot {
-  display:inline-block;
-  width:6px;
-  height:6px;
-  background:var(--dot-idle);
-  border-radius:50%;
-  margin-right:8px
-}
-.workspace {
-  margin-left:234px;
-  min-width:0
-}
-.topbar {
-  height:76px;
-  border-bottom:1px solid var(--card-border);
-  background:var(--topbar-bg);
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  padding:0 40px;
-  gap:16px
-}
-.breadcrumb {
-  font-size:12px;
-  color:var(--muted-soft);
-  display:flex;
-  gap:13px
-}
-.breadcrumb span:last-child {
-  color:var(--text-secondary)
-}
-.topbar-actions {
-  display:flex;
-  align-items:center;
-  gap:14px
-}
-.status-badge {
-  font-size:12px;
-  color:var(--muted);
-  display:flex;
-  align-items:center;
-  gap:7px
-}
-.status-badge:before {
-  content:"";
-  width:6px;
-  height:6px;
-  background:var(--dot-offline);
-  border-radius:50%
-}
-.status-badge.online:before {
-  background:var(--ok)
-}
-.status-badge.offline:before {
-  background:var(--err)
-}
-.icon-button {
-  font-size:23px;
-  border:1px solid var(--card-border);
-  width:34px;
-  height:34px;
-  padding:0;
-  line-height:1;
-  border-radius:9px;
-  color:var(--icon)
-}
-main {
-  padding:38px 40px 20px;
-  max-width:1514px;
-  margin:auto
-}
-.page-heading {
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:24px;
-  margin-bottom:30px
-}
-.eyebrow {
-  color:var(--eyebrow);
-  font-size:10px;
-  letter-spacing:2px;
-  font-weight:600;
-  margin-bottom:10px
-}
-h1 {
-  font-size:29px;
-  font-weight:600;
-  letter-spacing:-.9px;
-  line-height:1.4;
-  margin:0 0 9px
-}
-.page-heading p {
-  font-size:13px;
-  color:var(--muted)
-}
-.search-wrap {
-  position:relative;
-  flex:0 0 238px
-}
-.search-wrap input {
-  background:var(--surface);
-  padding:10px 14px;
-  border-radius:10px;
-  font-size:12px
-}
-.search-results {
-  position:absolute;
-  right:0;
-  top:48px;
-  width:360px;
-  max-width:80vw;
-  max-height:420px;
-  overflow:auto;
-  background:var(--surface);
-  border:1px solid var(--card-border);
-  padding:7px;
-  border-radius:12px;
-  box-shadow:var(--shadow-pop);
-  z-index:50
-}
-.search-results button {
-  display:block;
-  text-align:left;
-  width:100%;
-  border:0;
-  font-size:12px;
-  padding:10px
-}
-.search-results button small {
-  display:block;
-  color:var(--muted);
-  font-size:11px
-}
-.search-results p {
-  padding:15px;
-  color:var(--muted);
-  font-size:12px
-}
-.overview-summary {
-  display:grid;
-  grid-template-columns:repeat(4,minmax(0,1fr));
-  gap:0;
-  background:var(--surface);
-  border:1px solid var(--card-border);
-  border-radius:var(--radius);
-  margin-bottom:24px;
-  padding:23px 0
-}
-.metric {
-  padding:0 26px;
-  border:0;
-  border-right:1px solid var(--card-border);
-  background:transparent;
-  border-radius:0;
-  text-align:left;
-  min-width:0
-}
-.metric:last-child {
-  border:0
-}
-.metric>span {
-  font-size:12px;
-  color:var(--muted);
-  display:block
-}
-.metric strong {
-  display:block;
-  font-size:25px;
-  line-height:1.5;
-  margin:8px 0 3px;
-  font-weight:600;
-  letter-spacing:-.5px
-}
-.metric small {
-  display:block;
-  font-size:11px;
-  color:var(--muted-soft)
-}
-.metric-link:hover {
-  background:var(--surface-hover)
-}
-.metric-link small span {
-  float:right;
-  color:var(--accent)
-}
-#metricMode {
-  font-size:22px
-}
-.grid {
-  display:grid;
-  grid-template-columns:repeat(2,minmax(0,1fr));
-  gap:22px;
-  align-items:start
-}
-.card {
-  background:var(--card);
-  border:1px solid var(--card-border);
-  border-radius:var(--radius);
-  padding:26px;
-  min-width:0;
-  overflow-wrap:anywhere
-}
-.span-all {
-  grid-column:1/-1
-}
-.card h2 {
-  font-size:16px;
-  font-weight:600;
-  margin:0 0 20px;
-  display:flex;
-  align-items:center;
-  gap:8px;
-  letter-spacing:-.2px
-}
-.card h2:after {
-  content:attr(data-note);
-  font-size:11px;
-  font-weight:400;
-  margin-left:auto;
-  color:var(--muted)
-}
-.card h3 {
-  font-size:14px
-}
-.mode-row {
-  display:grid;
-  grid-template-columns:repeat(4,minmax(0,1fr));
-  gap:12px
-}
-.mode-row button {
-  display:flex;
-  flex-direction:column;
-  position:relative;
-  padding:18px 16px;
-  text-align:left;
-  min-height:99px;
-  border-radius:12px;
-  background:var(--surface);
-  border-color:var(--border)
-}
-.mode-row strong {
-  font-weight:600;
-  font-size:14px;
-  line-height:1.6
-}
-.mode-row small {
-  font-size:11px;
-  color:var(--muted);
-  margin-top:6px;
-  line-height:1.5
-}
-.mode-row button.active {
-  background:var(--accent-soft-bg-active);
-  border-color:var(--accent-border-active);
-  color:var(--accent-soft-fg)
-}
-.mode-row button.active small {
-  color:var(--accent-soft-fg-muted)
-}
-.mode-indicator {
-  position:absolute;
-  right:12px;
-  top:14px;
-  width:12px;
-  height:12px;
-  border:1px solid var(--border-strong);
-  border-radius:50%
-}
-.active .mode-indicator {
-  border:4px solid var(--accent);
-  background:var(--surface)
-}
-.mode-row button:hover {
-  border-color:var(--accent-border-hover)
-}
-.row {
-  display:flex;
-  align-items:center;
-  flex-wrap:wrap;
-  gap:10px;
-  min-width:0
-}
-.row>* {
-  min-width:0;
-  max-width:100%
-}
-.row label {
-  margin:6px 0
-}
-.row input[type=text],.row input[type=search] {
-  flex:1 1 180px
-}
-.row select {
-  flex-shrink:1
-}
-.meta,.inline-tip {
-  font-size:12px;
-  color:var(--muted);
-  line-height:1.8
-}
-.meta {
-  margin-top:8px
-}
-.ok {
-  color:var(--ok)
-}
-.err {
-  color:var(--err)
-}
-label {
-  display:block;
-  font-size:12px;
-  color:var(--label);
-  margin:17px 0 7px
-}
-input[type=text],input[type=search],input[type=password],input[type=number],textarea,select {
-  background:var(--surface);
-  border:1px solid var(--border-input);
-  border-radius:8px;
-  padding:9px 11px;
-  color:var(--text-input);
-  width:100%;
-  max-width:100%;
-  font-size:13px;
-  min-width:0;
-  transition:border-color .15s,box-shadow .15s
-}
-input:focus,textarea:focus,select:focus {
-  border-color:var(--accent-border-focus);
-  box-shadow:0 0 0 3px var(--accent-ring)
-}
-input::placeholder,textarea::placeholder {
-  color:var(--placeholder)
-}
-textarea {
-  resize:vertical;
-  min-height:100px;
-  line-height:1.7;
-  font-family:inherit
-}
-input[type=checkbox] {
-  accent-color:var(--accent);
-  width:16px;
-  height:16px;
-  flex-shrink:0;
-  cursor:pointer
-}
-input[type=number] {
-  font-variant-numeric:tabular-nums
-}
-code {
-  font-family:Consolas,"SFMono-Regular",monospace;
-  font-size:.94em;
-  color:var(--code-fg)
-}
-pre {
-  background:var(--surface-sunken);
-  border:1px solid var(--border-subtle);
-  border-radius:10px;
-  padding:16px;
-  font-family:Consolas,"Microsoft YaHei",monospace;
-  font-size:12px;
-  line-height:1.8;
-  max-height:300px;
-  overflow:auto;
-  white-space:pre-wrap;
-  overflow-wrap:anywhere;
-  margin:8px 0 0;
-  color:var(--pre-fg)
-}
-#activity {
-  min-height:154px;
-  max-height:260px;
-  margin:0
-}
-#section-activity {
-  grid-column:1/-1;
-  order:3
-}
-#section-mode {
-  order:0
-}
-#section-silent {
-  grid-column:1/-1;
-  order:2;
-  display:grid;
-  grid-template-columns:1fr auto;
-  gap:8px 20px;
-  padding-top:20px;
-  padding-bottom:20px
-}
-#section-silent h2 {
-  margin:0;
-  align-self:center
-}
-#section-silent .meta {
-  grid-column:1/-1;
-  margin:0
-}
-#section-silent .row {
-  grid-column:2;
-  grid-row:1
-}
-.tag {
-  display:inline-block;
-  background:var(--surface-chip);
-  border:1px solid var(--border-chip);
-  border-radius:30px;
-  padding:8px 18px;
-  margin:4px;
-  cursor:pointer;
-  font-size:13px
-}
-.tag.active {
-  background:var(--accent-soft-bg);
-  border-color:var(--accent-border-soft);
-  color:var(--accent-soft-fg)
-}
-.divider {
-  border-top:1px solid var(--card-border);
-  margin:24px 0
-}
-.settings-group {
-  border:1px solid var(--card-border);
-  border-radius:11px;
-  margin-top:14px;
-  background:var(--surface)
-}
-.settings-group summary {
-  padding:16px 18px;
-  color:var(--text-secondary);
-  font-size:13px;
-  font-weight:500;
-  cursor:pointer
-}
-.settings-group[open] summary {
-  border-bottom:1px solid var(--card-border);
-  background:var(--surface-open);
-  border-radius:11px 11px 0 0
-}
-.settings-content {
-  padding:8px 20px 20px
-}
-.settings-content>.row {
-  padding:10px 0;
-  border-bottom:1px solid var(--border-subtle)
-}
-.settings-content>.row:last-child {
-  border-bottom:0
-}
-.settings-content>.row label {
-  flex-basis:100px!important
-}
-.settings-content>.row>.meta {
-  flex-basis:180px!important
-}
-.settings-content>.row input[type=number] {
-  min-width:80px
-}
-summary {
-  cursor:pointer
-}
-.save-bar {
-  position:sticky;
-  bottom:12px;
-  margin-top:20px;
-  padding:12px 18px;
-  background:var(--save-bar-bg);
-  border:1px solid var(--accent-border-soft);
-  border-radius:12px;
-  z-index:5;
-  box-shadow:var(--shadow-md)
-}
-.save-bar .row {
-  margin-top:0!important
-}
-.save-bar .meta {
-  font-size:11px
-}
-.v2-tool-list {
-  display:grid;
-  grid-template-columns:repeat(auto-fit,minmax(min(265px,100%),1fr));
-  gap:10px;
-  margin-top:12px
-}
-.v2-tool-item {
-  display:flex;
-  align-items:flex-start;
-  gap:9px;
-  padding:12px;
-  margin:0;
-  background:var(--surface-subtle);
-  border:1px solid var(--border-subtle);
-  border-radius:10px;
-  font-size:12px;
-  min-width:0
-}
-.v2-tool-item input {
-  margin-top:4px
-}
-.v2-tool-item .meta {
-  display:block;
-  font-size:11px;
-  margin-top:3px
-}
-.v2-tool-item b {
-  font-family:Consolas,monospace;
-  font-size:12px;
-  font-weight:500;
-  color:var(--code-fg-strong)
-}
-table {
-  width:100%;
-  border-collapse:collapse;
-  font-size:12px;
-  margin-top:10px;
-  text-align:left
-}
-th {
-  color:var(--muted-soft);
-  font-size:11px;
-  font-weight:500;
-  background:var(--surface-sunken)
-}
-th,td {
-  padding:13px 12px;
-  border-bottom:1px solid var(--card-border);
-  vertical-align:top;
-  overflow-wrap:anywhere
-}
-td {
-  color:var(--text-secondary)
-}
-tr:last-child td {
-  border-bottom:0
-}
-.pill {
-  display:inline-block;
-  white-space:nowrap;
-  padding:3px 8px;
-  border-radius:6px;
-  font-size:10px
-}
-.pill.b {
-  background:var(--pill-blue-bg);
-  color:var(--pill-blue-fg)
-}
-.pill.g {
-  background:var(--pill-green-bg);
-  color:var(--pill-green-fg)
-}
-.pill.r {
-  background:var(--pill-red-bg);
-  color:var(--pill-red-fg)
-}
-#sessionList,#pendingList {
-  overflow:auto
-}
-.tool-log-table,.slang-scroll {
-  overflow:auto;
-  border:1px solid var(--card-border);
-  border-radius:10px;
-  margin-top:12px;
-  max-height:500px
-}
-.tool-log-table table {
-  min-width:1000px;
-  table-layout:fixed
-}
-.slang-scroll table {
-  min-width:900px
-}
-.tool-log-table thead th,.slang-scroll thead th {
-  position:sticky;
-  top:0;
-  background:var(--surface-hover);
-  z-index:1
-}
-.tool-log-cell {
-  display:inline-block;
-  max-width:320px;
-  overflow:hidden;
-  text-overflow:ellipsis;
-  white-space:nowrap;
-  vertical-align:top;
-  cursor:pointer
-}
-.tool-log-cell.expanded {
-  white-space:pre-wrap;
-  overflow-wrap:anywhere
-}
-.slang-tabs {
-  display:flex;
-  gap:5px;
-  border-bottom:1px solid var(--card-border);
-  margin:22px 0 18px
-}
-.slang-tab {
-  border:0;
-  border-radius:0;
-  background:transparent;
-  padding:10px 18px;
-  color:var(--muted);
-  font-size:13px
-}
-.slang-tab.active {
-  color:var(--accent);
-  border-bottom:2px solid var(--accent);
-  background:transparent
-}
-.slang-panel {
-  display:none
-}
-.slang-panel.active {
-  display:block
-}
-.empty-state {
-  padding:38px 20px;
-  text-align:center;
-  border:1px dashed var(--border-dashed);
-  border-radius:12px;
-  color:var(--muted-soft);
-  font-size:12px
-}
-.empty-state strong {
-  color:var(--text-secondary);
-  display:block;
-  font-weight:500;
-  font-size:14px;
-  margin-bottom:6px
-}
-.modal-overlay {
-  position:fixed;
-  inset:0;
-  background:var(--overlay);
-  backdrop-filter:blur(3px);
-  display:none;
-  align-items:center;
-  justify-content:center;
-  z-index:1000
-}
-.modal-overlay.open {
-  display:flex
-}
-.modal {
-  background:var(--surface);
-  border:1px solid var(--border);
-  border-radius:18px;
-  width:min(680px,92vw);
-  max-height:86vh;
-  overflow:auto;
-  padding:28px;
-  box-shadow:var(--shadow-modal)
-}
-.modal h3 {
-  margin:0 0 12px;
-  font-size:18px
-}
-.modal label {
-  margin-top:14px
-}
-.modal .row {
-  margin-top:20px
-}
-.overview-footnote {
-  margin-top:18px;
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  font-size:12px;
-  color:var(--muted);
-  gap:12px
-}
-.text-button {
-  border:0;
-  color:var(--accent);
-  padding:5px 0;
-  background:transparent;
-  font-size:12px
-}
-.page-footer {
-  display:flex;
-  justify-content:space-between;
-  gap:12px;
-  font-size:10px;
-  color:var(--muted-soft);
-  margin-top:38px;
-  border-top:1px solid var(--card-border);
-  padding-top:18px
-}
-.connection-alert {
-  border:1px solid var(--warn-border);
-  background:var(--warn-bg);
-  color:var(--warn-fg);
-  padding:14px 18px;
-  border-radius:10px;
-  margin-bottom:20px;
-  font-size:13px
-}
-.toast {
-  position:fixed;
-  bottom:24px;
-  left:50%;
-  transform:translateX(-50%);
-  max-width:calc(100vw - 40px);
-  padding:12px 22px;
-  background:var(--toast-bg);
-  color:var(--toast-fg);
-  box-shadow:var(--shadow-log);
-  border-radius:12px;
-  z-index:1100;
-  font-size:13px
-}
-.sr-only {
-  position:absolute;
-  width:1px;
-  height:1px;
-  padding:0;
-  margin:-1px;
-  overflow:hidden;
-  clip:rect(0,0,0,0);
-  white-space:nowrap;
-  border:0
-}
-.skip-link {
-  position:fixed;
-  top:-100px;
-  left:20px;
-  z-index:2000;
-  background:var(--surface);
-  padding:12px 20px;
-  border:2px solid var(--accent);
-  border-radius:10px
-}
-.skip-link:focus {
-  top:10px
-}
-.search-highlight {
-  outline:3px solid var(--focus-ring-modal)!important;
-  outline-offset:5px
-}
-.dirty-hint {
-  font-size:11px;
-  color:var(--warn-fg-strong);
-  margin-left:auto
-}
-@media(min-width:1500px) {
-  main {
-    padding-top:46px
-  }
-  .mode-row button {
-    padding:22px;
-    min-height:112px
-  }
-  .card {
-    padding:30px
-  }
-}
-@media(max-width:1180px) {
-  .sidebar {
-    width:210px;
-    padding-left:12px;
-    padding-right:12px
-  }
-  .workspace {
-    margin-left:210px
-  }
-  .topbar {
-    padding:0 26px
-  }
-  main {
-    padding:28px 26px 20px
-  }
-  .page-heading {
-    align-items:flex-start;
-    flex-direction:column;
-    gap:18px
-  }
-  .search-wrap {
-    flex:none;
-    width:100%;
-    max-width:420px
-  }
-  .search-results {
-    left:0;
-    width:100%
-  }
-  .mode-row {
-    grid-template-columns:repeat(2,minmax(0,1fr))
-  }
-  .metric {
-    padding:0 17px
-  }
-  .metric strong {
-    font-size:23px
-  }
-  #metricMode {
-    font-size:18px
-  }
-  .card {
-    padding:22px
-  }
-  .sidebar-bottom {
-    padding-top:15px
-  }
-}
-@media(max-width:760px) {
-  .sidebar {
-    position:relative;
-    width:100%;
-    padding:18px 16px 8px;
-    border-right:0;
-    border-bottom:1px solid var(--card-border);
-    overflow:visible;
-    display:block
-  }
-  .brand {
-    padding:0 4px 14px;
-    font-size:20px
-  }
-  .brand small {
-    font-size:10px
-  }
-  .brand-mark {
-    font-size:30px
-  }
-  #mainNav {
-    display:flex;
-    gap:5px;
-    overflow-x:auto;
-    padding-bottom:6px
-  }
-  .nav-label,.sidebar-bottom,.nav-icon,.nav-note,.nav-count {
-    display:none
-  }
-  .nav-item {
-    width:auto;
-    flex:none;
-    padding:9px 12px;
-    font-size:12px;
-    margin:0
-  }
-  .workspace {
-    margin-left:0
-  }
-  .topbar {
-    height:54px;
-    padding:0 20px
-  }
-  .breadcrumb {
-    font-size:11px
-  }
-  .status-badge {
-    font-size:10px
-  }
-  .topbar-actions {
-    gap:8px
-  }
-  .icon-button {
-    width:28px;
-    height:28px;
-    font-size:20px
-  }
-  main {
-    padding:26px 18px 18px
-  }
-  .page-heading {
-    margin-bottom:24px
-  }
-  h1 {
-    font-size:25px
-  }
-  .page-heading p {
-    font-size:12px
-  }
-  .eyebrow {
-    font-size:9px
-  }
-  .search-wrap {
-    max-width:none
-  }
-  .overview-summary {
-    grid-template-columns:repeat(2,minmax(0,1fr));
-    padding:0;
-    margin-bottom:18px
-  }
-  .metric {
-    padding:18px;
-    border-bottom:1px solid var(--card-border);
-    min-height:122px
-  }
-  .metric:nth-child(2) {
-    border-right:0
-  }
-  .metric:nth-child(3) {
-    border-bottom:0
-  }
-  .metric strong {
-    font-size:24px;
-    margin:5px 0 2px
-  }
-  #metricMode {
-    font-size:20px
-  }
-  .metric small {
-    font-size:10px
-  }
-  .grid {
-    grid-template-columns:1fr;
-    gap:18px
-  }
-  .card {
-    padding:20px;
-    border-radius:14px
-  }
-  .card h2 {
-    font-size:15px;
-    margin-bottom:16px
-  }
-  .mode-row {
-    gap:10px
-  }
-  .mode-row button {
-    padding:15px 12px;
-    min-height:93px
-  }
-  .mode-row strong {
-    font-size:13px
-  }
-  .mode-row small {
-    font-size:10px
-  }
-  .mode-indicator {
-    right:8px;
-    top:9px;
-    width:10px;
-    height:10px
-  }
-  .active .mode-indicator {
-    border-width:3px
-  }
-  #section-silent {
-    display:block
-  }
-  #section-silent h2 {
-    margin-bottom:14px
-  }
-  #section-silent .meta {
-    margin-top:10px
-  }
-  .row {
-    gap:8px
-  }
-  .row>.meta {
-    flex-basis:100%!important
-  }
-  .row>label[style*="flex:1"] {
-    flex-basis:130px!important
-  }
-  .settings-content {
-    padding:8px 12px 16px
-  }
-  .settings-group summary {
-    padding:14px;
-    font-size:12px
-  }
-  .settings-content>.row {
-    gap:10px
-  }
-  .settings-content>.row label {
-    flex-basis:130px!important
-  }
-  .save-bar {
-    position:static;
-    padding:12px
-  }
-  .save-bar .meta {
-    font-size:11px
-  }
-  .overview-footnote {
-    align-items:flex-start;
-    flex-direction:column;
-    gap:4px
-  }
-  .page-footer {
-    margin-top:26px;
-    font-size:9px;
-    flex-wrap:wrap
-  }
-  th,td {
-    padding:10px
-  }
-  #sessionList table {
-    min-width:540px
-  }
-  #pendingList table {
-    min-width:420px
-  }
-  .slang-tabs {
-    gap:0
-  }
-  .slang-tab {
-    padding:10px 14px
-  }
-  .modal {
-    padding:22px
-  }
-  .search-results {
-    max-width:100%
-  }
-  .tool-log-cell {
-    max-width:100%
-  }
-}
-@media(prefers-reduced-motion:reduce) {
-  html {
-    scroll-behavior:auto
-  }
-  * {
-    transition:none!important
-  }
-}
-.primary:hover {
-  background:var(--accent-hover);
-  border-color:var(--accent-hover);
-  color:#fff
-}
-[data-theme="dark"] {
-  --bg:#0d1016;
-  --surface:#161b24;
-  --surface-subtle:#191f29;
-  --surface-sunken:#12161e;
-  --surface-hover:#1e2532;
-  --surface-chip:#1c222d;
-  --surface-chip-strong:#242b39;
-  --surface-open:#1a2029;
-  --card:#161b24;
-  --topbar-bg:rgba(17,22,30,.9);
-  --save-bar-bg:rgba(23,29,42,.92);
-  --overlay:#04070ccc;
-  --card-border:#252d3c;
-  --border:#2a3342;
-  --border-input:#2e3748;
-  --border-chip:#282f3e;
-  --border-strong:#3b465c;
-  --border-dashed:#2c3444;
-  --border-subtle:#212836;
-  --text:#e7ebf3;
-  --text-strong:#f3f6fb;
-  --text-input:#e3e8f2;
-  --text-secondary:#aeb8ca;
-  --label:#9ca7ba;
-  --muted:#8d98ac;
-  --muted-soft:#7e8899;
-  --placeholder:#6d7789;
-  --icon:#95a1b6;
-  --eyebrow:#7f8ca4;
-  --code-fg:#9fb2da;
-  --code-fg-strong:#adc0e8;
-  --pre-fg:#9ca8bd;
-  --accent:#6b86ff;
-  --accent-hover:#8098ff;
-  --accent-border:#6b86ff;
-  --accent-soft-bg:#1b2440;
-  --accent-soft-bg-active:#212b4c;
-  --accent-soft-fg:#aabaff;
-  --accent-soft-fg-muted:#8b9bd4;
-  --accent-border-soft:#35426e;
-  --accent-border-soft-hover:#3d4b7d;
-  --accent-border-active:#5468c9;
-  --accent-border-hover:#6274d6;
-  --accent-border-focus:#6b86ff;
-  --accent-ring:#6b86ff1f;
-  --danger:#2b1a1c;
-  --danger-border:#4b2b2e;
-  --danger-hover-bg:#3a2120;
-  --err:#ff8f84;
-  --ok:#4fd1a5;
-  --pill-blue-bg:#1b2440;
-  --pill-blue-fg:#aabaff;
-  --pill-green-bg:#12291f;
-  --pill-green-fg:#5fd8ad;
-  --pill-red-bg:#2c1a1a;
-  --pill-red-fg:#ff9a91;
-  --warn-bg:#2a2113;
-  --warn-border:#4d3c1c;
-  --warn-fg:#e9b96c;
-  --warn-fg-strong:#f2c67a;
-  --dot-idle:#4c5a57;
-  --dot-offline:#4b5466;
-  --focus-ring:#5f7cff;
-  --focus-ring-modal:#8098ff;
-  --toast-bg:#e9edf6;
-  --toast-fg:#111623;
-  --shadow-card:0 1px 2px #0006,0 14px 34px #00000047;
-  --shadow-md:0 4px 18px #00000059;
-  --shadow-pop:0 18px 50px #00000073;
-  --shadow-modal:0 28px 90px #000000a6;
-  --shadow-log:0 8px 34px #0000006b;
-  --decor-a:#4d6bfe33;
-  --decor-b:#7c5cff29;
-  color-scheme:dark
-}
-
-/* ================= 背景动效（纯装饰，不参与布局） ================= */
-.bg-decor {
-  position:fixed;
-  inset:0;
-  z-index:0;
-  overflow:hidden;
-  pointer-events:none
-}
-.bg-decor::before,
-.bg-decor::after {
-  content:"";
-  position:absolute;
-  border-radius:50%
-}
-.bg-decor::before {
-  width:58vmax;
-  height:58vmax;
-  left:-16vmax;
-  top:-20vmax;
-  background:radial-gradient(circle at 50% 50%,var(--decor-a),transparent 68%);
-  animation:decorDriftA 46s ease-in-out infinite alternate
-}
-.bg-decor::after {
-  width:50vmax;
-  height:50vmax;
-  right:-18vmax;
-  top:-10vmax;
-  background:radial-gradient(circle at 50% 50%,var(--decor-b),transparent 70%);
-  animation:decorDriftB 62s ease-in-out infinite alternate
-}
-@keyframes decorDriftA {
-  from { transform:translate3d(0,0,0) scale(1) }
-  50% { transform:translate3d(3%,4%,0) scale(1.08) }
-  to { transform:translate3d(-2%,7%,0) scale(1.03) }
-}
-@keyframes decorDriftB {
-  from { transform:translate3d(0,0,0) scale(1.04) }
-  50% { transform:translate3d(-4%,3%,0) scale(1) }
-  to { transform:translate3d(2%,-3%,0) scale(1.09) }
-}
-/* 内容层必须浮在装饰层之上 */
-.workspace {
-  position:relative;
-  z-index:1
-}
-
-/* ================= 人格与提示词编辑 ================= */
-.layer-note {
-  border:1px solid var(--accent-border-soft);
-  background:var(--accent-soft-bg);
-  border-radius:12px;
-  padding:14px 18px;
-  margin:14px 0 6px;
-  font-size:12px;
-  color:var(--text-secondary);
-  line-height:1.9
-}
-.layer-note strong {
-  display:block;
-  color:var(--text-strong);
-  font-size:13px;
-  margin-bottom:4px
-}
-.layer-note ol {
-  margin:0;
-  padding-left:20px
-}
-.layer-note b {
-  color:var(--accent-soft-fg)
-}
-.layer-note code {
-  background:var(--surface);
-  border:1px solid var(--border-chip);
-  border-radius:5px;
-  padding:1px 6px
-}
-.persona-list {
-  display:grid;
-  grid-template-columns:repeat(auto-fill,minmax(min(230px,100%),1fr));
-  gap:10px;
-  margin:10px 0 4px
-}
-.persona-item {
-  display:flex;
-  flex-direction:column;
-  gap:5px;
-  align-items:flex-start;
-  text-align:left;
-  padding:13px 15px;
-  border-radius:11px;
-  border:1px solid var(--border-chip);
-  background:var(--surface-subtle)
-}
-.persona-item:hover {
-  border-color:var(--accent-border-hover);
-  background:var(--surface-hover)
-}
-.persona-item.active {
-  border-color:var(--accent-border-active);
-  background:var(--accent-soft-bg)
-}
-.persona-item-head {
-  display:flex;
-  align-items:center;
-  gap:8px;
-  flex-wrap:wrap
-}
-.persona-item-head strong {
-  font-size:13px;
-  color:var(--text-strong);
-  font-weight:600
-}
-.persona-item small {
-  font-size:11px;
-  color:var(--muted-soft);
-  overflow-wrap:anywhere
-}
-.persona-badge {
-  font-size:10px;
-  line-height:1.6;
-  padding:0 7px;
-  border-radius:20px;
-  background:var(--pill-green-bg);
-  color:var(--pill-green-fg)
-}
-.persona-badge.warn {
-  background:var(--warn-bg);
-  color:var(--warn-fg)
-}
-.layer-heading {
-  display:flex;
-  align-items:baseline;
-  gap:10px;
-  flex-wrap:wrap;
-  margin:30px 0 6px
-}
-.role-editor {
-  min-height:320px;
-  font-family:Consolas,"Microsoft YaHei",monospace;
-  font-size:12.5px
-}
-.code-area {
-  width:100%;
-  min-height:280px;
-  max-height:520px;
-  overflow:auto;
-  white-space:pre-wrap;
-  overflow-wrap:anywhere;
-  font-family:Consolas,"Microsoft YaHei",monospace;
-  font-size:12px;
-  line-height:1.75;
-  background:var(--surface-sunken);
-  color:var(--pre-fg);
-  border:1px solid var(--border-subtle);
-  border-radius:10px;
-  padding:14px 16px;
-  margin-top:10px;
-  resize:vertical
-}
-.code-area.editing {
-  background:var(--surface);
-  color:var(--text-input);
-  border-color:var(--accent-border-focus)
-}
-#section-silent {
-  grid-column:1/-1
-}
-
-/* ================= 主题切换控件 ================= */
-#themeToggle {
-  font-size:16px
-}
-#themeToggle[aria-pressed="true"] {
-  background:var(--accent-soft-bg);
-  border-color:var(--accent-border-soft);
-  color:var(--accent-soft-fg)
-}
-
-/* ================= 对比度与层次 ================= */
-.card {
-  box-shadow:var(--shadow-card)
-}
-.sidebar {
-  border-right-color:var(--card-border)
-}
-.metric {
-  transition:background .18s ease,box-shadow .18s ease
-}
-.metric-link:hover {
-  background:var(--surface-hover)
-}
-.metric strong {
-  letter-spacing:-.6px
-}
-.nav-item.active {
-  box-shadow:inset 3px 0 0 var(--accent)
-}
-.settings-group {
-  overflow:hidden
-}
-.settings-group summary {
-  position:relative;
-  transition:background .18s ease,color .18s ease;
-  padding-right:42px
-}
-.settings-group summary::after {
-  content:"";
-  position:absolute;
-  right:20px;
-  top:50%;
-  width:7px;
-  height:7px;
-  margin-top:-5px;
-  border-right:1.6px solid var(--muted-soft);
-  border-bottom:1.6px solid var(--muted-soft);
-  transform:rotate(45deg);
-  transition:transform .22s ease
-}
-.settings-group[open] summary::after {
-  transform:rotate(-135deg)
-}
-.settings-group[open] summary {
-  background:var(--surface-open)
-}
-.v2-tool-item {
-  transition:background .18s ease,border-color .18s ease
-}
-.v2-tool-item:hover {
-  background:var(--surface-hover)
-}
-
-/* ================= 动效 ================= */
-button,
-.nav-item,
-.tag,
-summary,
-input,
-textarea,
-select,
-.metric-link,
-.brand {
-  transition:background .18s ease,border-color .18s ease,color .18s ease,box-shadow .18s ease,transform .18s ease
-}
-button:not(.nav-item):hover:not(:disabled) {
-  transform:translateY(-1px)
-}
-button:active:not(:disabled) {
-  transform:translateY(0)
-}
-.tag:hover {
-  transform:translateY(-1px)
-}
-.card:hover {
-  border-color:var(--border)
-}
-[data-page]:not([hidden]) {
-  animation:pageIn .26s ease both
-}
-@keyframes pageIn {
-  from { opacity:0; transform:translateY(7px) }
-  to { opacity:1; transform:none }
-}
-.overview-summary,
-.page-heading {
-  animation:pageIn .3s ease both
-}
-.toast {
-  animation:toastIn .3s cubic-bezier(.22,1,.36,1) both
-}
-@keyframes toastIn {
-  from { opacity:0; transform:translate(-50%,14px) }
-  to { opacity:1; transform:translate(-50%,0) }
-}
-.modal {
-  animation:modalIn .24s cubic-bezier(.22,1,.36,1) both
-}
-@keyframes modalIn {
-  from { opacity:0; transform:translateY(12px) scale(.985) }
-  to { opacity:1; transform:none }
-}
-.search-results:not([hidden]) {
-  animation:pageIn .18s ease both
-}
-.status-badge:before {
-  transition:background .25s ease,box-shadow .25s ease
-}
-.status-badge.online:before {
-  box-shadow:0 0 0 3px var(--pill-green-bg)
-}
-.status-badge.offline:before {
-  box-shadow:0 0 0 3px var(--pill-red-bg)
-}
-@media(prefers-reduced-motion:reduce) {
-  .bg-decor::before,
-  .bg-decor::after,
-  [data-page]:not([hidden]),
-  .overview-summary,
-  .page-heading,
-  .toast,
-  .modal,
-  .search-results:not([hidden]) {
-    animation:none
-  }
-  button:not(.nav-item):hover:not(:disabled),
-  .tag:hover {
-    transform:none
-  }
-}
-
-/* ================= 令牌与花费 ================= */
-#section-usage .usage-h3 { font-size:13px; font-weight:600; color:var(--text); margin:20px 0 8px }
-#section-usage .usage-h3:first-of-type { margin-top:16px }
-#section-usage .metric strong { font-variant-numeric:tabular-nums }
-#section-usage td.num, #section-usage th.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap }
-#section-usage td.usage-key { white-space:nowrap }
-#section-usage .usage-key-button { background:none; border:0; padding:0; color:var(--accent); cursor:pointer; font:inherit }
-#section-usage .usage-key-button:hover { text-decoration:underline }
-#section-usage .usage-key-button[aria-pressed="true"] { color:var(--text-strong); font-weight:600 }
-#section-usage .usage-bar-wrap { display:flex; align-items:center; gap:8px; min-width:96px }
-#section-usage .usage-bar-track { flex:1; height:7px; border-radius:4px; background:var(--surface-chip-strong); overflow:hidden }
-#section-usage .usage-bar-fill { display:block; height:100%; border-radius:4px; background:var(--accent); min-width:2px }
-#section-usage .usage-tier { font-size:11px }
-#section-usage .row.usage-controls { margin-top:10px; gap:10px }
-#section-usage select { max-width:260px }
-#section-usage .usage-chart-controls { margin:14px 0 6px }
-#section-usage .usage-chart-controls .tag { margin:0 }
-#section-usage .usage-chart-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:10px; margin:10px 0 4px }
-#section-usage .usage-chart-head strong { font-size:20px; font-weight:600; font-variant-numeric:tabular-nums }
-#section-usage .usage-chart svg { display:block; width:100%; height:auto }
-#section-usage .usage-chart .usage-bar-peak { fill:var(--warn-fg-strong) }
-#section-usage .usage-chart .usage-bar-off { fill:var(--accent) }
-#section-usage .usage-chart .usage-bar-mixed { fill:var(--accent-hover) }
-#section-usage .usage-chart .usage-grid { stroke:var(--border-subtle); stroke-width:1 }
-#section-usage .usage-chart .usage-axis { fill:var(--muted); font-size:10px }
-#section-usage .usage-chart .usage-hit { fill:transparent; cursor:default }
-#section-usage .usage-chart .usage-hit:hover { fill:var(--surface-hover) }
-#section-usage .usage-chart .usage-col-hover { fill:var(--text-strong); opacity:.10 }
-#section-usage .usage-legend { display:flex; flex-wrap:wrap; gap:14px; margin-top:8px }
-#section-usage .usage-legend span { display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--muted) }
-#section-usage .usage-legend i { width:10px; height:10px; border-radius:3px; display:inline-block }
-#section-usage .usage-legend i.peak { background:var(--warn-fg-strong) }
-#section-usage .usage-legend i.off { background:var(--accent) }
-#section-usage .usage-legend i.mixed { background:var(--accent-hover) }
-
-/* 她的记忆（长期记忆 V3） */
-.connection-alert.ok { border-color:var(--ok-border, #2f7d4f); background:var(--ok-bg, rgba(47,125,79,.10)); color:var(--ok-fg, #2f7d4f) }
-#section-memory .memory-heading { margin:22px 0 8px; font-size:13px; letter-spacing:.04em; color:var(--muted); text-transform:none }
-.memory-list { display:flex; flex-direction:column; gap:8px; font-size:13px; line-height:1.6 }
-.memory-item, .memory-recall { padding:9px 12px; border:1px solid var(--border, rgba(128,128,128,.22)); border-radius:9px; background:var(--surface-soft, rgba(128,128,128,.05)) }
-.memory-item.is-done { opacity:.62 }
-.memory-who { display:inline-block; margin-right:6px; padding:0 7px; border-radius:6px; background:var(--accent-soft, rgba(80,120,255,.14)); font-size:11px; color:var(--accent, #4569ff) }
-.memory-when { margin-left:8px; font-size:11px; color:var(--muted) }
-.memory-sub { margin-top:4px; font-size:11px; color:var(--muted) }
-.memory-fact { padding:5px 0 5px 10px; border-left:2px solid var(--border, rgba(128,128,128,.22)) }
-.memory-empty { padding:10px 12px; font-size:12px; color:var(--muted) }
-.memory-person, .memory-done { border:none }
-.memory-person > summary, .memory-done > summary { cursor:pointer; padding:6px 0; font-size:13px }
-.memory-recall { display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap }
-.memory-query { color:var(--text-strong, inherit) }
-
-/* 今天（记忆面板顶部） */
-.mem-today { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:10px; margin-top:14px }
-.today-card { padding:11px 13px; border:1px solid var(--border, rgba(128,128,128,.22)); border-radius:11px; background:var(--surface-soft, rgba(128,128,128,.05)) }
-.today-card h5 { margin:0 0 6px; font-size:11px; letter-spacing:.08em; color:var(--muted); font-weight:600; text-transform:none }
-.today-card .tc-main { font-size:13px; line-height:1.65; color:var(--text-strong, inherit) }
-.today-card .tc-sub { margin-top:5px; font-size:11px; color:var(--muted) }
-.today-card .tc-mood { padding:4px 0; font-size:12.5px; line-height:1.6; border-bottom:1px dashed var(--border, rgba(128,128,128,.16)) }
-.today-card .tc-mood:last-child { border-bottom:none }
-.today-card .tc-mood .meta { font-size:10.5px }
-.today-card .tc-thread { padding:4px 0; font-size:12.5px; line-height:1.6 }
-.today-card .tc-thread .memory-who { font-size:10.5px }
-.today-empty { font-size:11.5px; color:var(--muted) }
-
-/* 分层记忆面板（大层可收起，小层再分） */
-.mem-layer { margin-top:14px; border:1px solid var(--border, rgba(128,128,128,.22)); border-radius:12px; background:var(--surface-soft, rgba(128,128,128,.04)); overflow:hidden }
-.mem-layer > summary { cursor:pointer; padding:12px 16px; font-size:14px; list-style:none; display:flex; align-items:center; gap:8px; user-select:none }
-.mem-layer > summary::-webkit-details-marker { display:none }
-.mem-layer > summary::before { content:'▸'; color:var(--muted); font-size:11px; transition:transform .15s }
-.mem-layer[open] > summary::before { transform:rotate(90deg) }
-.mem-layer > summary:hover { background:var(--surface-hover, rgba(128,128,128,.08)) }
-.mem-layer > .mem-sublayers { padding:0 14px 12px }
-.mem-sublayer { margin-top:8px; border-left:2px solid var(--border, rgba(128,128,128,.18)); padding-left:10px }
-.mem-sublayer > summary { cursor:pointer; padding:5px 0; font-size:13px; list-style:none }
-.mem-sublayer > summary::-webkit-details-marker { display:none }
-.mem-sublayer > summary::before { content:'· '; color:var(--muted) }
-.mem-sublayer .memory-list { margin-top:6px }
-#section-memory .memory-heading { margin:18px 0 8px; font-size:12px; letter-spacing:.04em; color:var(--muted) }
-
-/* 完整记忆库 */
-.archive-tabs { display:flex; gap:6px; flex-wrap:wrap; margin-top:12px }
-.archive-tabs button { padding:6px 12px; border-radius:8px; border:1px solid var(--border, rgba(128,128,128,.22)); background:transparent; color:var(--muted); font-size:12px; cursor:pointer }
-.archive-tabs button:hover { background:var(--surface-hover, rgba(128,128,128,.08)) }
-.archive-tabs button.active { background:var(--accent-soft, rgba(80,120,255,.16)); color:var(--accent, #4569ff); border-color:var(--accent, #4569ff) }
-.archive-layout { display:grid; grid-template-columns:210px 1fr; gap:14px; margin-top:12px }
-.archive-layout.no-side { grid-template-columns:1fr }
-.archive-sum { padding:12px 14px; border:1px solid var(--border, rgba(128,128,128,.2)); border-radius:11px; background:var(--surface-soft, rgba(128,128,128,.04)); margin-bottom:10px }
-.archive-sum h5 { margin:0 0 6px; font-size:12.5px; color:var(--text-strong, inherit) }
-.archive-sum .as-line { font-size:12.5px; line-height:1.7; padding:2px 0; color:var(--text, inherit) }
-.archive-sum .as-line .meta { font-size:10.5px }
-.archive-sum .as-empty { font-size:12px; color:var(--muted) }
-@media (max-width: 860px) { .archive-layout { grid-template-columns:1fr } }
-.archive-days { border:1px solid var(--border, rgba(128,128,128,.22)); border-radius:10px; padding:8px; max-height:680px; overflow:auto; background:var(--surface-soft, rgba(128,128,128,.04)) }
-.archive-days-title { font-size:12px; color:var(--muted); padding:4px 6px 8px }
-.archive-day-btn { display:flex; justify-content:space-between; width:100%; text-align:left; padding:6px 8px; margin-bottom:2px; border:none; background:transparent; border-radius:7px; cursor:pointer; font-size:12px; color:var(--text, inherit) }
-.archive-day-btn:hover { background:var(--surface-hover, rgba(128,128,128,.1)) }
-.archive-day-btn.active { background:var(--accent-soft, rgba(80,120,255,.16)); color:var(--accent, #4569ff) }
-.archive-day-btn span { color:var(--muted); font-size:11px }
-.archive-body { border:1px solid var(--border, rgba(128,128,128,.22)); border-radius:10px; padding:12px; max-height:680px; overflow:auto; background:var(--surface-soft, rgba(128,128,128,.03)) }
-.archive-section { margin-bottom:16px }
-.archive-section > h4 { margin:0 0 6px; font-size:12px; color:var(--muted); font-weight:600 }
-.archive-event { display:flex; gap:10px; padding:3px 0; font-size:12px; line-height:1.6; border-bottom:1px dashed var(--border, rgba(128,128,128,.14)) }
-.archive-event:last-child { border-bottom:none }
-.archive-event .ae-time { color:var(--muted); font-variant-numeric:tabular-nums; flex:0 0 46px }
-.archive-event .ae-who { flex:0 0 auto; color:var(--accent, #4569ff); max-width:90px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
-.archive-event .ae-s { flex:0 0 auto; font-size:10px; padding:0 4px; border-radius:4px; background:var(--accent-soft, rgba(80,120,255,.12)); color:var(--muted) }
-.archive-event .ae-text { flex:1; word-break:break-word }
-.archive-hit { background:rgba(255,214,0,.35); border-radius:2px }
-
-/* 记忆星图 · Atlas（深色宇宙 + 三栏） */
-#section-memory-graph { padding:0; overflow:hidden; background:#070b14 }
-#section-memory-graph .atlas { color:#c9d3e6 }
-.atlas-head { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; padding:16px 20px 12px; border-bottom:1px solid rgba(140,160,200,.14) }
-.atlas-kicker { font-size:10px; letter-spacing:.18em; color:#5f7397; text-transform:uppercase }
-.atlas-brand h2 { margin:4px 0 2px; font-size:20px; color:#e8eefb; letter-spacing:.02em }
-.atlas-brand .meta { font-size:12px; color:#8194b5 }
-.atlas-stats { display:flex; gap:26px; align-items:center; margin-top:6px }
-.atlas-stat { text-align:center; min-width:64px }
-.atlas-stat b { display:block; font-size:22px; line-height:1.15; color:#e8eefb; font-variant-numeric:tabular-nums }
-.atlas-stat span { font-size:10px; color:#6d82a4; letter-spacing:.06em }
-.atlas-actions { display:flex; gap:8px; margin-top:6px; flex-wrap:wrap }
-.atlas-actions button { background:rgba(90,140,255,.14); border:1px solid rgba(120,170,255,.28); color:#bcd0f5; padding:6px 12px; border-radius:8px; font-size:12px; cursor:pointer }
-.atlas-actions button:hover { background:rgba(90,140,255,.24) }
-.atlas-body { display:grid; grid-template-columns:212px minmax(0,1fr) 292px; gap:0; align-items:stretch; transition:grid-template-columns .18s }
-.atlas.panels-hidden .atlas-body { grid-template-columns:0 minmax(0,1fr) 0 }
-.atlas.panels-hidden .atlas-left, .atlas.panels-hidden .atlas-right { width:0; padding:0; border:none; overflow:hidden; opacity:0; pointer-events:none }
-.atlas-canvas-wrap { min-height:700px }
-.atlas.is-full { position:fixed; inset:0; z-index:2000; background:#070b14; display:flex; flex-direction:column; overflow:hidden }
-.atlas.is-full .atlas-body { flex:1; min-height:0 }
-.atlas.is-full .atlas-body { min-height:0 }
-.atlas.is-full .atlas-canvas-wrap { min-height:0; height:100% }
-.atlas.is-full #memoryGraphCanvas { height:100% !important }
-@media (max-width: 1180px) { .atlas-body { grid-template-columns:1fr } .atlas-left, .atlas-right { display:none } }
-.atlas-left { padding:16px 14px; border-right:1px solid rgba(140,160,200,.12); overflow:auto; max-height:760px }
-.atlas-caption { font-size:11px; line-height:1.7; color:#7f93b4 }
-.atlas-legend { display:flex; flex-direction:column; gap:7px; margin:14px 0 16px; font-size:11px; color:#8ea3c4 }
-.atlas-legend span { display:flex; align-items:center; gap:8px }
-.atlas-legend i { width:9px; height:9px; border-radius:50%; display:inline-block; flex:0 0 9px }
-.atlas-clouds { display:flex; flex-direction:column; gap:4px }
-.atlas-cloud-btn { display:flex; justify-content:space-between; gap:8px; width:100%; padding:5px 8px; border:1px solid transparent; border-radius:7px; background:transparent; color:#9db1d1; font-size:11.5px; cursor:pointer; text-align:left }
-.atlas-cloud-btn:hover { background:rgba(120,170,255,.10); border-color:rgba(120,170,255,.18) }
-.atlas-cloud-btn.active { background:rgba(120,170,255,.20); border-color:rgba(140,190,255,.4); color:#dce8ff }
-.atlas-cloud-btn em { font-style:normal; color:#61758f }
-.atlas-canvas-wrap { position:relative; min-height:700px; background:radial-gradient(ellipse at 50% 45%, #0c1322 0%, #05080f 70%) }
-#memoryGraphCanvas { display:block; width:100%; height:100%; cursor:grab; touch-action:none }
-#memoryGraphCanvas.dragging { cursor:grabbing }
-.graph-tooltip { position:absolute; max-width:330px; padding:8px 11px; border-radius:8px; background:rgba(13,20,34,.96); color:#dbe6fa; border:1px solid rgba(120,170,255,.3); box-shadow:0 8px 26px rgba(0,0,0,.5); font-size:12px; line-height:1.6; pointer-events:none; z-index:5 }
-.atlas-right { padding:14px; border-left:1px solid rgba(140,160,200,.12); display:flex; flex-direction:column; gap:12px; max-height:760px; overflow:auto }
-.atlas-search input { width:100%; padding:8px 11px; border-radius:8px; border:1px solid rgba(120,170,255,.22); background:rgba(20,30,50,.7); color:#dbe6fa; font-size:12.5px }
-.atlas-search input::placeholder { color:#5f7397 }
-.atlas-search .meta { margin-top:5px; font-size:10.5px; color:#61758f }
-.atlas-detail { padding:12px; border-radius:10px; border:1px solid rgba(140,160,200,.16); background:rgba(20,30,50,.55); font-size:12px; line-height:1.7; color:#a9bbd8; min-height:96px }
-.atlas-detail .ad-quote { font-size:14px; line-height:1.75; color:#e8eefb; margin:6px 0 10px; padding-left:10px; border-left:2px solid rgba(120,170,255,.55) }
-.atlas-detail .ad-quote.empty { color:#61758f; font-size:12.5px; border-left-color:rgba(140,160,200,.25) }
-.atlas-detail .ad-rows { display:flex; flex-direction:column; gap:3px; font-size:11px; color:#8ea3c4 }
-.atlas-detail .ad-rows b { color:#c9d8f0; font-weight:600 }
-.atlas-detail .ad-cloud { display:inline-block; margin-top:8px; padding:1px 7px; border-radius:6px; background:rgba(120,170,255,.16); color:#9fc0ff; font-size:10.5px }
-.atlas-core { margin-top:auto }
-.atlas-core h4 { margin:0 0 6px; font-size:10.5px; letter-spacing:.12em; color:#5f7397; text-transform:uppercase }
-.atlas-core .ac-chips { display:flex; flex-wrap:wrap; gap:5px }
-.atlas-core .ac-chip { padding:3px 8px; border-radius:6px; background:rgba(255,209,102,.10); border:1px solid rgba(255,209,102,.22); color:#e6c877; font-size:10.5px }
-
-</style>
+<link rel="stylesheet" href="/console.css">
 </head>
 <body>
   <div class="bg-decor" aria-hidden="true"></div>
@@ -1885,7 +36,8 @@ button:active:not(:disabled) {
       <button data-view="slang" class="nav-item"><span class="nav-icon" aria-hidden="true">▤</span>黑话词库</button>
       <div class="nav-label">管理</div>
       <button data-view="memory" class="nav-item"><span class="nav-icon" aria-hidden="true">◍</span>她的记忆<span class="nav-note">V3</span></button>
-      <button data-view="memory-graph" class="nav-item"><span class="nav-icon" aria-hidden="true">✦</span>记忆星图<span class="nav-note">NEW</span></button>
+      <button data-view="emotion" class="nav-item"><span class="nav-icon" aria-hidden="true">♡</span>她的情绪<span class="nav-note">NEW</span></button>
+      <button data-view="memory-galaxy" class="nav-item" title="长期记忆可视化（可全屏）"><span class="nav-icon" aria-hidden="true">✦</span>记忆银河<span class="nav-note">NEW</span></button>
       <button data-view="usage" class="nav-item"><span class="nav-icon" aria-hidden="true">◧</span>令牌与花费</button>
       <button data-view="access" class="nav-item"><span class="nav-icon" aria-hidden="true">⊙</span>访问与安全</button>
       <button data-view="operations" class="nav-item"><span class="nav-icon" aria-hidden="true">⌘</span>调试与运维</button>
@@ -1896,7 +48,7 @@ button:active:not(:disabled) {
   <div class="workspace">
     <header class="topbar">
       <div class="breadcrumb">工作空间<span>/</span><span id="breadcrumbPage">运行总览</span></div>
-      <div class="topbar-actions"><span class="status-badge" id="statusText" role="status">正在连接…</span><button id="themeToggle" class="icon-button" type="button" aria-label="切换深色模式" aria-pressed="false" title="切换深色 / 浅色主题">☾</button><button id="openGalaxy" class="icon-button" aria-label="打开记忆银河" title="记忆银河（长期记忆可视化）">🌌</button><button id="refreshConsole" class="icon-button" aria-label="刷新控制台状态" title="刷新状态">↻</button></div>
+      <div class="topbar-actions"><span class="status-badge" id="statusText" role="status">正在连接…</span><button id="themeToggle" class="icon-button" type="button" aria-label="切换深色模式" aria-pressed="false" title="切换深色 / 浅色主题">☾</button><button id="refreshConsole" class="icon-button" aria-label="刷新控制台状态" title="刷新状态">↻</button></div>
     </header>
     <main id="mainContent" tabindex="-1">
       <div class="page-heading"><div><div class="eyebrow">QQ BRIDGE / CONSOLE</div><h1 id="pageTitle">让每一次连接，都自然发生。</h1><p id="pageDescription">掌握桥接状态，轻松管理你的 QQ 智能伙伴。</p></div>
@@ -1918,9 +70,9 @@ button:active:not(:disabled) {
         <button data-mode="reserved" aria-pressed="false"><span class="mode-indicator" aria-hidden="true"></span><strong>一代仿真</strong><small>按策略自然参与群聊</small></button>
         <button data-mode="reserved2" aria-pressed="false"><span class="mode-indicator" aria-hidden="true"></span><strong>二代仿真</strong><small>自主阅读、发言与潜水</small></button>
       </div>
-      <div class="row" style="margin-top:12px">
-        <label style="flex:1;margin:0">封闭 Agent 使用的 DSH 预设</label>
-        <select id="closedPreset" style="max-width:260px"><option value="">（DSH 默认 preset）</option></select>
+      <div class="row mt-12">
+        <label class="flex-1-m0">封闭 Agent 使用的 DSH 预设</label>
+        <select id="closedPreset" class="max-w-260"><option value="">（DSH 默认 preset）</option></select>
       </div>
       <div class="meta">切换后即时保存。仿真参数可在左侧对应页面调整；封闭 Agent 仅允许管理员私聊。</div>
     </section>
@@ -1957,8 +109,8 @@ button:active:not(:disabled) {
         <div class="settings-content">
           <div class="meta" id="roleEditorMeta">当前是「新建」模式：填好名称与内容后点「新建人格」。</div>
           <div class="row">
-            <label style="flex:0 0 auto">注入上限（字符）</label>
-            <input type="number" id="roleInjectMax" min="1000" max="20000" step="500" style="flex:0 1 140px">
+            <label class="field-shrink0">注入上限（字符）</label>
+            <input type="number" id="roleInjectMax" min="1000" max="20000" step="500" class="field-grow-140">
             <button id="roleInjectMaxSave" class="small">保存上限</button>
             <span class="meta" id="roleInjectMaxMsg">每条约 4~6k token 的成本护栏；按模式筛完小节后才截断。</span>
           </div>
@@ -1966,7 +118,7 @@ button:active:not(:disabled) {
           <input type="text" id="newRoleName" placeholder="如：猫娘">
           <label>人格提示词（Markdown）</label>
           <textarea id="newRoleContent" class="role-editor" placeholder="- 性格：…&#10;- 说话风格：…&#10;- 背景设定：…"></textarea>
-          <div class="row" style="margin-top:8px">
+          <div class="row mt-8">
             <button id="roleCreate">新建人格</button>
             <button id="roleDuplicate">另存为副本</button>
             <button id="roleDelete" class="danger">删除</button>
@@ -1980,7 +132,7 @@ button:active:not(:disabled) {
       <details class="settings-group">
         <summary>切换当前启用的人格</summary>
         <div class="settings-content">
-          <div class="row" style="margin-top:10px">
+          <div class="row mt-10">
             <input type="text" id="roleInput" placeholder="选择已有角色或输入新角色名">
             <button id="roleSet">设置</button>
             <button id="roleClear">清除</button>
@@ -1990,9 +142,9 @@ button:active:not(:disabled) {
       </details>
 
       <h3 class="layer-heading">仿真提示词（预设内置）<span class="meta" id="simPromptStatus">加载中…</span></h3>
-      <div class="row" style="margin-bottom:8px">
-        <label style="flex:0 0 auto">仿真代次</label>
-        <select id="simPromptPreset" style="flex:0 1 280px">
+      <div class="row mb-8">
+        <label class="field-shrink0">仿真代次</label>
+        <select id="simPromptPreset" class="field-grow-280">
           <option value="qq-chat-v2">二代仿真（reserved2 · qq-chat-v2）</option>
           <option value="qq-chat">一代仿真（reserved · qq-chat）</option>
         </select>
@@ -2000,7 +152,7 @@ button:active:not(:disabled) {
       </div>
       <div class="meta" id="simPromptWarnings"></div>
       <textarea id="simPromptText" class="code-area" spellcheck="false" readonly></textarea>
-      <div class="row" style="margin-top:8px">
+      <div class="row mt-8">
         <button id="simPromptEdit">编辑</button>
         <button id="simPromptSave" disabled>保存并同步到 DSH</button>
         <button id="simPromptRestore">还原上次备份</button>
@@ -2013,70 +165,70 @@ button:active:not(:disabled) {
       <h2>一代仿真模式（reserved）</h2>
       <div class="meta" id="socialStatus">加载中…</div>
 
-      <div class="row" style="margin-top:10px">
-        <label style="flex:1">普通消息触发概率（观望期）</label><input type="number" id="sTrigger" step="0.05" min="0" max="1" style="width:80px">
+      <div class="row mt-10">
+        <label class="field-flex">普通消息触发概率（观望期）</label><input type="number" id="sTrigger" step="0.05" min="0" max="1" class="field-w-80">
       </div>
       <div class="row">
-        <label style="flex:1">活跃检测间隔（秒）</label>
-        <input type="number" id="sCheckMin" min="5" style="width:70px"> ~
-        <input type="number" id="sCheckMax" min="5" style="width:70px">
+        <label class="field-flex">活跃检测间隔（秒）</label>
+        <input type="number" id="sCheckMin" min="5" class="field-w-70"> ~
+        <input type="number" id="sCheckMax" min="5" class="field-w-70">
       </div>
       <div class="row">
-        <label style="flex:1">活跃回复延迟（秒）</label>
-        <input type="number" id="sActiveDelayMin" min="0" style="width:70px"> ~
-        <input type="number" id="sActiveDelayMax" min="0" style="width:70px">
+        <label class="field-flex">活跃回复延迟（秒）</label>
+        <input type="number" id="sActiveDelayMin" min="0" class="field-w-70"> ~
+        <input type="number" id="sActiveDelayMax" min="0" class="field-w-70">
       </div>
       <details class="settings-group"><summary>群聊活跃超时主动退出</summary><div class="settings-content">
       <div class="row">
-        <label style="flex:1">启用</label><input type="checkbox" id="sActiveDurationEnabled" style="width:auto">
+        <label class="field-flex">启用</label><input type="checkbox" id="sActiveDurationEnabled" class="field-w-auto">
       </div>
       <div class="row">
-        <label style="flex:1">活跃最长持续时间（分）</label>
-        <input type="number" id="sActiveDurationMin" min="1" style="width:70px"> ~
-        <input type="number" id="sActiveDurationMax" min="1" style="width:70px">
+        <label class="field-flex">活跃最长持续时间（分）</label>
+        <input type="number" id="sActiveDurationMin" min="1" class="field-w-70"> ~
+        <input type="number" id="sActiveDurationMax" min="1" class="field-w-70">
       </div>
       <div class="meta">从进入群聊活跃那一刻起随机取一个时长；到点后即使群里还在聊，也会提示 AI 说一句收尾话并回到观望。私聊不自动退场。</div>
 
       <div class="row">
-        <label style="flex:1">冷场窗口（分）</label><input type="number" id="sIdleWindow" min="1" style="width:80px">
+        <label class="field-flex">冷场窗口（分）</label><input type="number" id="sIdleWindow" min="1" class="field-w-80">
       </div>
       <div class="row">
-        <label style="flex:1">冷场试探概率</label><input type="number" id="sIdleRetry" step="0.05" min="0" max="1" style="width:80px">
+        <label class="field-flex">冷场试探概率</label><input type="number" id="sIdleRetry" step="0.05" min="0" max="1" class="field-w-80">
       </div>
       <div class="row">
-        <label style="flex:1">试探等待窗口（分）</label><input type="number" id="sIdleWait" min="1" style="width:80px">
+        <label class="field-flex">试探等待窗口（分）</label><input type="number" id="sIdleWait" min="1" class="field-w-80">
       </div>
       <div class="row">
-        <label style="flex:1">普通消息沉默概率</label><input type="number" id="sSkipProb" step="0.05" min="0" max="1" style="width:80px">
+        <label class="field-flex">普通消息沉默概率</label><input type="number" id="sSkipProb" step="0.05" min="0" max="1" class="field-w-80">
       </div>
       <div class="row">
-        <label style="flex:1">抬杠时退让概率</label><input type="number" id="sSurrenderProb" step="0.05" min="0" max="1" style="width:80px">
+        <label class="field-flex">抬杠时退让概率</label><input type="number" id="sSurrenderProb" step="0.05" min="0" max="1" class="field-w-80">
       </div>
       <div class="row">
-        <label style="flex:1">附带上下文条数</label><input type="number" id="sContextWindow" min="1" max="100" style="width:80px">
+        <label class="field-flex">附带上下文条数</label><input type="number" id="sContextWindow" min="1" max="100" class="field-w-80">
       </div>
       <div class="row">
-        <label style="flex:1">单条消息长度上限（字）</label><input type="number" id="sMaxChars" min="1" style="width:80px">
+        <label class="field-flex">单条消息长度上限（字）</label><input type="number" id="sMaxChars" min="1" class="field-w-80">
       </div>
 
       </div></details>
 <details class="settings-group"><summary>分条发送（按空格分句）</summary><div class="settings-content">
-      <div class="meta" style="margin-bottom:8px">AI 用空格表示“分成下一条消息”；中英文/数字之间的空格也会被当成分条信号，不想分条就不要加空格、用标点连接。单条只做安全长度上限，不再限制条数。</div>
+      <div class="meta mb-8">AI 用空格表示“分成下一条消息”；中英文/数字之间的空格也会被当成分条信号，不想分条就不要加空格、用标点连接。单条只做安全长度上限，不再限制条数。</div>
       <div class="row">
-        <label style="flex:1">启用分条发送</label><input type="checkbox" id="sBurstEnabled" style="width:auto">
+        <label class="field-flex">启用分条发送</label><input type="checkbox" id="sBurstEnabled" class="field-w-auto">
       </div>
       <div class="row">
-        <label style="flex:1">条间间隔（毫秒）</label>
-        <input type="number" id="sBurstIntervalMin" min="0" style="width:70px"> ~
-        <input type="number" id="sBurstIntervalMax" min="0" style="width:70px">
+        <label class="field-flex">条间间隔（毫秒）</label>
+        <input type="number" id="sBurstIntervalMin" min="0" class="field-w-70"> ~
+        <input type="number" id="sBurstIntervalMax" min="0" class="field-w-70">
       </div>
       <div class="row">
-        <label style="flex:1">长间隔概率</label><input type="number" id="sLongGapProb" step="0.05" min="0" max="1" style="width:80px">
+        <label class="field-flex">长间隔概率</label><input type="number" id="sLongGapProb" step="0.05" min="0" max="1" class="field-w-80">
       </div>
       <div class="row">
-        <label style="flex:1">长间隔范围（毫秒）</label>
-        <input type="number" id="sLongGapMin" min="0" style="width:70px"> ~
-        <input type="number" id="sLongGapMax" min="0" style="width:70px">
+        <label class="field-flex">长间隔范围（毫秒）</label>
+        <input type="number" id="sLongGapMin" min="0" class="field-w-70"> ~
+        <input type="number" id="sLongGapMax" min="0" class="field-w-70">
       </div>
       <label>必回关键词（逗号分隔）</label>
       <input type="text" id="sKeywords" placeholder="deepseek, 在吗">
@@ -2084,28 +236,28 @@ button:active:not(:disabled) {
       </div></details>
 <details class="settings-group"><summary>主动开话题（观望期第三种触发）</summary><div class="settings-content">
       <div class="row">
-        <label style="flex:1">启用主动开话题</label><input type="checkbox" id="sProactiveEnabled" style="width:auto">
+        <label class="field-flex">启用主动开话题</label><input type="checkbox" id="sProactiveEnabled" class="field-w-auto">
       </div>
       <div class="row">
-        <label style="flex:1">群安静多久判定（分）</label><input type="number" id="sProactiveIdle" min="1" style="width:80px">
+        <label class="field-flex">群安静多久判定（分）</label><input type="number" id="sProactiveIdle" min="1" class="field-w-80">
       </div>
       <div class="row">
-        <label style="flex:1">判定间隔（分）</label>
-        <input type="number" id="sProactiveCheckMin" min="1" style="width:70px"> ~
-        <input type="number" id="sProactiveCheckMax" min="1" style="width:70px">
+        <label class="field-flex">判定间隔（分）</label>
+        <input type="number" id="sProactiveCheckMin" min="1" class="field-w-70"> ~
+        <input type="number" id="sProactiveCheckMax" min="1" class="field-w-70">
       </div>
       <div class="row">
-        <label style="flex:1">判定成功概率</label><input type="number" id="sProactiveProb" step="0.05" min="0" max="1" style="width:80px">
+        <label class="field-flex">判定成功概率</label><input type="number" id="sProactiveProb" step="0.05" min="0" max="1" class="field-w-80">
       </div>
 
 </div></details>
-<div class="save-bar">      <div class="row" style="margin-top:10px">
+<div class="save-bar">      <div class="row mt-10">
         <button id="socialSave">保存社交配置</button>
         <button id="socialFlush">立刻投喂摘要</button>
         <span class="meta" id="socialMsg"></span>
       </div>
-      <div class="row" style="margin-top:10px">
-        <select id="sStateKey" style="flex:1"><option value="">选择会话</option></select>
+      <div class="row mt-10">
+        <select id="sStateKey" class="field-flex"><option value="">选择会话</option></select>
         <button id="sStateActive" class="small">设为活跃</button>
         <button id="sStateIdle" class="small">设为观望</button>
       </div>
@@ -2115,19 +267,19 @@ button:active:not(:disabled) {
       <h2>二代仿真模式（reserved2）控制台</h2>
       <div class="meta">配置保存后写入 config.json 并热更新；工具开关决定 AI 能调用哪些工具。已接入开关的工具在<b>重启 DSH 后</b>会从工具清单里彻底消失（少一份 schema 就少一份每次请求的 token）；发送类等跨模式共用的工具只在调用时被桥接拒绝，清单不变。</div>
 
-      <div class="row" style="margin-top:10px">
-        <label style="flex:1">启用二代模式</label><input type="checkbox" id="v2Enabled" style="width:auto">
-        <label style="flex:1">agentPreset</label><input type="text" id="v2AgentPreset" placeholder="qq-chat-v2" style="max-width:200px">
+      <div class="row mt-10">
+        <label class="field-flex">启用二代模式</label><input type="checkbox" id="v2Enabled" class="field-w-auto">
+        <label class="field-flex">agentPreset</label><input type="text" id="v2AgentPreset" placeholder="qq-chat-v2" class="max-w-200">
       </div>
-      <div class="row" style="margin-top:6px">
-        <label style="flex:1">提供推荐值给 AI</label><input type="checkbox" id="v2ProvideRecommendations" style="width:auto">
-        <span class="meta" style="flex:2">关闭后 qq_get_prompt 不再返回推荐值，AI 完全自主判断。</span>
+      <div class="row mt-6">
+        <label class="field-flex">提供推荐值给 AI</label><input type="checkbox" id="v2ProvideRecommendations" class="field-w-auto">
+        <span class="meta field-flex-2">关闭后 qq_get_prompt 不再返回推荐值，AI 完全自主判断。</span>
       </div>
-      <div class="row" style="margin-top:10px">
+      <div class="row mt-10">
         <button id="v2PauseBtn" class="danger">暂停二代 AI</button>
         <button id="v2ResumeBtn">恢复二代 AI</button>
         <button id="v2ResetBtn" class="danger">重置二代状态</button>
-        <button id="v2ConfigSaveTop" style="font-weight:bold;padding:6px 14px">保存当前参数</button>
+        <button id="v2ConfigSaveTop" class="btn-bold-sm">保存当前参数</button>
         <span class="meta" id="v2ActivityStatus">读取中…</span>
       </div>
 
@@ -2164,24 +316,24 @@ button:active:not(:disabled) {
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="setStickerRemark"> <span><b>qq_set_sticker_remark</b><span class="meta">修改 QQ 官方表情备注（默认禁用，慎用）</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="sendVoice"> <span><b>qq_send_voice / qq_list_voices</b><span class="meta">发送语音条（只能发语音库里的音频；偶然而为的强表达）</span></span></label>
       </div>
-      <div class="meta" style="margin-top:6px">二代黑话学习：AI 可用 <code>qq_slang_submit</code> 提交陌生词，也可由桥接自动提取；管理员在「黑话词库」页面筛选确认后，词条会自动写入黑话提示词并注入 <code>qq_get_prompt</code> 与后续唤醒。</div>
+      <div class="meta mt-6">二代黑话学习：AI 可用 <code>qq_slang_submit</code> 提交陌生词，也可由桥接自动提取；管理员在「黑话词库」页面筛选确认后，词条会自动写入黑话提示词并注入 <code>qq_get_prompt</code> 与后续唤醒。</div>
 
       </div></details>
 <details class="settings-group"><summary>语音库与语音发送（调试）</summary><div class="settings-content">
-      <div class="meta" style="margin-bottom:8px">
+      <div class="meta mb-8">
         语音库目录：<code>qq-bridge/audio/</code>（改 <code>socialV2.voice.dir</code> 可换）。把音频文件丢进去即可被 AI 用 <code>qq_send_voice</code> 发出；
         本面板用于调试与试发 —— 试发走的是与 AI 通道相同的解析/校验/限流路径（<code>/api/voice/send</code>），只是由你在控制台触发。
       </div>
-      <div class="row" style="flex-wrap:wrap;gap:8px;align-items:center">
+      <div class="row settings-actions">
         <button id="voiceRefreshBtn" type="button" class="btn-secondary">刷新语音库</button>
-        <label style="flex:0 0 auto">发送目标</label>
-        <input type="text" id="voiceSendTarget" placeholder="group:100005" style="width:190px">
-        <label style="flex:0 0 auto"><input type="checkbox" id="voiceSendDryRun" style="width:auto"> 只校验不发送</label>
+        <label class="field-shrink0">发送目标</label>
+        <input type="text" id="voiceSendTarget" placeholder="group:100005" class="field-w-190">
+        <label class="field-shrink0"><input type="checkbox" id="voiceSendDryRun" class="field-w-auto"> 只校验不发送</label>
         <button id="voiceSendBtn" type="button">试发选中语音</button>
         <span id="voiceMsg" class="meta"></span>
       </div>
-      <div id="voiceList" class="meta" style="margin-top:8px">点「刷新语音库」加载…</div>
-      <div class="meta" style="margin-top:6px">
+      <div id="voiceList" class="meta mt-8">点「刷新语音库」加载…</div>
+      <div class="meta mt-6">
         上限：时长 <code>maxSeconds</code>、体积 <code>maxBytes</code>、频率 <code>maxPerMinute</code>/<code>maxPerHour</code>（见下方配置区）。
         命令行等价工具：<code>node scripts/send-voice.mjs list-voice</code>（经桥接）或 <code>node voice-cli.mjs</code>（独立工具，在上级 <code>voice-tool/</code> 里直连 SnowLuma）。
       </div>
@@ -2189,26 +341,26 @@ button:active:not(:disabled) {
       </div></details>
 <details class="settings-group"><summary>唤醒推荐值（仅参考，AI 可不遵守）</summary><div class="settings-content">
       <div class="row">
-        <label style="flex:1">默认模式</label>
-        <select id="v2WakeDefaultMode" style="width:120px"><option value="diving">潜水</option><option value="active">活跃</option></select>
-        <label style="flex:1">默认下一次唤醒：无限期（永久）</label><input type="checkbox" id="v2RecDefaultInfinite" style="width:auto">
+        <label class="field-flex">默认模式</label>
+        <select id="v2WakeDefaultMode" class="field-w-120"><option value="diving">潜水</option><option value="active">活跃</option></select>
+        <label class="field-flex">默认下一次唤醒：无限期（永久）</label><input type="checkbox" id="v2RecDefaultInfinite" class="field-w-auto">
       </div>
       <div class="row">
-        <label style="flex:1">推荐潜水时长（分）</label>
-        <input type="number" id="v2RecSleepMin" min="1" style="width:80px"> ~
-        <input type="number" id="v2RecSleepMax" min="1" style="width:80px">
+        <label class="field-flex">推荐潜水时长（分）</label>
+        <input type="number" id="v2RecSleepMin" min="1" class="field-w-80"> ~
+        <input type="number" id="v2RecSleepMax" min="1" class="field-w-80">
       </div>
       <div class="row">
-        <label style="flex:1">推荐普通消息概率</label><input type="number" id="v2RecProb" step="0.05" min="0" max="1" style="width:80px">
+        <label class="field-flex">推荐普通消息概率</label><input type="number" id="v2RecProb" step="0.05" min="0" max="1" class="field-w-80">
       </div>
       <div class="row">
-        <label style="flex:1">推荐关键词（逗号分隔）</label><input type="text" id="v2RecKeywords" placeholder="小鲸鱼, DeepSeek" style="flex:1">
+        <label class="field-flex">推荐关键词（逗号分隔）</label><input type="text" id="v2RecKeywords" placeholder="小鲸鱼, DeepSeek" class="field-flex">
       </div>
       <div class="row">
-        <label style="flex:1">推荐 @ 唤醒</label><input type="checkbox" id="v2RecAt" style="width:auto">
-        <label style="flex:1">推荐名字唤醒</label><input type="checkbox" id="v2RecName" style="width:auto">
-        <label style="flex:1">推荐提问唤醒</label><input type="checkbox" id="v2RecQuestion" style="width:auto">
-        <label style="flex:1">推荐拍一拍唤醒</label><input type="checkbox" id="v2RecPoke" style="width:auto">
+        <label class="field-flex">推荐 @ 唤醒</label><input type="checkbox" id="v2RecAt" class="field-w-auto">
+        <label class="field-flex">推荐名字唤醒</label><input type="checkbox" id="v2RecName" class="field-w-auto">
+        <label class="field-flex">推荐提问唤醒</label><input type="checkbox" id="v2RecQuestion" class="field-w-auto">
+        <label class="field-flex">推荐拍一拍唤醒</label><input type="checkbox" id="v2RecPoke" class="field-w-auto">
       </div>
       <label>唤醒推荐提示（给 AI 看的文字）</label>
       <textarea id="v2WakeHint" rows="2" placeholder="例如：如果你在潜水，推荐 5~120 分钟、普通消息概率 0.05…"></textarea>
@@ -2216,53 +368,53 @@ button:active:not(:disabled) {
       </div></details>
 <details class="settings-group"><summary>唤醒硬限制</summary><div class="settings-content">
       <div class="row">
-        <label style="flex:1">最小潜水（秒）</label><input type="number" id="v2SleepMinMs" min="0" style="width:90px">
-        <label style="flex:1">最大潜水（秒，0=不限）</label><input type="number" id="v2SleepMaxMs" min="0" style="width:90px">
+        <label class="field-flex">最小潜水（秒）</label><input type="number" id="v2SleepMinMs" min="0" class="field-w-90">
+        <label class="field-flex">最大潜水（秒，0=不限）</label><input type="number" id="v2SleepMaxMs" min="0" class="field-w-90">
       </div>
       <div class="row">
-        <label style="flex:1">每分钟最多唤醒</label><input type="number" id="v2MaxWakeMin" min="0" style="width:90px">
-        <label style="flex:1">每小时最多唤醒</label><input type="number" id="v2MaxWakeHour" min="0" style="width:90px">
+        <label class="field-flex">每分钟最多唤醒</label><input type="number" id="v2MaxWakeMin" min="0" class="field-w-90">
+        <label class="field-flex">每小时最多唤醒</label><input type="number" id="v2MaxWakeHour" min="0" class="field-w-90">
       </div>
       <div class="row">
-        <label style="flex:1">合并窗口（毫秒）</label><input type="number" id="v2BatchWindowMs" min="1000" step="500" style="width:100px">
-        <label style="flex:1">无行动兜底次数</label><input type="number" id="v2NoActionLimit" min="1" style="width:80px">
-        <label style="flex:1">唤醒收尾提醒次数</label><input type="number" id="v2MaxWakeConfigReminders" min="1" style="width:80px">
+        <label class="field-flex">合并窗口（毫秒）</label><input type="number" id="v2BatchWindowMs" min="1000" step="500" class="field-w-100">
+        <label class="field-flex">无行动兜底次数</label><input type="number" id="v2NoActionLimit" min="1" class="field-w-80">
+        <label class="field-flex">唤醒收尾提醒次数</label><input type="number" id="v2MaxWakeConfigReminders" min="1" class="field-w-80">
       </div>
       <div class="row">
-        <label style="flex:1">启用沉睡前强制等待</label><input type="checkbox" id="v2PreSleepWaitEnabled" style="width:auto">
-        <label style="flex:1">沉睡前强制等待（分）</label><input type="number" id="v2PreSleepWaitMin" min="0" step="1" style="width:80px">
-        <span class="meta" style="flex:2">AI 设置潜水/下一次唤醒前，默认必须先等够这个观察窗口；0 表示不限制。</span>
+        <label class="field-flex">启用沉睡前强制等待</label><input type="checkbox" id="v2PreSleepWaitEnabled" class="field-w-auto">
+        <label class="field-flex">沉睡前强制等待（分）</label><input type="number" id="v2PreSleepWaitMin" min="0" step="1" class="field-w-80">
+        <span class="meta field-flex-2">AI 设置潜水/下一次唤醒前，默认必须先等够这个观察窗口；0 表示不限制。</span>
       </div>
 
       </div></details>
 <details class="settings-group"><summary>发送限制</summary><div class="settings-content">
-      <div class="meta" style="margin-bottom:8px">二代不再按空格自动拆条；AI 要分多条必须显式传数组或用 qq_send_burst。</div>
+      <div class="meta mb-8">二代不再按空格自动拆条；AI 要分多条必须显式传数组或用 qq_send_burst。</div>
       <div class="row">
-        <label style="flex:1">允许多条发送</label><input type="checkbox" id="v2BurstEnabled" style="width:auto">
-        <label style="flex:1">单次最多条数</label><input type="number" id="v2BurstMax" min="1" style="width:70px">
+        <label class="field-flex">允许多条发送</label><input type="checkbox" id="v2BurstEnabled" class="field-w-auto">
+        <label class="field-flex">单次最多条数</label><input type="number" id="v2BurstMax" min="1" class="field-w-70">
       </div>
       <div class="row">
-        <label style="flex:1">条间间隔（毫秒）</label>
-        <input type="number" id="v2BurstMin" min="0" style="width:80px"> ~
-        <input type="number" id="v2BurstMaxMs" min="0" style="width:80px">
+        <label class="field-flex">条间间隔（毫秒）</label>
+        <input type="number" id="v2BurstMin" min="0" class="field-w-80"> ~
+        <input type="number" id="v2BurstMaxMs" min="0" class="field-w-80">
       </div>
       <div class="row">
-        <label style="flex:1">长间隔概率</label><input type="number" id="v2LongGapProb" step="0.05" min="0" max="1" style="width:80px">
-        <label style="flex:1">长间隔范围（毫秒）</label>
-        <input type="number" id="v2LongGapMin" min="0" style="width:80px"> ~
-        <input type="number" id="v2LongGapMax" min="0" style="width:80px">
+        <label class="field-flex">长间隔概率</label><input type="number" id="v2LongGapProb" step="0.05" min="0" max="1" class="field-w-80">
+        <label class="field-flex">长间隔范围（毫秒）</label>
+        <input type="number" id="v2LongGapMin" min="0" class="field-w-80"> ~
+        <input type="number" id="v2LongGapMax" min="0" class="field-w-80">
       </div>
       <div class="row">
-        <label style="flex:1">每分钟最多发送</label><input type="number" id="v2MaxSendMin" min="0" style="width:80px">
-        <label style="flex:1">每小时最多发送</label><input type="number" id="v2MaxSendHour" min="0" style="width:80px">
+        <label class="field-flex">每分钟最多发送</label><input type="number" id="v2MaxSendMin" min="0" class="field-w-80">
+        <label class="field-flex">每小时最多发送</label><input type="number" id="v2MaxSendHour" min="0" class="field-w-80">
       </div>
       <div class="row">
-        <label style="flex:1">单条最大字符</label><input type="number" id="v2MaxMsgChars" min="1" style="width:80px">
+        <label class="field-flex">单条最大字符</label><input type="number" id="v2MaxMsgChars" min="1" class="field-w-80">
       </div>
       <div class="row">
-        <label style="flex:1">最大条间隔（毫秒，防止过长）</label><input type="number" id="v2MaxGapMs" min="100" style="width:90px">
-        <label style="flex:1">按字数基础间隔（毫秒）</label><input type="number" id="v2GapBaseMs" min="0" style="width:80px">
-        <label style="flex:1">每字追加（毫秒）</label><input type="number" id="v2GapPerCharMs" min="0" style="width:80px">
+        <label class="field-flex">最大条间隔（毫秒，防止过长）</label><input type="number" id="v2MaxGapMs" min="100" class="field-w-90">
+        <label class="field-flex">按字数基础间隔（毫秒）</label><input type="number" id="v2GapBaseMs" min="0" class="field-w-80">
+        <label class="field-flex">每字追加（毫秒）</label><input type="number" id="v2GapPerCharMs" min="0" class="field-w-80">
       </div>
       <label>发送推荐提示（给 AI 看的文字）</label>
       <textarea id="v2SendHint" rows="2" placeholder="例如：普通闲聊建议一次 1~3 条，条间 1~3 秒…"></textarea>
@@ -2270,70 +422,70 @@ button:active:not(:disabled) {
       </div></details>
 <details class="settings-group"><summary>等待工具参数（qq_wait_for_messages）</summary><div class="settings-content">
       <div class="row">
-        <label style="flex:1">默认等待（毫秒）</label><input type="number" id="v2WaitDefaultMs" min="100" style="width:90px">
-        <label style="flex:1">最小等待（毫秒）</label><input type="number" id="v2WaitMinMs" min="100" style="width:90px">
-        <label style="flex:1">最大等待（毫秒）</label><input type="number" id="v2WaitMaxMs" min="100" style="width:90px">
+        <label class="field-flex">默认等待（毫秒）</label><input type="number" id="v2WaitDefaultMs" min="100" class="field-w-90">
+        <label class="field-flex">最小等待（毫秒）</label><input type="number" id="v2WaitMinMs" min="100" class="field-w-90">
+        <label class="field-flex">最大等待（毫秒）</label><input type="number" id="v2WaitMaxMs" min="100" class="field-w-90">
       </div>
       <div class="row">
-        <label style="flex:1">默认静默窗口（毫秒）</label><input type="number" id="v2WaitDefaultQuietMs" min="0" style="width:90px">
-        <label style="flex:1">收到新消息后最小静默（毫秒）</label><input type="number" id="v2MinQuietAfterNewMs" min="0" style="width:90px">
-        <span class="meta" style="flex:2">收到新消息后至少再等这么久（默认 10000ms=10 秒），防止抢话。</span>
+        <label class="field-flex">默认静默窗口（毫秒）</label><input type="number" id="v2WaitDefaultQuietMs" min="0" class="field-w-90">
+        <label class="field-flex">收到新消息后最小静默（毫秒）</label><input type="number" id="v2MinQuietAfterNewMs" min="0" class="field-w-90">
+        <span class="meta field-flex-2">收到新消息后至少再等这么久（默认 10000ms=10 秒），防止抢话。</span>
       </div>
       <div class="row">
-        <label style="flex:1">回复检查延迟（秒）</label><input type="number" id="v2AutoReplyCheckSec" min="1" style="width:90px">
-        <span class="meta" style="flex:2">回复检查是 AI 发消息后回来检查是否有人回复的延迟。</span>
+        <label class="field-flex">回复检查延迟（秒）</label><input type="number" id="v2AutoReplyCheckSec" min="1" class="field-w-90">
+        <span class="meta field-flex-2">回复检查是 AI 发消息后回来检查是否有人回复的延迟。</span>
       </div>
 
       </div></details>
 <details class="settings-group"><summary>主动机会参数（proactive：群安静时 AI 主动冒泡）</summary><div class="settings-content">
       <div class="row">
-        <label style="flex:1">启用主动机会</label><input type="checkbox" id="v2ProactiveEnabled" style="width:auto">
-        <label style="flex:1">检查间隔（分）</label>
-        <input type="number" id="v2ProactiveIntervalMin" min="1" style="width:80px"> ~
-        <input type="number" id="v2ProactiveIntervalMax" min="1" style="width:80px">
+        <label class="field-flex">启用主动机会</label><input type="checkbox" id="v2ProactiveEnabled" class="field-w-auto">
+        <label class="field-flex">检查间隔（分）</label>
+        <input type="number" id="v2ProactiveIntervalMin" min="1" class="field-w-80"> ~
+        <input type="number" id="v2ProactiveIntervalMax" min="1" class="field-w-80">
       </div>
       <div class="row">
-        <label style="flex:1">安静阈值（分）</label><input type="number" id="v2ProactiveIdleThreshold" min="1" style="width:80px">
-        <label style="flex:1">触发概率</label><input type="number" id="v2ProactiveProbability" step="0.05" min="0" max="1" style="width:80px">
+        <label class="field-flex">安静阈值（分）</label><input type="number" id="v2ProactiveIdleThreshold" min="1" class="field-w-80">
+        <label class="field-flex">触发概率</label><input type="number" id="v2ProactiveProbability" step="0.05" min="0" max="1" class="field-w-80">
       </div>
 
       </div></details>
 <details class="settings-group"><summary>表情包参数（sticker：QQ 收藏表情体系）</summary><div class="settings-content">
       <div class="row">
-        <label style="flex:1">启用表情包体系</label><input type="checkbox" id="v2StickerEnabled" style="width:auto">
-        <label style="flex:1">同步缓存 TTL（秒）</label><input type="number" id="v2StickerSyncTtlSec" min="1" style="width:90px">
-        <label style="flex:1">列表最大返回数</label><input type="number" id="v2StickerMaxList" min="1" max="500" style="width:90px">
+        <label class="field-flex">启用表情包体系</label><input type="checkbox" id="v2StickerEnabled" class="field-w-auto">
+        <label class="field-flex">同步缓存 TTL（秒）</label><input type="number" id="v2StickerSyncTtlSec" min="1" class="field-w-90">
+        <label class="field-flex">列表最大返回数</label><input type="number" id="v2StickerMaxList" min="1" max="500" class="field-w-90">
       </div>
       <div class="row">
-        <label style="flex:1">提示中列出常用表情数</label><input type="number" id="v2StickerPromptMax" min="1" max="30" style="width:90px">
-        <label style="flex:1">在 prompt/唤醒里附带表情摘要</label><input type="checkbox" id="v2StickerIncludePrompt" style="width:auto">
-        <span class="meta" style="flex:2">关闭后 AI 仍可主动调用 qq_list_stickers，只是不主动喂到上下文。</span>
+        <label class="field-flex">提示中列出常用表情数</label><input type="number" id="v2StickerPromptMax" min="1" max="30" class="field-w-90">
+        <label class="field-flex">在 prompt/唤醒里附带表情摘要</label><input type="checkbox" id="v2StickerIncludePrompt" class="field-w-auto">
+        <span class="meta field-flex-2">关闭后 AI 仍可主动调用 qq_list_stickers，只是不主动喂到上下文。</span>
       </div>
       <div class="row">
-        <label style="flex:1">AI 收藏表情</label><input type="checkbox" id="v2StickerCollectEnabled" style="width:auto">
-        <label style="flex:1">每分钟最多收藏</label><input type="number" id="v2StickerCollectPerMin" min="0" style="width:80px">
-        <label style="flex:1">每小时最多收藏</label><input type="number" id="v2StickerCollectPerHour" min="0" style="width:80px">
+        <label class="field-flex">AI 收藏表情</label><input type="checkbox" id="v2StickerCollectEnabled" class="field-w-auto">
+        <label class="field-flex">每分钟最多收藏</label><input type="number" id="v2StickerCollectPerMin" min="0" class="field-w-80">
+        <label class="field-flex">每小时最多收藏</label><input type="number" id="v2StickerCollectPerHour" min="0" class="field-w-80">
       </div>
       <div class="row">
-        <label style="flex:1">收藏备注最大字数</label><input type="number" id="v2StickerCollectRemarkMax" min="1" max="50" style="width:80px">
-        <span class="meta" style="flex:2">AI 收藏别人表情时写的简短备注长度上限。</span>
+        <label class="field-flex">收藏备注最大字数</label><input type="number" id="v2StickerCollectRemarkMax" min="1" max="50" class="field-w-80">
+        <span class="meta field-flex-2">AI 收藏别人表情时写的简短备注长度上限。</span>
       </div>
 
       </div></details>
 <details class="settings-group"><summary>上下文参数（recent / unread / contextWindow）</summary><div class="settings-content">
       <div class="row">
-        <label style="flex:1">最近消息上限</label><input type="number" id="v2ContextRecentLimit" min="1" style="width:80px">
-        <label style="flex:1">未读上限</label><input type="number" id="v2ContextUnreadLimit" min="1" style="width:80px">
-        <label style="flex:1">上下文窗口</label><input type="number" id="v2ContextWindow" min="1" style="width:80px">
+        <label class="field-flex">最近消息上限</label><input type="number" id="v2ContextRecentLimit" min="1" class="field-w-80">
+        <label class="field-flex">未读上限</label><input type="number" id="v2ContextUnreadLimit" min="1" class="field-w-80">
+        <label class="field-flex">上下文窗口</label><input type="number" id="v2ContextWindow" min="1" class="field-w-80">
       </div>
 
       </div></details>
 <details class="settings-group"><summary>反馈工具参数（qq_report_feedback）</summary><div class="settings-content">
       <div class="row">
-        <label style="flex:1">反馈最大长度</label><input type="number" id="v2FeedbackMaxLength" min="1" style="width:90px">
-        <label style="flex:1">错误级通知 owner</label><input type="checkbox" id="v2FeedbackNotifyOwner" style="width:auto">
+        <label class="field-flex">反馈最大长度</label><input type="number" id="v2FeedbackMaxLength" min="1" class="field-w-90">
+        <label class="field-flex">错误级通知 owner</label><input type="checkbox" id="v2FeedbackNotifyOwner" class="field-w-auto">
       </div>
-      <div class="row" style="margin-top:6px">
+      <div class="row mt-6">
         <button id="v2FeedbackLoad" class="small">加载 AI 反馈</button>
         <button id="v2FeedbackClear" class="small danger">清空 AI 反馈</button>
         <span class="meta" id="v2FeedbackMsg"></span>
@@ -2352,7 +504,7 @@ button:active:not(:disabled) {
       </div></details>
 <details class="settings-group"><summary>轻量记忆（activeTopics / pendingThoughts / memberImpressions）</summary><div class="settings-content">
       <div class="row">
-        <input type="text" id="v2MemoryKey" placeholder="group:123456789" style="flex:1">
+        <input type="text" id="v2MemoryKey" placeholder="group:123456789" class="field-flex">
         <button id="v2MemoryLoad" class="small">加载记忆</button>
         <button id="v2MemoryClearAll" class="small danger">清空全部</button>
         <span class="meta" id="v2MemoryMsg"></span>
@@ -2362,7 +514,7 @@ button:active:not(:disabled) {
       </div></details>
 <details class="settings-group"><summary>唤醒状态（AI 当前设置的下一次唤醒条件/倒计时）</summary><div class="settings-content">
       <div class="row">
-        <input type="text" id="v2WakeKey" placeholder="group:123456789" style="flex:1">
+        <input type="text" id="v2WakeKey" placeholder="group:123456789" class="field-flex">
         <button id="v2WakeStatusLoad" class="small">查看唤醒状态</button>
         <span class="meta" id="v2WakeStatusMsg"></span>
       </div>
@@ -2371,32 +523,47 @@ button:active:not(:disabled) {
 </div></details>
 <details class="settings-group"><summary>白名单会话快速选择</summary><div class="settings-content">
       <div class="row">
-        <select id="v2SessionSelect" style="flex:1"><option value="">选择白名单群/私聊…</option></select>
+        <select id="v2SessionSelect" class="field-flex"><option value="">选择白名单群/私聊…</option></select>
         <button id="v2SessionRefresh" class="small">刷新</button>
       </div>
 
       </div></details>
 <details class="settings-group"><summary>会话状态查看</summary><div class="settings-content">
       <div class="row">
-        <input type="text" id="v2StateKey" placeholder="group:123456789" style="flex:1">
+        <input type="text" id="v2StateKey" placeholder="group:123456789" class="field-flex">
         <button id="v2StateView" class="small">查看</button>
         <button id="v2ForceWake" class="small">立即唤醒</button>
         <button id="v2StatesList" class="small">列出全部会话状态</button>
       </div>
       <pre id="v2StateOutput">（空）</pre>
-      <pre id="v2AllStatesOutput" style="margin-top:6px">（全部会话状态：空）</pre>
+      <pre id="v2AllStatesOutput" class="mt-6">（全部会话状态：空）</pre>
     </div></details>
-<div class="save-bar">      <div class="row" style="margin-top:10px">
-        <button id="v2ConfigSave" style="font-weight:bold;padding:8px 16px">保存当前参数（写入 config.json）</button>
+<div class="save-bar">      <div class="row mt-10">
+        <button id="v2ConfigSave" class="btn-bold">保存当前参数（写入 config.json）</button>
         <span class="meta" id="v2ConfigMsg"></span>
       </div>
-      <div class="meta" style="margin-top:4px">修改上面任意推荐/默认参数后，必须点这个按钮才会持久化；保存后会自动应用到仍使用默认唤醒配置的会话，重启后仍然保留。</div>
+      <div class="meta mt-4">修改上面任意推荐/默认参数后，必须点这个按钮才会持久化；保存后会自动应用到仍使用默认唤醒配置的会话，重启后仍然保留。</div>
 
       </div></section>
+<section id="section-emotion" data-page="emotion" class="card span-all">
+      <h2>她的情绪 <span class="meta" id="emotionRoleHint">此刻的心情，和每一句话的来处</span></h2>
+      <div class="meta">这页看的是<b>她此刻的心情</b>和<b>她每句话发出时的情绪</b>。心情会随时间自己回落（半衰期见下），关系账本（亲密/张力）会长期累积；点「在记忆银河里看」能看到这些心情对应的往事。</div>
+      <div class="row settings-line">
+        <label class="meta" for="emotionKeySel">看哪个会话</label>
+        <select id="emotionKeySel" class="field-minw-220"></select>
+        <button id="emotionReload" class="small">刷新</button>
+        <button id="emotionGalaxyBtn" class="small">在记忆银河里看 →</button>
+        <span class="meta" id="emotionMsg"></span>
+      </div>
+      <div id="emotionBody" class="mt-12">
+        <div class="meta">正在读取她的情绪…</div>
+      </div>
+    </section>
 <section id="section-memory" data-page="memory" class="card span-all">
+      <div class="row mt-10"><button data-view="memory-archive" class="small" type="button">完整记忆库 →</button></div>
       <h2>她的记忆 <span class="meta" id="memoryRoleHint"></span></h2>
       <div class="meta">这一页看的是<b>她过成了一个什么样的人</b>。她自己的一生是主线；她在意的事、认识的人、经历过的日子都围绕她展开——不是谁的附属记录。</div>
-      <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:8px">
+      <div class="row row-wrap-mt-10">
         <button id="memoryReload" class="small">刷新</button>
         <button id="memoryArchiveBtn" class="small">看她完整记忆库 →</button>
         <span class="meta" id="memoryMsg"></span>
@@ -2421,7 +588,7 @@ button:active:not(:disabled) {
 
       <details class="mem-layer">
         <summary><b>记忆的账本</b> <span class="meta">规模 / 分档 / 一致性 / 最近检索</span></summary>
-        <div id="memorySummary" class="overview-summary" style="margin-top:10px"></div>
+        <div id="memorySummary" class="overview-summary mt-10"></div>
         <div id="memoryAudit" class="connection-alert" role="status" hidden></div>
         <h3 class="memory-heading">最近检索（她查过什么、命中多少）</h3>
         <div id="memoryRecalls" class="memory-list">（加载中…）</div>
@@ -2430,10 +597,10 @@ button:active:not(:disabled) {
 <section id="section-memory-archive" data-page="memory-archive" class="card span-all">
       <h2>她的完整记忆库</h2>
       <div class="meta">面板页是摘要，这里是<b>原文</b>：她自己的一生、她在意的事、她认识的人，以及一天不落的事件流。只读，用来核对与回溯——你可以看她经历过什么，但她的完整人生不是任何人的仪表盘。</div>
-      <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:8px">
+      <div class="row row-wrap-mt-10">
         <button id="archiveBack" class="small">← 返回记忆面板</button>
         <button id="archiveReload" class="small">刷新</button>
-        <input id="archiveSearch" type="search" placeholder="搜她记得的东西…" style="flex:1;min-width:200px">
+        <input id="archiveSearch" type="search" placeholder="搜她记得的东西…" class="field-flex-min200">
         <span class="meta" id="archiveMsg"></span>
       </div>
       <div class="archive-tabs" id="archiveTabs">
@@ -2454,44 +621,15 @@ button:active:not(:disabled) {
         </div>
       </div>
     </section>
-<section id="section-memory-graph" data-page="memory-graph" class="card span-all">
-      <div class="atlas">
-        <div class="atlas-head">
-          <div class="atlas-brand">
-            <div class="atlas-kicker">MY MEMORY ATLAS / LIVE</div>
-            <h2>记忆星图</h2>
-            <div class="meta">那些留下来的光——把她记得的事，照亮一点。</div>
-          </div>
-          <div class="atlas-stats" id="atlasStats"></div>
-          <div class="atlas-actions">
-            <button id="graphPause" class="small">暂停旋转</button>
-            <button id="graphReset" class="small">重置视角</button>
-            <button id="graphReload" class="small">刷新数据</button>
-            <button id="graphPanels" class="small">收起侧栏</button>
-            <button id="graphFull" class="small">全屏</button>
-          </div>
-        </div>
-        <div class="atlas-body">
-          <aside class="atlas-left">
-            <div class="atlas-caption">中央那团<b>金色星云就是她自己</b>（她的一生五层都在里面，按深浅着色）；周围是她的<b>星云</b>（她认识的人、约定、她经历的日子）和外围的散星。点星云聚焦、点光点看原文。左键拖动旋转，<b>右键拖动平移视角</b>，滚轮缩放，双击复位。</div>
-            <div class="atlas-legend" id="atlasLegend"></div>
-            <div class="atlas-clouds" id="atlasClouds"></div>
-          </aside>
-          <div class="atlas-canvas-wrap">
-            <canvas id="memoryGraphCanvas" width="1200" height="700" aria-label="记忆星图"></canvas>
-            <div id="graphTooltip" class="graph-tooltip" hidden></div>
-          </div>
-          <aside class="atlas-right">
-            <div class="atlas-search">
-              <input id="graphSearch" type="search" placeholder="找一句记得的话…" autocomplete="off">
-              <div class="meta">搜原话、人名，或一个词</div>
-            </div>
-            <div id="graphDetail" class="atlas-detail">点一颗星，看看她记得什么。</div>
-            <div class="atlas-core" id="atlasCore"></div>
-          </aside>
-        </div>
+<section id="section-memory-galaxy" data-page="memory-galaxy" class="card span-all card-flush">
+    <div id="galaxyViewWrap">
+      <div class="galaxy-toolbar">
+        <div><strong>记忆银河</strong><span class="meta ml-8">长期记忆可视化 · 星图随数据自动刷新</span></div>
+        <button id="galaxyFullscreen" class="small" type="button">全屏</button>
       </div>
-    </section>
+      <iframe id="galaxyFrame" title="记忆银河" loading="lazy"></iframe>
+    </div>
+  </section>
 <section id="section-slang" data-page="slang" class="card span-all">
       <h2>群聊黑话 / 网络用语库</h2>
       <div class="meta">DSH 会从群聊中自动提取疑似黑话候选；二代仿真模式下 AI 也可用 <code>qq_slang_submit</code> 主动提交陌生词。候选可批量送 DSH 深度联网研究，研究结果回到控制台由你删改修正后转正；确认后的词条会写入“黑话提示词”，注入一代/二代 AI 的聊天上下文，成为 AI 可查询和使用的记忆。</div>
@@ -2505,8 +643,8 @@ button:active:not(:disabled) {
 
       <!-- 候选词面板 -->
       <div class="slang-panel active" id="slangPanelCandidate">
-        <div class="row" style="margin-top:8px">
-          <label style="display:flex;align-items:center;gap:6px;margin:0"><input type="checkbox" id="slangCandidateSelectAll"> 全选</label>
+        <div class="row mt-8">
+          <label class="row-tight"><input type="checkbox" id="slangCandidateSelectAll"> 全选</label>
           <button id="slangBatchResearch" class="small">批量送 DSH 深度研究</button>
           <button id="slangBatchConfirm" class="small">批量确认（有含义）</button>
           <button id="slangBatchReject" class="small">批量拒绝</button>
@@ -2514,9 +652,9 @@ button:active:not(:disabled) {
           <button id="slangExtract" class="small">立即提取候选</button>
           <button id="slangResearch" class="small">研究全部候选</button>
         </div>
-        <div class="row" style="margin-top:8px">
-          <input type="text" id="slangSearchCand" placeholder="搜索词条 / 草稿含义 / 语境证据" style="flex:1">
-          <select id="slangLimitCand" style="width:110px">
+        <div class="row mt-8">
+          <input type="text" id="slangSearchCand" placeholder="搜索词条 / 草稿含义 / 语境证据" class="field-flex">
+          <select id="slangLimitCand" class="field-w-110">
             <option value="50">每页 50</option>
             <option value="100" selected>每页 100</option>
             <option value="200">每页 200</option>
@@ -2528,13 +666,13 @@ button:active:not(:disabled) {
 
       <!-- 已确认面板 -->
       <div class="slang-panel" id="slangPanelConfirmed">
-        <div class="row" style="margin-top:8px">
-          <label style="display:flex;align-items:center;gap:6px;margin:0"><input type="checkbox" id="slangConfirmedSelectAll"> 全选</label>
+        <div class="row mt-8">
+          <label class="row-tight"><input type="checkbox" id="slangConfirmedSelectAll"> 全选</label>
           <button id="slangBatchDeleteConfirmed" class="small danger">批量删除已确认</button>
         </div>
-        <div class="row" style="margin-top:8px">
-          <input type="text" id="slangSearchConfirmed" placeholder="搜索词条 / 含义 / 用法 / 示例 / 来源" style="flex:1">
-          <select id="slangLimitConfirmed" style="width:110px">
+        <div class="row mt-8">
+          <input type="text" id="slangSearchConfirmed" placeholder="搜索词条 / 含义 / 用法 / 示例 / 来源" class="field-flex">
+          <select id="slangLimitConfirmed" class="field-w-110">
             <option value="50">每页 50</option>
             <option value="100" selected>每页 100</option>
             <option value="200">每页 200</option>
@@ -2546,14 +684,14 @@ button:active:not(:disabled) {
 
       <!-- 已拒绝面板 -->
       <div class="slang-panel" id="slangPanelRejected">
-        <div class="row" style="margin-top:8px">
-          <label style="display:flex;align-items:center;gap:6px;margin:0"><input type="checkbox" id="slangRejectedSelectAll"> 全选</label>
+        <div class="row mt-8">
+          <label class="row-tight"><input type="checkbox" id="slangRejectedSelectAll"> 全选</label>
           <button id="slangBatchRestore" class="small">恢复为候选</button>
           <button id="slangBatchDeleteRejected" class="small danger">批量删除已拒绝</button>
         </div>
-        <div class="row" style="margin-top:8px">
-          <input type="text" id="slangSearchRejected" placeholder="搜索词条 / 拒绝原因" style="flex:1">
-          <select id="slangLimitRejected" style="width:110px">
+        <div class="row mt-8">
+          <input type="text" id="slangSearchRejected" placeholder="搜索词条 / 拒绝原因" class="field-flex">
+          <select id="slangLimitRejected" class="field-w-110">
             <option value="50">每页 50</option>
             <option value="100" selected>每页 100</option>
             <option value="200">每页 200</option>
@@ -2564,45 +702,45 @@ button:active:not(:disabled) {
       </div>
 
       <div class="divider"></div>
-      <div class="meta" style="margin-bottom:6px">手动添加黑话</div>
+      <div class="meta mb-6">手动添加黑话</div>
       <div class="row">
-        <input type="text" id="slangContent" placeholder="词条，如：绝绝子" style="flex:1">
-        <input type="text" id="slangMeaning" placeholder="含义，如：很好、很棒" style="flex:1">
+        <input type="text" id="slangContent" placeholder="词条，如：绝绝子" class="field-flex">
+        <input type="text" id="slangMeaning" placeholder="含义，如：很好、很棒" class="field-flex">
       </div>
-      <div class="row" style="margin-top:6px">
-        <input type="text" id="slangUsage" placeholder="用法（可选）" style="flex:1">
-        <input type="text" id="slangExample" placeholder="示例（可选）" style="flex:1">
+      <div class="row mt-6">
+        <input type="text" id="slangUsage" placeholder="用法（可选）" class="field-flex">
+        <input type="text" id="slangExample" placeholder="示例（可选）" class="field-flex">
       </div>
-      <div class="row" style="margin-top:8px">
+      <div class="row mt-8">
         <button id="slangAdd" class="small">添加入库（确认）</button>
       </div>
-      <details style="margin-top:10px">
+      <details class="mt-10">
         <summary class="meta">黑话系统参数（可调）</summary>
         <div class="row">
-          <label style="flex:1">启用黑话学习</label><input type="checkbox" id="slangEnabled" style="width:auto">
+          <label class="field-flex">启用黑话学习</label><input type="checkbox" id="slangEnabled" class="field-w-auto">
         </div>
         <div class="row">
-          <label style="flex:1">触发提取最少消息数</label><input type="number" id="slangExtractMin" min="1" style="width:90px">
+          <label class="field-flex">触发提取最少消息数</label><input type="number" id="slangExtractMin" min="1" class="field-w-90">
         </div>
         <div class="row">
-          <label style="flex:1">提取冷却（毫秒）</label><input type="number" id="slangCooldown" min="0" step="1000" style="width:110px">
+          <label class="field-flex">提取冷却（毫秒）</label><input type="number" id="slangCooldown" min="0" step="1000" class="field-w-110">
         </div>
         <div class="row">
-          <label style="flex:1">研究触发阈值（逗号分隔）</label><input type="text" id="slangThresholds" placeholder="2,4,8" style="width:120px">
+          <label class="field-flex">研究触发阈值（逗号分隔）</label><input type="text" id="slangThresholds" placeholder="2,4,8" class="field-w-120">
         </div>
         <div class="row">
-          <label style="flex:1">注入最大条数</label><input type="number" id="slangInjectMax" min="1" max="30" style="width:90px">
+          <label class="field-flex">注入最大条数</label><input type="number" id="slangInjectMax" min="1" max="30" class="field-w-90">
         </div>
         <div class="row">
-          <label style="flex:1">学习会话 preset</label><input type="text" id="slangLearnerPreset" placeholder="qq-chat" style="width:120px">
+          <label class="field-flex">学习会话 preset</label><input type="text" id="slangLearnerPreset" placeholder="qq-chat" class="field-w-120">
         </div>
         <div class="row">
-          <label style="flex:1">学习工作区名</label><input type="text" id="slangWorkspaceTitle" placeholder="QQ 黑话学习" style="width:120px">
+          <label class="field-flex">学习工作区名</label><input type="text" id="slangWorkspaceTitle" placeholder="QQ 黑话学习" class="field-w-120">
         </div>
         <div class="row">
-          <label style="flex:1">自动联网研究</label><input type="checkbox" id="slangAutoResearch" style="width:auto">
+          <label class="field-flex">自动联网研究</label><input type="checkbox" id="slangAutoResearch" class="field-w-auto">
         </div>
-        <div class="row" style="margin-top:8px">
+        <div class="row mt-8">
           <button id="slangConfigSave" class="small">保存黑话参数</button>
           <span class="meta" id="slangConfigMsg"></span>
         </div>
@@ -2623,7 +761,7 @@ button:active:not(:disabled) {
         <tr><td>qq_slang_query</td><td>查询已确认黑话/梗/网络表达（只读）</td></tr>
         <tr><td>qq_slang_submit</td><td>AI 提交陌生词/黑话给管理员筛选</td></tr>
       </table>
-      <div class="meta" style="margin-top:10px">二代仿真模式工具：qq_get_prompt / qq_get_unread_messages / qq_get_recent_messages / qq_social_state / qq_send_burst / qq_send_message / qq_wait_for_messages / qq_set_wake_config / qq_mark_read / qq_memory_* / qq_slang_query / qq_slang_submit 等。</div>
+      <div class="meta mt-10">二代仿真模式工具：qq_get_prompt / qq_get_unread_messages / qq_get_recent_messages / qq_social_state / qq_send_burst / qq_send_message / qq_wait_for_messages / qq_set_wake_config / qq_mark_read / qq_memory_* / qq_slang_query / qq_slang_submit 等。</div>
     </section>
 <section id="section-whitelist" data-page="access" class="card span-all">
       <h2>白名单 / 管理员</h2>
@@ -2638,7 +776,7 @@ button:active:not(:disabled) {
       <input type="text" id="dnGroups" placeholder="">
       <label>拒绝的私聊 QQ（黑名单，逗号分隔）</label>
       <input type="text" id="dnPrivate" placeholder="">
-      <div class="row" style="margin-top:10px">
+      <div class="row mt-10">
         <button id="wlSave">保存白名单</button>
         <span class="meta">保存后立即生效并写入 config.json</span>
       </div>
@@ -2654,9 +792,9 @@ button:active:not(:disabled) {
 <section id="section-dsh" data-page="overview" class="card span-all">
       <h2 data-note="下一条消息生效">DSH 模型与思考强度</h2>
       <div class="meta">模型：<span id="dshModelText">-</span> ｜ 提供方：<span id="dshProviderText">-</span></div>
-      <div class="row" style="margin-top:10px">
-        <label style="flex:0 0 auto">思考强度</label>
-        <select id="dshEffortSelect" style="flex:0 1 220px"></select>
+      <div class="row mt-10">
+        <label class="field-shrink0">思考强度</label>
+        <select id="dshEffortSelect" class="field-grow-220"></select>
         <button id="dshEffortSave">保存</button>
         <span class="meta" id="dshEffortMsg"></span>
       </div>
@@ -2666,18 +804,18 @@ button:active:not(:disabled) {
 <section id="section-security" data-page="access" class="card">
       <h2>安全拦截通知</h2>
       <div class="row">
-        <label style="flex:1">拦截时在群里发提示</label><input type="checkbox" id="secInterceptNotify" style="width:auto">
+        <label class="field-flex">拦截时在群里发提示</label><input type="checkbox" id="secInterceptNotify" class="field-w-auto">
       </div>
-      <div class="row" style="margin-top:8px">
+      <div class="row mt-8">
         <button id="secSave" class="small">保存安全设置</button>
         <span class="meta" id="secMsg"></span>
       </div>
       <div class="meta">开启：回复被安全拦截时会在群里提示；关闭：直接沉默，只在日志/活动记录里留下记录。</div>
-      <div id="stateDirWarn" style="display:none;margin-top:10px;padding:8px 10px;border-left:3px solid var(--warn,#d08700);background:rgba(208,135,0,.08)">
+      <div id="stateDirWarn" class="warn-box" hidden>
         <b>⚠️ state/ 目录权限未收紧</b>
-        <div class="meta" style="margin:4px 0">Windows 上改文件权限需要管理员身份，本次启动没能收紧 <code id="stateDirPath"></code>。它里面的控制台令牌、SnowLuma 令牌、各会话令牌与 QQ 聊天记录，本机任何已登录用户都可能读到。</div>
+        <div class="meta mv-4">Windows 上改文件权限需要管理员身份，本次启动没能收紧 <code id="stateDirPath"></code>。它里面的控制台令牌、SnowLuma 令牌、各会话令牌与 QQ 聊天记录，本机任何已登录用户都可能读到。</div>
         <div class="meta">两种做法：① 用<b>管理员身份</b>打开终端执行下面这条命令（一次即可，可复制）；② 或者<b>用管理员身份重启桥接</b>，让它自己收紧。做完点下面的按钮复检。</div>
-        <pre id="stateDirCmd" style="user-select:all;overflow:auto;margin:4px 0;padding:6px;background:rgba(127,127,127,.12);border-radius:4px"></pre>
+        <pre id="stateDirCmd" class="code-block"></pre>
         <button id="stateDirReharden" class="small">重新检测</button>
         <span class="meta" id="stateDirMsg"></span>
       </div>
@@ -2686,7 +824,7 @@ button:active:not(:disabled) {
       <h2>控制台访问令牌</h2>
       <div class="meta">用于打开本控制台 / 调用管理 API 的令牌。可手动输入新令牌保存，或留空生成随机令牌。修改后当前页面会自动使用新令牌。</div>
       <input type="password" id="consoleTokenInput" placeholder="输入新令牌（至少 16 位），留空则生成随机" autocomplete="new-password">
-      <div class="row" style="margin-top:8px">
+      <div class="row mt-8">
         <button id="consoleTokenSave" class="small">保存令牌</button>
         <button id="consoleTokenRandom" class="small">生成随机令牌</button>
         <span class="meta" id="consoleTokenMsg"></span>
@@ -2695,15 +833,15 @@ button:active:not(:disabled) {
 <section id="section-test-send" data-page="operations" class="card">
       <h2>测试发送</h2>
       <div class="row">
-        <select id="tsKind" style="width:100px">
+        <select id="tsKind" class="field-w-100">
           <option value="group">群</option>
           <option value="private">私聊</option>
         </select>
-        <input type="text" id="tsId" placeholder="群号 / QQ 号" style="width:140px">
+        <input type="text" id="tsId" placeholder="群号 / QQ 号" class="field-w-140">
       </div>
       <label>消息内容</label>
       <textarea id="tsMsg" placeholder="这是一条测试消息"></textarea>
-      <div class="row" style="margin-top:8px">
+      <div class="row mt-8">
         <button id="tsSend">发送测试</button>
         <span class="meta" id="tsMsg2"></span>
       </div>
@@ -2715,7 +853,7 @@ button:active:not(:disabled) {
         <button id="restartBtn" class="danger">重启桥接</button>
         <span class="meta" id="restartMsg"></span>
       </div>
-      <div class="row" style="margin-top:10px">
+      <div class="row mt-10">
         <button id="clearWsBtn" class="danger">清空 QQ 聊天工作区</button>
         <span class="meta" id="clearWsMsg"></span>
       </div>
@@ -2724,16 +862,16 @@ button:active:not(:disabled) {
 <section id="section-notify" data-page="operations" class="card span-all">
       <h2>后台控制端引导</h2>
       <div class="meta">直接向指定 QQ 会话的 DSH agent 投递一条“后台控制端提醒”，用于给 AI 引导/提醒；该消息不是群友消息。二代模式（reserved2）下会自动附带会话令牌和二代工具协议说明，AI 的文本输出不会自动转发，发言需通过发送工具。</div>
-      <div class="row" style="margin-top:10px">
-        <select id="aiNotifyKind" style="width:110px">
+      <div class="row mt-10">
+        <select id="aiNotifyKind" class="field-w-110">
           <option value="group">群</option>
           <option value="private">私聊</option>
         </select>
-        <input type="text" id="aiNotifyId" placeholder="群号 / QQ 号" style="width:180px">
+        <input type="text" id="aiNotifyId" placeholder="群号 / QQ 号" class="field-w-180">
       </div>
       <label>提醒内容（发给 DSH agent 的引导/提醒）</label>
       <textarea id="aiNotifyMessage" placeholder="例如：接下来群里聊到某个话题时，你可以更主动一点；或：先潜水，等我叫你。"></textarea>
-      <div class="row" style="margin-top:8px">
+      <div class="row mt-8">
         <button id="aiNotifySend">发送到 DSH</button>
         <span class="meta" id="aiNotifyMsg"></span>
       </div>
@@ -2773,7 +911,7 @@ button:active:not(:disabled) {
         <span><i class="peak"></i>高峰时段（单价 ×2）</span>
         <span><i class="mixed"></i>跨时段</span>
       </div>
-      <div class="meta" id="usageChartNote" style="margin-top:6px"></div>
+      <div class="meta mt-6" id="usageChartNote"></div>
       <h3 class="usage-h3">按会话（群 / 私聊）</h3>
       <div class="tool-log-table" id="usageConversations">加载中…</div>
       <h3 class="usage-h3">逐轮花费 <span class="meta" id="usageTurnScope">—</span></h3>
@@ -2798,7 +936,7 @@ button:active:not(:disabled) {
       <div class="modal-overlay" id="slangModalOverlay">
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="slangModalTitle" tabindex="-1">
         <h3 id="slangModalTitle">确认黑话</h3>
-        <div class="meta" id="slangModalContent" style="margin-bottom:6px"></div>
+        <div class="meta mb-6" id="slangModalContent"></div>
         <label>含义 *</label>
         <input type="text" id="slangModalMeaning" placeholder="必须填写，确认后才会注入 AI 上下文">
         <label>用法（可选）</label>
@@ -2822,6 +960,18 @@ button:active:not(:disabled) {
   <noscript><div class="connection-alert">控制台需要启用 JavaScript 才能加载状态及保存设置。</div></noscript>
 
 <script>
+// 任何未捕获的脚本错误都显示到状态条：页面之前会静默停在「正在连接…」，
+// 谁都看不出是 JS 挂了还是接口慢。
+window.addEventListener('error', (e) => {
+  try {
+    const el = document.getElementById('statusText');
+    if (el && e && e.message) {
+      el.textContent = `页面脚本错误：${e.message} @${e.lineno}:${e.colno}`;
+      el.classList.add('status-text-error');
+    }
+  } catch {}
+});
+
 (function () {
   // 如果通过 ?token= 进入（控制台启用鉴权时根路径会重定向带 token），存到 localStorage
   const qs = new URLSearchParams(location.search);
@@ -3353,7 +1503,7 @@ async function loadVoiceLibrary(force) {
         // v.name / v.error / v.detail 来自语音库的文件名与探测结果，属于**外部数据**：
         // 语音库目录里放一个名为 `x<img src=x onerror=...>.mp3` 的文件即可注入脚本
         // （CSP 允许 unsafe-inline，拦不住内联事件处理器）。所有插值都必须过 esc()。
-        return '<label style="display:block;margin:2px 0">'
+        return '<label class="block-note">'
           + '<input type="radio" name="voicePick" value="' + i + '"' + (i === 0 ? ' checked' : '') + '> '
           + '<code>' + esc(v.name) + '</code> ' + (bad ? '❌ ' + esc(v.error || '不可用') : esc(v.detail || ''))
           + '</label>';
@@ -3697,19 +1847,19 @@ function renderV2Memory(data) {
   const topics = Array.isArray(raw.activeTopics) ? raw.activeTopics : [];
   const thoughts = Array.isArray(raw.pendingThoughts) ? raw.pendingThoughts : [];
   const impressions = raw.memberImpressions && typeof raw.memberImpressions === 'object' ? raw.memberImpressions : {};
-  let html = '<div style="padding:8px">';
+  let html = '<div class="pad-8">';
   html += '<div class="memory-section"><b>进行中的话题</b> <button class="small" data-action="clear" data-cat="activeTopic">清空</button>';
   if (!topics.length) html += '<div class="meta">（空）</div>';
   for (const t of topics) {
     const text = esc(String(t?.text || ''));
     const extra = t?.pendingQuestion ? `；待追问：${esc(String(t.pendingQuestion))}` : '';
-    html += `<div style="margin:4px 0">📌 ${text}${extra} <button class="small" data-action="edit" data-cat="activeTopic" data-content="${esc(String(t?.text || ''))}">编辑</button> <button class="small" data-action="remove" data-cat="activeTopic" data-content="${esc(String(t?.text || ''))}">删除</button></div>`;
+    html += `<div class="mv-4">📌 ${text}${extra} <button class="small" data-action="edit" data-cat="activeTopic" data-content="${esc(String(t?.text || ''))}">编辑</button> <button class="small" data-action="remove" data-cat="activeTopic" data-content="${esc(String(t?.text || ''))}">删除</button></div>`;
   }
   html += '</div>';
   html += '<div class="memory-section"><b>你想说但还没说的</b> <button class="small" data-action="clear" data-cat="pendingThought">清空</button>';
   if (!thoughts.length) html += '<div class="meta">（空）</div>';
   for (const t of thoughts) {
-    html += `<div style="margin:4px 0">💭 ${esc(String(t?.text || ''))}${t?.motivation ? `（${esc(String(t.motivation))}）` : ''} <button class="small" data-action="edit" data-cat="pendingThought" data-content="${esc(String(t?.text || ''))}">编辑</button> <button class="small" data-action="remove" data-cat="pendingThought" data-content="${esc(String(t?.text || ''))}">删除</button></div>`;
+    html += `<div class="mv-4">💭 ${esc(String(t?.text || ''))}${t?.motivation ? `（${esc(String(t.motivation))}）` : ''} <button class="small" data-action="edit" data-cat="pendingThought" data-content="${esc(String(t?.text || ''))}">编辑</button> <button class="small" data-action="remove" data-cat="pendingThought" data-content="${esc(String(t?.text || ''))}">删除</button></div>`;
   }
   html += '</div>';
   html += '<div class="memory-section"><b>对群友的印象</b> <button class="small" data-action="clear" data-cat="memberImpression">清空</button>';
@@ -3718,7 +1868,7 @@ function renderV2Memory(data) {
   for (const name of names) {
     const im = impressions[name] || {};
     const traits = Array.isArray(im.traits) ? im.traits : [];
-    html += `<div style="margin:4px 0">👤 ${esc(name)}：${traits.length ? esc(traits.join('、')) : '暂无记录'}（互动 ${Number(im.interactionCount) || 0} 次） <button class="small" data-action="edit" data-cat="memberImpression" data-target="${esc(name)}" data-traits="${esc(traits.join(', '))}">编辑</button> <button class="small" data-action="remove" data-cat="memberImpression" data-target="${esc(name)}">删除</button></div>`;
+    html += `<div class="mv-4">👤 ${esc(name)}：${traits.length ? esc(traits.join('、')) : '暂无记录'}（互动 ${Number(im.interactionCount) || 0} 次） <button class="small" data-action="edit" data-cat="memberImpression" data-target="${esc(name)}" data-traits="${esc(traits.join(', '))}">编辑</button> <button class="small" data-action="remove" data-cat="memberImpression" data-target="${esc(name)}">删除</button></div>`;
   }
   html += '</div></div>';
   box.innerHTML = html;
@@ -3830,7 +1980,7 @@ function formatWakeStatus(r) {
     lines.push(`<div><b>上次发言：</b>${ago} 分钟前</div>`);
   }
   lines.push(`<div><b>未读：</b>${Number(r.unreadCount) || 0} 条</div>`);
-  return '<div style="padding:8px">' + lines.join('') + '</div>';
+  return '<div class="pad-8">' + lines.join('') + '</div>';
 }
 function loadV2WakeStatus() {
   const key = document.getElementById('v2WakeKey').value.trim();
@@ -4131,13 +2281,13 @@ function renderSlangPanel() {
   const q = getSlangSearch();
   const filtered = q ? list.filter((e) => slangSearchFields(e).includes(q)) : list;
   if (!filtered.length) {
-    box.innerHTML = '<div class="meta" style="padding:8px">' + (list.length ? '没有符合条件的词条' : (status === 'candidate' ? '暂无候选黑话，等 DSH 自动提取、AI 提交或手动添加' : status === 'confirmed' ? '暂无已确认黑话' : '暂无已拒绝词条')) + '</div>';
+    box.innerHTML = '<div class="meta pad-8">' + (list.length ? '没有符合条件的词条' : (status === 'candidate' ? '暂无候选黑话，等 DSH 自动提取、AI 提交或手动添加' : status === 'confirmed' ? '暂无已确认黑话' : '暂无已拒绝词条')) + '</div>';
     updateSlangSelectAll(status);
     return;
   }
   const limit = getSlangLimit();
   const shown = filtered.slice(0, limit);
-  let html = `<div class="meta" style="padding:6px 8px">共 ${filtered.length} 条，显示 ${shown.length} 条（可滚动查找）</div>`;
+  let html = `<div class="meta pad-6-8">共 ${filtered.length} 条，显示 ${shown.length} 条（可滚动查找）</div>`;
   html += '<table><tr><th>选择</th><th>词条</th><th>次数</th><th>来源</th><th>含义 / 用法 / 示例</th><th>参考来源</th><th>语境证据</th><th>操作</th></tr>';
   for (const e of shown) {
     const meaning = e.meaning ? esc(e.meaning) : (status === 'candidate' ? '<span class="meta">待研究</span>' : '<span class="meta">无</span>');
@@ -4223,7 +2373,7 @@ function openSlangModal(id, mode) {
   document.getElementById('slangModalRisk').value = e.risk || '';
   document.getElementById('slangModalSources').value = Array.isArray(e.sources) ? e.sources.join('\n') : '';
   document.getElementById('slangModalDirectConfirm').textContent = mode === 'confirm' ? '直接确认（转正）' : '保存修改';
-  document.getElementById('slangModalSendResearch').style.display = mode === 'confirm' && e.status === 'candidate' ? '' : 'none';
+  document.getElementById('slangModalSendResearch').hidden = !(mode === 'confirm' && e.status === 'candidate');
   document.getElementById('slangModalOverlay').classList.add('open');
 }
 function closeSlangModal() {
@@ -4414,9 +2564,9 @@ function loadSecurity() {
     if (hardened === false) {
       document.getElementById('stateDirPath').textContent = r.stateDir?.path || 'state/';
       document.getElementById('stateDirCmd').textContent = r.stateDir?.manualCommand || '';
-      warn.style.display = '';
+      warn.hidden = false;
     } else {
-      warn.style.display = 'none';
+      warn.hidden = true;
     }
   }).catch(() => {});
 }
@@ -4470,7 +2620,8 @@ const consolePages = {
   slang: ['黑话词库', '读懂群聊里的，言外之意。', '从候选到确认，让 AI 逐渐熟悉大家的表达习惯。'],
   usage: ['令牌与花费', '每一次思考，都算得清楚。', '实时查看 AI 的 token 消耗与花费，可下钻到每个群、每个好友、每一轮对话。'],
   memory: ['她的记忆', '记住的不是数据，是走过的时间。', '看清她的四层长期记忆：事件流、摘要、长期档案与唤醒注入，并检查档案有没有记歪。'],
-  'memory-graph': ['记忆星图', '看得见的结构，才谈得上优化。', '把她记得的东西画成一张可探索的图：谁跟谁有关、哪些聚成团、哪些悬在外面。用来诊断记忆结构，不参与检索。'],
+  emotion: ['她的情绪', '看见她的心情，和每一句话的来处。', '此刻的情绪与关系，加上她每次开口时的情绪快照——和她的记忆放在同一张星图上。'],
+  'memory-galaxy': ['记忆银河', '她把记得的每一件事，都放在这里。', '长期记忆的可视化星图：记着的事、约定、心情和对话，按时间与强度分布在银河里，可以全屏打开。'],
   'memory-archive': ['她的完整记忆库', '她记得的一切，原文可查。', '她自己的一生、在意的事、认识的人，以及一天不落的事件流。只读。'],
   access: ['访问与安全', '明确边界，安心连接。', '管理允许对话的对象、管理员权限与控制台访问凭证。'],
   operations: ['调试与运维', '让桥接，始终井然有序。', '测试消息、引导 AI，或维护桥接进程与会话工作区。'],
@@ -4485,8 +2636,23 @@ function showConsoleToast(message) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { toast.hidden = true; }, 4200);
 }
-function setConsolePage(page, { updateHash = true, focus = false, target = '' } = {}) {
-  if (!Object.hasOwn(consolePages, page)) page = 'overview';
+// 旧深链别名：Atlas 已删除，历史书签仍指向 #memory-graph
+const LEGACY_PAGE_ALIASES = Object.freeze({ 'memory-graph': 'memory-galaxy' });
+function resolveConsolePage(page) {
+  return LEGACY_PAGE_ALIASES[page] || page;
+}
+function setConsolePage(requestedPage, { updateHash = true, focus = false, target = '' } = {}) {
+  const resolved = resolveConsolePage(requestedPage);
+  const aliased = resolved !== requestedPage;
+  const page = Object.hasOwn(consolePages, resolved) ? resolved : 'overview';
+  // 全屏时切走（hash 跳转/脚本切页）要主动退出，不依赖浏览器对隐藏元素自动退全屏的行为
+  if (currentConsolePage === 'memory-galaxy' && page !== 'memory-galaxy'
+    && (document.fullscreenElement || document.webkitFullscreenElement)) {
+    (function () {
+      var exit = document.exitFullscreen || document.webkitExitFullscreen;
+      if (exit) { try { Promise.resolve(exit.call(document)).catch(function () {}); } catch (e) {} }
+    })();
+  }
   currentConsolePage = page;
   document.querySelectorAll('[data-page]').forEach(el => { el.hidden = el.dataset.page !== page; });
   document.querySelectorAll('#mainNav [data-view]').forEach(button => {
@@ -4499,13 +2665,22 @@ function setConsolePage(page, { updateHash = true, focus = false, target = '' } 
   document.getElementById('pageTitle').textContent = consolePages[page][1];
   document.getElementById('pageDescription').textContent = consolePages[page][2];
   document.title = consolePages[page][0] + ' · QQ 桥接控制台';
-  if (updateHash && location.hash !== '#' + page) history.pushState({}, '', '#' + page);
+  if (aliased) {
+    // 别名重定向：replaceState 不触发 hashchange，也不会在历史里多留旧地址
+    if (location.hash !== '#' + page) {
+      try { history.replaceState({}, '', '#' + page); } catch {}
+    }
+  } else if (updateHash && location.hash !== '#' + page) {
+    history.pushState({}, '', '#' + page);
+  }
   closeConsoleSearch();
   // 语音库按需加载：进入二代仿真页时才探测（避免每次开控制台都压网关）。
   if (page === 'social-v2' && typeof loadVoiceLibrary === 'function') loadVoiceLibrary();
   // 长期记忆同样按需加载：只有进这个页面才读档案（档案会随时间变大）。
   if (page === 'memory' && typeof loadMemoryPanel === 'function') loadMemoryPanel();
-  if (page === 'memory-graph' && typeof loadMemoryGraph === 'function') loadMemoryGraph();
+  // 她的情绪：同样按需加载（只读 API，不写状态）。
+  if (page === 'emotion' && typeof loadEmotionPanel === 'function') loadEmotionPanel();
+  if (page === 'memory-galaxy') loadGalaxyFrame();
   if (page === 'memory-archive' && typeof loadMemoryArchive === 'function') loadMemoryArchive();
   if (focus) {
     document.getElementById('mainContent').focus({ preventScroll: true });
@@ -4515,10 +2690,17 @@ function setConsolePage(page, { updateHash = true, focus = false, target = '' } 
 document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
   setConsolePage(button.dataset.view, { focus: true, target: button.dataset.target });
 }));
-window.addEventListener('hashchange', () => {
-  const page = location.hash.slice(1);
-  if (Object.hasOwn(consolePages, page) || !page) setConsolePage(page, { updateHash: false });
-});
+function navigateFromHash() {
+  const raw = location.hash.slice(1);
+  const resolved = resolveConsolePage(raw);
+  // 未知页面（如手改成 #bad）：回退总览，但不回写 hash（避免污染历史/反复触发）。
+  if (raw && !Object.hasOwn(consolePages, resolved)) {
+    setConsolePage('overview', { updateHash: false });
+    return;
+  }
+  setConsolePage(raw, { updateHash: false });
+}
+window.addEventListener('hashchange', navigateFromHash);
 document.querySelector('.skip-link').addEventListener('click', event => {
   event.preventDefault();
   document.getElementById('mainContent').focus();
@@ -4552,11 +2734,50 @@ function setConnectionError(error) {
   alert.textContent = error.message === '未授权' ? '访问令牌无效或已取消输入。请使用启动日志中的控制台链接重新打开。' : '无法连接桥接服务，当前显示的是上次同步结果。请检查桥接是否运行，再点击右上角刷新。';
   alert.hidden = false;
 }
-document.getElementById('openGalaxy').addEventListener('click', function () {
+// 记忆银河：控制台内视图（iframe 懒加载），可点「全屏打开」进独立窗口。
+function galaxyFrameUrl() {
   var t = '';
   try { t = localStorage.getItem('consoleToken') || ''; } catch {}
-  location.href = '/galaxy/' + (t ? '?token=' + encodeURIComponent(t) : '');
-});
+  return '/galaxy/' + (t ? '?token=' + encodeURIComponent(t) : '');
+}
+function loadGalaxyFrame() {
+  var frame = document.getElementById('galaxyFrame');
+  if (!frame) return;
+  if (frame.dataset.loaded !== '1') {
+    frame.src = galaxyFrameUrl();
+    frame.dataset.loaded = '1';
+  }
+}
+// 全屏在控制台原窗口内进行（Fullscreen API），按钮变成「退出全屏」，Esc 也能退出。
+function toggleGalaxyFullscreen() {
+  var wrap = document.getElementById('galaxyViewWrap');
+  if (!wrap) return;
+  var fs = document.fullscreenElement || document.webkitFullscreenElement;
+  if (!fs) {
+    var req = wrap.requestFullscreen || wrap.webkitRequestFullscreen;
+    if (req) {
+      try {
+        // requestFullscreen 返回 Promise；只 try/catch 接不到异步拒绝（旧 Safari 返回 undefined 也能安全包）
+        Promise.resolve(req.call(wrap)).catch(function () {
+          console.warn('[console] 浏览器拒绝了全屏请求');
+        });
+      } catch (e) { console.warn('[console] 全屏调用失败', e); }
+    }
+  } else {
+    var exit = document.exitFullscreen || document.webkitExitFullscreen;
+    if (exit) {
+      try { Promise.resolve(exit.call(document)).catch(function () {}); } catch (e) {}
+    }
+  }
+}
+function syncGalaxyFullscreenButton() {
+  var btn = document.getElementById('galaxyFullscreen');
+  if (!btn) return;
+  btn.textContent = (document.fullscreenElement || document.webkitFullscreenElement) ? '退出全屏' : '全屏';
+}
+document.getElementById('galaxyFullscreen').addEventListener('click', toggleGalaxyFullscreen);
+document.addEventListener('fullscreenchange', syncGalaxyFullscreenButton);
+document.addEventListener('webkitfullscreenchange', syncGalaxyFullscreenButton);
 
 document.getElementById('refreshConsole').addEventListener('click', async function () {
   this.disabled = true;
@@ -4594,7 +2815,11 @@ const searchResults = document.getElementById('searchResults');
 const featureIndex = [];
 document.querySelectorAll('section[data-page]').forEach(section => {
   const page = section.dataset.page;
-  featureIndex.push({ page, label: section.querySelector('h2').textContent, target: section });
+  // 不是每个页面区块都有 <h2>（例如「记忆银河」是画布式布局，只有 <strong>）。
+  // 这里原来直接读 section.querySelector('h2').textContent，一旦为 null 就抛
+  // TypeError，把整段初始化脚本一起打断 —— 页面便永远停在「正在连接…／正在读取…」。
+  const heading = section.querySelector('h2');
+  featureIndex.push({ page, label: (heading?.textContent || page || '').trim(), target: section });
   section.querySelectorAll('details.settings-group>summary,input,textarea,select').forEach(el => {
     let label = el.tagName === 'SUMMARY' ? el.textContent : (el.getAttribute('aria-label') || el.labels?.[0]?.textContent || el.placeholder);
     if (label) featureIndex.push({ page, label: label.trim(), target: el });
@@ -4858,7 +3083,7 @@ function usageTime(ms) {
 function usageBar(share) {
   const ratio = Math.max(0, Math.min(1, Number(share) || 0));
   const width = Math.max(2, Math.round(ratio * 100));
-  return `<span class="usage-bar-wrap"><span class="usage-bar-track"><span class="usage-bar-fill" style="width:${width}%"></span></span><span class="meta">${(ratio * 100).toFixed(1)}%</span></span>`;
+  return `<span class="usage-bar-wrap"><progress class="usage-bar-fill" max="100" value="${Math.max(2, Math.round(ratio * 100))}" aria-label="用量占比 ${(ratio * 100).toFixed(1)}%"></progress><span class="meta">${(ratio * 100).toFixed(1)}%</span></span>`;
 }
 function usageTierTag(tier) {
   if (tier === 'peak') return '<span class="pill r usage-tier">高峰</span>';
@@ -4915,10 +3140,10 @@ function renderUsageConversations(r) {
   html += '</table>';
   const totals = r.totals || {};
   if (Number(totals.unattributedCost) > 0) {
-    html += `<div class="meta" style="padding:8px 10px">其中 ${usageMoney(totals.unattributedCost, sym)} 来自更早的回合：它们只剩累计值（在逐轮快照窗口之外），无法再拆到具体某一轮。</div>`;
+    html += `<div class="meta pad-8-10">其中 ${usageMoney(totals.unattributedCost, sym)} 来自更早的回合：它们只剩累计值（在逐轮快照窗口之外），无法再拆到具体某一轮。</div>`;
   }
   if (totals.estimated) {
-    html += '<div class="meta" style="padding:8px 10px">⚠️ 有模型未登记在价目表里，这部分按 <code>deepseek-flash</code> 兜底价估算，可在 <code>config.json</code> 的 <code>pricing.models</code> 补充。</div>';
+    html += '<div class="meta pad-8-10">⚠️ 有模型未登记在价目表里，这部分按 <code>deepseek-flash</code> 兜底价估算，可在 <code>config.json</code> 的 <code>pricing.models</code> 补充。</div>';
   }
   box.innerHTML = html;
   box.querySelectorAll('[data-usage-key]').forEach(btn => btn.addEventListener('click', () => {
@@ -4988,7 +3213,7 @@ function renderUsagePrices(pt) {
   if (!pt || !pt.models) { box.textContent = '（价目表不可用）'; return; }
   const sym = pt.symbol || '¥';
   const tier = pt.nowTier;
-  let html = `<div style="margin-bottom:6px">价目表版本 <code>${esc(pt.version)}</code> ｜ 高峰时段为北京时间的 2 倍价（周一至周五 9:00-12:00、14:00-18:00，法定节假日除外，已内置 ${esc(pt.holidayCount)} 天假期）</div>`;
+  let html = `<div class="mb-6">价目表版本 <code>${esc(pt.version)}</code> ｜ 高峰时段为北京时间的 2 倍价（周一至周五 9:00-12:00、14:00-18:00，法定节假日除外，已内置 ${esc(pt.holidayCount)} 天假期）</div>`;
   html += '<table><tr><th>模型</th><th class="num">缓存命中</th><th class="num">缓存未命中</th><th class="num">输出</th></tr>';
   for (const [name, m] of Object.entries(pt.models)) {
     // 单价与货币符号都可能来自 config.json 的 pricing 覆盖项（运维可写），
@@ -5000,7 +3225,7 @@ function renderUsagePrices(pt) {
       + `<td class="num">${price(m.off?.output)}</td></tr>`;
   }
   html += '</table>';
-  html += `<div class="meta" style="padding:8px 10px">上表为<b>空闲时段</b>单价（元 / 百万 token）。当前时刻属于 <b>${tier ? esc(tier.tierLabel) : '—'}</b>${tier?.estimated ? '，且价目表里没有 <code>' + esc(tier.model) + '</code>，按兜底价估算' : ''}。</div>`;
+  html += `<div class="meta pad-8-10">上表为<b>空闲时段</b>单价（元 / 百万 token）。当前时刻属于 <b>${tier ? esc(tier.tierLabel) : '—'}</b>${tier?.estimated ? '，且价目表里没有 <code>' + esc(tier.model) + '</code>，按兜底价估算' : ''}。</div>`;
   box.innerHTML = html;
 }
 
@@ -5090,9 +3315,41 @@ document.getElementById('usageClear').addEventListener('click', async () => {
   refreshUsageRecent();
 });
 
-setConsolePage(location.hash.slice(1), { updateHash:false });
+// 初始化时按 hash 定位页面（显式调用，不依赖 hashchange）：从 #emotion 直接刷新也能落对页。
+(function initConsolePage() {
+  const raw = location.hash.slice(1);
+  const page = raw && Object.hasOwn(consolePages, resolveConsolePage(raw)) ? resolveConsolePage(raw) : 'overview';
+  try {
+    setConsolePage(page, { updateHash: false });
+  } catch (error) {
+    console.error('[console] 初始化页面失败', page, error);
+  }
+})();
 
-refresh(); refreshRoles(); refreshWhitelist(); refreshSessions(); refreshPending(); refreshPresets(); loadSocialForm(); loadV2Config(); refreshV2Activity(); loadV2ToolLog(); loadV2SessionOptions(); refreshSocialStatus(); refreshSlang(); loadSlangConfig(); loadSecurity(); refreshSimPrompt(); refreshDshModel(); refreshUsage(); refreshUsageChart(); refreshUsageRecent();
+// 逐项初始化：任何一项出错都不许拖垮整页。
+// 原来这里是一条长串行裸调用，只要其中一项同步抛错，后面的全不执行，
+// 页面就永远停在「正在连接… / 正在读取人格卡 / 正在读取思考强度」。
+(function bootConsole() {
+  const tasks = [
+    ['refresh', refresh], ['refreshRoles', refreshRoles], ['refreshWhitelist', refreshWhitelist],
+    ['refreshSessions', refreshSessions], ['refreshPending', refreshPending], ['refreshPresets', refreshPresets],
+    ['loadSocialForm', loadSocialForm], ['loadV2Config', loadV2Config], ['refreshV2Activity', refreshV2Activity],
+    ['loadV2ToolLog', loadV2ToolLog], ['loadV2SessionOptions', loadV2SessionOptions],
+    ['refreshSocialStatus', refreshSocialStatus], ['refreshSlang', refreshSlang], ['loadSlangConfig', loadSlangConfig],
+    ['loadSecurity', loadSecurity], ['refreshSimPrompt', refreshSimPrompt], ['refreshDshModel', refreshDshModel],
+    ['refreshUsage', refreshUsage], ['refreshUsageChart', refreshUsageChart], ['refreshUsageRecent', refreshUsageRecent]
+  ];
+  for (const [name, fn] of tasks) {
+    try {
+      const p = fn();
+      if (p && typeof p.catch === 'function') p.catch((e) => console.warn('[console] 初始化失败:', name, e));
+    } catch (e) {
+      console.warn('[console] 初始化失败:', name, e);
+    }
+  }
+})();
+// 兜底：页面完全加载后再刷一次状态，避免首屏在资源就绪前就发请求失败后一直空着。
+window.addEventListener('load', () => { try { refresh(); } catch (e) { console.warn(e); } });
 setInterval(() => { refresh(); refreshSessions(); refreshPending(); refreshSocialStatus(); refreshSlang(); }, 3000);
 // 用量看板只在本页可见时轮询：既保证「实时」，又不让其它页白白多打两份接口。
 setInterval(() => { if (currentConsolePage !== 'usage') return; refreshUsage(); refreshUsageChart(); refreshUsageRecent(); }, 3000);
@@ -5285,6 +3542,198 @@ function renderMemoryPanel(data) {
     return `<div class="memory-recall"><span class="memory-query">${esc(String(r.q).slice(0, 44))}${times}</span><span class="memory-when">命中 ${r.hits} · ${esc(fmtAgo(r.latest))}</span></div>`;
   }).join('') : '<div class="memory-empty">还没有检索记录。</div>';
 }
+// ── 她的情绪：此刻的心情 + 每句话的情绪快照 ────────────────────────────
+// 数据：/api/socialV2/mood（当前情绪+来源事件）、/api/socialV2/relationship（关系）、
+// /api/socialV2/mood-history（她每次开口时的情绪快照，由 bridge 在发送时记录）。
+// 状态直接存在 select 元素上（不用顶层 const）：初始 hash 可能就是 #emotion，
+// setConsolePage 会在脚本中段调用本函数，那时顶层 const 还没执行到（TDZ）。
+
+function moodClassOf(valence) {
+  const v = Math.max(-1, Math.min(1, Number(valence) || 0));
+  if (v <= -0.5) return 'mood-cold';
+  if (v < -0.1) return 'mood-low';
+  if (v < 0.2) return 'mood-neutral';
+  if (v < 0.6) return 'mood-warm';
+  return 'mood-high';
+}
+function moodBandOf(v, a, energy) {
+  if (v <= -0.15 || (energy <= 0.35 && v < 0)) return '低落';
+  if (v >= 0.45) return a >= 0.6 ? '兴奋' : '开心';
+  return '平静';
+}
+function formatAgo(ms) {
+  const n = Math.max(0, Number(ms) || 0);
+  if (n < 60000) return '刚刚';
+  if (n < 3600000) return Math.floor(n / 60000) + ' 分钟前';
+  if (n < 86400000) return Math.floor(n / 3600000) + ' 小时前';
+  return Math.floor(n / 86400000) + ' 天前';
+}
+function formatClock(ts) {
+  const d = new Date(Number(ts) || 0);
+  if (!Number.isFinite(d.getTime())) return '—';
+  return d.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
+}
+function emotionMetric(label, value, colorClass, min, max, text) {
+  const pct = Math.max(0, Math.min(100, ((Number(value) - min) / (max - min)) * 100));
+  return '<div class="emotion-metric"><span class="emotion-metric-label">' + esc(label) + '</span>'
+    + '<span class="emotion-bar"><progress class="emotion-bar-fill ' + esc(colorClass) + '" max="100" value="' + Math.round(pct) + '" aria-label="' + esc(label) + '"></progress></span>'
+    + '<span class="emotion-metric-value">' + esc(text) + '</span></div>';
+}
+function emotionErrorLine(text) {
+  return '<div class="connection-alert m-0">' + esc(text) + ' <button class="small" id="emotionRetryInline" type="button">重试</button></div>';
+}
+function bindEmotionRetry() {
+  document.getElementById('emotionRetryInline')?.addEventListener('click', loadEmotionPanel);
+}
+function renderEmotionPanel({ mood, moodError, rel, relError, history, historyError }) {
+  const body = document.getElementById('emotionBody');
+  if (!body) return;
+  if (!mood || !mood.ok || !mood.mood) {
+    body.innerHTML = emotionErrorLine('读取她的情绪失败：' + ((moodError && moodError.message) || (mood && mood.error) || '未知错误'));
+    bindEmotionRetry();
+    return;
+  }
+  const m = mood.mood;
+  const v = Number(m.valence) || 0;
+  const a = Number(m.arousal) || 0;
+  const e = Number(m.energy) || 0;
+
+  const hist = history && history.ok && Array.isArray(history.history) ? history.history.slice().reverse() : [];
+  const band = hist.length && hist[0].moodBand ? hist[0].moodBand : moodBandOf(v, a, e);
+  const halfHours = Math.max(1, Math.round((Number(m.decayHalfLifeMs) || 0) / 3600000));
+  const cards = [];
+  cards.push('<div class="emotion-card">'
+    + '<div class="emotion-now"><span class="emotion-orb ' + moodClassOf(v) + '"></span>'
+    + '<div><div class="emotion-now-band">' + esc(band) + '</div><div class="meta">'
+    + (mood.known === false ? '还没有她的情绪记录（基线状态）' : '此刻的心情') + '</div></div></div>'
+    + emotionMetric('心情 valence', v, moodClassOf(v), -1, 1, (v > 0 ? '+' : '') + v.toFixed(2))
+    + emotionMetric('唤醒 arousal', a, 'metric-accent', 0, 1, a.toFixed(2))
+    + emotionMetric('精神 energy', e, 'metric-ok', 0, 1, e.toFixed(2))
+    + '<div class="meta mt-8-js">' + (m.causeType ? '来源：' + esc(m.causeType) + (m.cause ? ' · ' + esc(m.cause) : '') : '来源：最近没有明确的情绪事件') + '</div>'
+    + '<div class="meta">' + (m.since ? formatAgo(Date.now() - Number(m.since)) + '发生 · ' : '') + '半衰期 ' + halfHours + ' 小时（不刷新会自己回落）</div>'
+    + '</div>');
+  // 指标说明：这页只摆数字会看不懂，每个指标都要说清「是什么、怎么读」。
+  cards.push('<div class="emotion-card grid-span-all"><h3>这些数字怎么读</h3>'
+    + '<div class="emotion-legend">'
+    + '<div><b>心情 valence</b>：−1 到 +1，越负越低落、越正越开心；0 附近是平静。</div>'
+    + '<div><b>唤醒 arousal</b>：0 到 1，越接近 1 越激动/兴奋，越低越平静（低唤醒）。</div>'
+    + '<div><b>精神 energy</b>：0 到 1，她此刻的精力；精力低且心情偏负时，表达会更收敛。</div>'
+    + '<div><b>亲密 intimacy</b>：0 到 1，和这个人有多亲近（只对私聊有）。</div>'
+    + '<div><b>张力 tension</b>：0 到 1，还没解决的紧张感（吵架、冷落会升高）。</div>'
+    + '<div><b>半衰期</b>：只作用于心情/唤醒/精神三项，一段时间没有新事件会向各自基线回落；亲密和张力属于关系状态，不会按这个半衰期自动下降。</div>'
+    + '<div class="meta">分数表示「此刻有多强」，不是好/坏的评分；右侧事件列表说明它是被什么推上去的。</div>'
+    + '</div></div>');
+  const rr = rel && rel.ok && rel.relationship ? rel.relationship : null;
+  // 区分「群聊没有关系账本」和「私聊关系读取失败」：后者必须显示错误而不是伪装成无数据。
+  const relInner = relError
+    ? '<div class="meta err">关系读取失败：' + esc(relError.message || '未知错误') + '（点刷新重试）</div>'
+    : rr
+      ? emotionMetric('亲密 intimacy', rr.intimacy, 'metric-relation', 0, 1, Number(rr.intimacy).toFixed(2))
+        + emotionMetric('张力 tension', rr.tension, 'metric-tension', 0, 1, Number(rr.tension).toFixed(2))
+        + '<div class="meta mt-8-js">' + (Array.isArray(rr.openLoops) && rr.openLoops.length
+          ? '还欠着的事：' + rr.openLoops.slice(0, 3).map((x) => esc(String(x.text || x.cause || ''))).join('；')
+          : '没有未了结的事') + '</div>'
+      : '<div class="meta">群聊没有唯一的「她」；私聊会话才有关系账本。</div>';
+  cards.push('<div class="emotion-card"><h3>和她的关系</h3>' + relInner + '</div>');
+  const historyHtml = historyError
+    ? '<div class="meta err">情绪轨迹读取失败：' + esc(historyError.message || '未知错误') + '（点刷新重试）</div>'
+    : hist.length
+      ? hist.map((h) => {
+        const hv = Number(h.valence) || 0;
+        const bandText = h.moodBand ? ' · 心情 ' + h.moodBand : '';
+        return '<div class="emotion-line"><span class="emotion-dot ' + moodClassOf(hv) + '"></span>'
+          + '<span class="emotion-line-text">' + esc(String(h.text || '').slice(0, 80)) + '</span>'
+          + '<span class="emotion-line-meta">' + formatClock(h.at) + ' · ' + (hv > 0 ? '+' : '') + hv.toFixed(2) + esc(bandText) + '</span></div>';
+      }).join('')
+      : '<div class="meta">还没有发过话；她每次开口后，这里会留下当时的心情。</div>';
+  cards.push('<div class="emotion-card grid-span-all"><h3>她每句话的情绪 <span class="meta">全部 ' + hist.length + ' 条（新→旧，最多保留 1000 条）</span></h3>' + historyHtml + '</div>');
+  const events = Array.isArray(mood.events) ? mood.events.slice(-40).reverse() : [];
+  const eventsHtml = events.length
+    ? events.map((ev) => '<div class="emotion-source"><span class="emotion-source-cause">' + esc(String(ev.cause || ev.type || '')) + '</span><span class="meta">' + esc(String(ev.type || '')) + ' · ' + formatClock(ev.at) + '</span></div>').join('')
+    : '<div class="meta">最近没有情绪事件。</div>';
+  cards.push('<div class="emotion-card grid-span-all"><h3>情绪从哪来 <span class="meta">全部 ' + events.length + ' 条（新→旧）</span></h3>' + eventsHtml + '</div>');
+  body.innerHTML = '<div class="emotion-grid">' + cards.join('') + '</div>';
+}
+async function loadEmotionPanel() {
+  const body = document.getElementById('emotionBody');
+  if (!body) return;
+  const msg = document.getElementById('emotionMsg');
+  const sel = document.getElementById('emotionKeySel');
+  // 请求序号：快速切换会话时只渲染最新一次请求（A 的慢响应不能覆盖后选的 B）。
+  const reqId = (window.__emotionReqId || 0) + 1;
+  window.__emotionReqId = reqId;
+  const stale = () => window.__emotionReqId !== reqId;
+  try {
+    let moods = null;
+    let moodsError = null;
+    try { moods = await api('/api/socialV2/moods'); } catch (error) { moodsError = error; }
+    if (stale()) return;
+    if (!moods || !moods.ok) {
+      body.innerHTML = emotionErrorLine('会话列表读取失败：' + ((moodsError && moodsError.message) || (moods && moods.error) || '未知错误'));
+      bindEmotionRetry();
+      return;
+    }
+    const list = Array.isArray(moods.conversations) ? moods.conversations : [];
+    const prev = sel && sel.value ? sel.value : '';
+    let key = prev && list.some((c) => c.key === prev) ? prev : '';
+    if (!key) {
+      const priv = list.find((c) => String(c.key || '').startsWith('private:'));
+      key = priv ? priv.key : (list[0] ? list[0].key : '');
+    }
+    if (sel) {
+      sel.innerHTML = ['<option value="">（选择会话）</option>'].concat(list.map((c) => {
+        const cv = Number(c.valence) || 0;
+        const label = cv >= 0.15 ? '偏开心' : cv <= -0.15 ? '偏低落' : '平静';
+        return '<option value="' + esc(c.key) + '"' + (c.key === key ? ' selected' : '') + '>' + esc(c.key) + '（' + label + '）</option>';
+      })).join('');
+    }
+    if (!key) {
+      body.innerHTML = '<div class="meta">还没有任何会话的情绪记录；等她先和人聊过一句再来看。</div>';
+      return;
+    }
+    const uid = (key.match(/^private:(\d+)$/) || [])[1];
+    let mood = null;
+    let moodError = null;
+    try { mood = await api('/api/socialV2/mood?key=' + encodeURIComponent(key)); } catch (error) { moodError = error; }
+    if (stale()) return;
+    let rel = null;
+    let relError = null;
+    let history = null;
+    let historyError = null;
+    await Promise.all([
+      uid
+        ? (async () => {
+          try {
+            rel = await api('/api/socialV2/relationship?uid=' + encodeURIComponent(uid));
+            // HTTP 200 {ok:false} 也是失败：不能伪装成「群聊没有关系账本」。
+            if (!rel || rel.ok !== true) relError = new Error((rel && rel.error) || '关系读取失败');
+          } catch (error) { relError = error; }
+        })()
+        : Promise.resolve(),
+      (async () => {
+        try {
+          history = await api('/api/socialV2/mood-history?key=' + encodeURIComponent(key) + '&limit=1000');
+          // 同上：HTTP 200 {ok:false} 不能伪装成「还没有发过话」。
+          if (!history || history.ok !== true) historyError = new Error((history && history.error) || '情绪轨迹读取失败');
+        } catch (error) { historyError = error; }
+      })(),
+    ]);
+    if (stale()) return;
+    if (sel && sel.value && sel.value !== key) return; // 用户又切走了：丢弃这次响应
+    renderEmotionPanel({ mood, moodError, rel, relError, history, historyError });
+    if (msg) {
+      msg.textContent = '同步于 ' + formatClock(Date.now())
+        + (history && history.degraded ? ' · 历史文件损坏，已降级只读' : '');
+    }
+  } catch (error) {
+    body.innerHTML = emotionErrorLine('读取她的情绪失败：' + (error.message || error));
+    bindEmotionRetry();
+  }
+}
+document.getElementById('emotionReload')?.addEventListener('click', loadEmotionPanel);
+document.getElementById('emotionGalaxyBtn')?.addEventListener('click', () => setConsolePage('memory-galaxy'));
+document.getElementById('emotionKeySel')?.addEventListener('change', () => loadEmotionPanel());
+
 async function loadMemoryPanel() {
   const msg = document.getElementById('memoryMsg');
   if (!msg) return;
@@ -5334,7 +3783,7 @@ function renderArchiveProfile(profile, kw) {
   for (const [kind, label] of Object.entries(ARCHIVE_SELF_LABELS)) {
     const list = Array.isArray(selfGroups[kind]) ? selfGroups[kind] : [];
     if (!list.length) continue;
-    selfLines.push(`<div class="meta" style="margin:6px 0 2px">${esc(label)}</div>`);
+    selfLines.push(`<div class="meta mt-6-2">${esc(label)}</div>`);
     for (const s of list.slice().reverse()) {
       if (!archiveMatch(s.text, kw)) continue;
       selfLines.push(`<div class="memory-item">${archiveEsc(s.text, kw)}${s.at ? `<span class="memory-when">${esc(fmtDay(s.at))}</span>` : ''}</div>`);
@@ -5436,19 +3885,19 @@ async function renderArchiveTab() {
   if (!layout) return;
   if (tab === 'events') {
     layout.classList.remove('no-side');
-    if (daysBox) daysBox.parentElement.style.display = '';
+    if (daysBox) daysBox.parentElement.hidden = false;
     renderArchiveDays(archiveState.data?.days || []);
-    if (eventsBox) eventsBox.style.display = '';
-    if (profileBox) profileBox.style.display = 'none';
+    if (eventsBox) eventsBox.hidden = false;
+    if (profileBox) profileBox.hidden = true;
     const latest = archiveState.day || (archiveState.data?.days || [])[0]?.day || '';
     if (latest) await loadArchiveDay(latest); else if (eventsBox) eventsBox.innerHTML = '<div class="memory-empty">还没有事件</div>';
     return;
   }
-  if (daysBox) daysBox.parentElement.style.display = 'none';
+  if (daysBox) daysBox.parentElement.hidden = true;
   layout.classList.add('no-side');
-  if (eventsBox) eventsBox.style.display = 'none';
+  if (eventsBox) eventsBox.hidden = true;
   if (profileBox) {
-    profileBox.style.display = '';
+    profileBox.hidden = false;
     if (tab === 'profile') {
       renderArchiveProfile(archiveState.data?.profile || {}, archiveState.keyword);
     } else {
@@ -5488,612 +3937,6 @@ document.getElementById('archiveSearch')?.addEventListener('input', async (ev) =
   await renderArchiveTab();
 });
 
-// ── 记忆星图 · Atlas：星云宇宙（她自己是中心） ──
-// 拓扑：她（核心恒星）→ 星云（她的一生 / 她认识的人 / 约定 / 她经历的日子）→ 星云里的光点（一句原话）
-// 交互：拖动旋转、滚轮缩放、点星云聚焦、点光点看原文、搜索高亮、悬停气泡。
-// 位置由 id 的 FNV-1a 哈希确定性生成：同样数据每次打开宇宙形状一致，能直接对比改前改后。
-const ATLAS_COLORS = { self: '#ffd166', person: '#5b9dff', thread: '#f0a13c', topic: '#57d6b0' };
-// 她的一生五层：同一团金色星云里的五种深浅（同画风，不搞特殊图形）
-const ATLAS_LAYER_COLORS = { identity: '#ffe0a3', milestone: '#ffd166', like: '#ffc2d8', feeling: '#f0b06a', world: '#ffe9c0' };
-const ATLAS_GROUPS = { self: '她自己', person: '她认识的人', thread: '约定', topic: '她经历的日子' };
-const ATLAS_LAYERS = { identity: '我是谁', milestone: '走过的路', like: '我喜欢', feeling: '我的心事', world: '我的世界' };
-const atlas = {
-  universe: null,
-  clusters: [],
-  scatter: [],
-  stars: [],
-  byId: new Map(),
-  cam: { yaw: -0.42, pitch: 0.22, zoom: 0.92, camZ: 980, panX: 0, panY: 0 },
-  hover: null,
-  active: null,
-  focus: null,
-  keyword: '',
-  spinning: true,
-  dragging: false,
-  panning: false,
-  moved: false,
-  lastX: 0,
-  lastY: 0,
-  W: 1200,
-  H: 700,
-  starsBg: null,
-  raf: 0,
-};
-
-function atlasHash(text) {
-  let h = 0x811c9dc5;
-  const s = String(text ?? '');
-  for (let i = 0; i < s.length; i += 1) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 0x01000193) >>> 0;
-  }
-  return h >>> 0;
-}
-
-/** 确定性伪随机（同样种子永远同样的序列）。 */
-function atlasRand(seed) {
-  let s = seed >>> 0;
-  return () => {
-    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
-    return s / 4294967296;
-  };
-}
-
-/** 把星云摆到球面上：大的星云靠内，小的在外围。 */
-function atlasBuildPositions(u) {
-  const clusters = (u.clusters || []).map((c, i) => {
-    const h = atlasHash(c.id);
-    const t = (i + 0.5) / Math.max(1, (u.clusters || []).length);
-    const phi = Math.acos(1 - 2 * t);
-    const theta = i * 2.399963229728653 + 0.6; // 黄金角：14 个星云均匀铺满整个球面
-    // 所有星云一视同仁：谁都不钉在中心，整个宇宙可以自由转、自由放大看局部
-    const R = 560 - Math.min(230, Math.sqrt(c.stars.length) * 11) + (h % 70);
-    const cx = Math.sin(phi) * Math.cos(theta) * R;
-    const cy = Math.cos(phi) * R * 0.88;
-    const cz = Math.sin(phi) * Math.sin(theta) * R;
-    const rad = 18 + Math.sqrt(c.stars.length) * 5.2;
-    const stars = c.stars.map((s) => {
-      const rnd = atlasRand(atlasHash(s.id) ^ h);
-      const a = rnd() * Math.PI * 2;
-      const b = Math.acos(2 * rnd() - 1);
-      const r = rad * Math.cbrt(rnd());
-      return {
-        ...s,
-        x: cx + Math.sin(b) * Math.cos(a) * r,
-        y: cy + Math.cos(b) * r,
-        z: cz + Math.sin(b) * Math.sin(a) * r,
-        cloud: c.id,
-        cloudLabel: c.label,
-        color: (c.kind === 'self' && s.layer && ATLAS_LAYER_COLORS[s.layer]) || ATLAS_COLORS[c.kind] || '#9fb4d8',
-      };
-    });
-    return { ...c, cx, cy, cz, radius: rad, stars };
-  });
-  // 散星：撒在外层球壳，像参考图外围那些孤独的小白点
-  const scatter = (u.scatter || []).map((s) => {
-    const rnd = atlasRand(atlasHash(s.id));
-    const R = 500 + rnd() * 280;
-    const a = rnd() * Math.PI * 2;
-    const b = Math.acos(2 * rnd() - 1);
-    return {
-      ...s,
-      x: Math.sin(b) * Math.cos(a) * R,
-      y: Math.cos(b) * R * 0.88,
-      z: Math.sin(b) * Math.sin(a) * R,
-      cloud: null,
-      cloudLabel: '',
-      color: '#8ea8cc',
-    };
-  });
-  return { clusters, scatter };
-}
-
-function atlasProject(p) {
-  const cy = Math.cos(atlas.cam.yaw);
-  const sy = Math.sin(atlas.cam.yaw);
-  const cp = Math.cos(atlas.cam.pitch);
-  const sp = Math.sin(atlas.cam.pitch);
-  const x1 = p.x * cy - p.z * sy;
-  const z1 = p.x * sy + p.z * cy;
-  const y1 = p.y * cp - z1 * sp;
-  const z2 = p.y * sp + z1 * cp;
-  const persp = atlas.cam.camZ / Math.max(160, atlas.cam.camZ - z2);
-  return {
-    x: atlas.W / 2 + x1 * persp * atlas.cam.zoom + (atlas.cam.ox || 0) + (atlas.cam.panX || 0),
-    y: atlas.H / 2 + y1 * persp * atlas.cam.zoom + (atlas.cam.oy || 0) + (atlas.cam.panY || 0),
-    depth: z2,
-    persp,
-  };
-}
-
-
-function atlasFit() {
-  // 只按星云取景：散星本来就该在远处（允许出画），否则整片宇宙会被缩得很小
-  const pts = atlas.clusters.map((cl) => ({ x: cl.cx, y: cl.cy, z: cl.cz }));
-  if (!pts.length) return;
-  const measure = () => {
-    let minX = Infinity; let maxX = -Infinity; let minY = Infinity; let maxY = -Infinity;
-    for (const p of pts) {
-      const q = atlasProject(p);
-      if (q.x < minX) minX = q.x;
-      if (q.x > maxX) maxX = q.x;
-      if (q.y < minY) minY = q.y;
-      if (q.y > maxY) maxY = q.y;
-    }
-    return { minX, maxX, minY, maxY };
-  };
-  atlas.cam.ox = 0;
-  atlas.cam.oy = 0;
-  let b = measure();
-  const k = Math.min((atlas.W * 0.8) / Math.max(1, b.maxX - b.minX), (atlas.H * 0.8) / Math.max(1, b.maxY - b.minY));
-  atlas.cam.zoom = Math.max(0.35, Math.min(2.4, atlas.cam.zoom * k));
-  // 再把整片宇宙挪到画布正中（她不在原点正中时也不会偏）
-  b = measure();
-  atlas.cam.ox = -((b.minX + b.maxX) / 2 - atlas.W / 2);
-  atlas.cam.oy = -((b.minY + b.maxY) / 2 - atlas.H / 2);
-}
-function atlasBackgroundStars() {
-  if (atlas.starsBg) return atlas.starsBg;
-  const out = [];
-  const rnd = atlasRand(0x9e3779b9);
-  for (let i = 0; i < 260; i += 1) {
-    out.push({ x: rnd(), y: rnd(), r: 0.3 + rnd() * 0.9, a: 0.08 + rnd() * 0.4, d: 0.4 + rnd() * 0.8 });
-  }
-  atlas.starsBg = out;
-  return out;
-}
-
-function atlasDraw() {
-  const canvas = document.getElementById('memoryGraphCanvas');
-  if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-  const dpr = Math.min(2, window.devicePixelRatio || 1);
-  if (canvas.width !== Math.round(atlas.W * dpr)) {
-    canvas.width = Math.round(atlas.W * dpr);
-    canvas.height = Math.round(atlas.H * dpr);
-  }
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, atlas.W, atlas.H);
-
-  // 宇宙底
-  const bg = ctx.createRadialGradient(atlas.W / 2, atlas.H * 0.46, 30, atlas.W / 2, atlas.H * 0.5, Math.max(atlas.W, atlas.H) * 0.72);
-  bg.addColorStop(0, '#0b1220');
-  bg.addColorStop(0.55, '#070c16');
-  bg.addColorStop(1, '#04060c');
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, atlas.W, atlas.H);
-  // 背景星尘（随旋转轻微漂移，制造视差）
-  const spin = atlas.cam.yaw * 0.4;
-  for (const s of atlasBackgroundStars()) {
-    const x = ((s.x + spin * s.d) % 1 + 1) % 1 * atlas.W;
-    ctx.globalAlpha = s.a;
-    ctx.fillStyle = '#dfe9ff';
-    ctx.beginPath();
-    ctx.arc(x, s.y * atlas.H, s.r, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.globalAlpha = 1;
-
-  const focusId = atlas.focus;
-  const kw = atlas.keyword.toLowerCase();
-  const isMatch = (star) => !kw || String(star.text || '').toLowerCase().includes(kw) || String(star.cloudLabel || '').toLowerCase().includes(kw);
-  const dimAll = kw || focusId;
-  atlas._labelPos = [];
-  // 中心小太阳是「记忆的引力核」：只是把各星云连起来的结构光点，不是某个具体的人。
-  const sun = atlasProject({ x: 0, y: 0, z: 0 });
-  ctx.globalAlpha = 0.16;
-  ctx.strokeStyle = '#ffd98a';
-  ctx.lineWidth = 0.8;
-  for (const cl of atlas.clusters) {
-    const cp = atlasProject({ x: cl.cx, y: cl.cy, z: cl.cz });
-    ctx.beginPath();
-    ctx.moveTo(sun.x, sun.y);
-    ctx.lineTo(cp.x, cp.y);
-    ctx.stroke();
-  }
-  ctx.globalAlpha = 1;
-
-  // 星云中心的光团（先画远的）
-  const clouds = atlas.clusters
-    .map((c) => ({ c, p: atlasProject({ x: c.cx, y: c.cy, z: c.cz }) }))
-    .sort((a, b) => a.p.depth - b.p.depth);
-  for (const { c, p } of clouds) {
-    const color = ATLAS_COLORS[c.kind] || '#9fb4d8';
-    const fog = Math.max(0.25, Math.min(1, (atlas.cam.camZ * 0.55 + p.depth) / (atlas.cam.camZ * 0.95)));
-    const active = !dimAll || focusId === c.id;
-    const r = Math.max(c.kind === 'me' ? 26 : 17, c.radius * p.persp * atlas.cam.zoom * 0.48);
-    ctx.globalAlpha = active ? 0.6 * fog : 0.08;
-    const glow = ctx.createRadialGradient(p.x, p.y, 2, p.x, p.y, r * 1.9);
-    glow.addColorStop(0, `${color}55`);
-    glow.addColorStop(1, `${color}00`);
-    ctx.fillStyle = glow;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, r * 1.9, 0, Math.PI * 2);
-    ctx.fill();
-    // 星云标签（带半透明胶囊底，星点再多也读得清）
-    const tooClose = atlas._labelPos.some((q) => Math.hypot(q.x - p.x, q.y - p.y) < 52);
-    if (active && !tooClose) {
-      ctx.globalAlpha = Math.min(1, fog + 0.2);
-      ctx.font = `${focusId === c.id ? 12.5 : 11}px system-ui, sans-serif`;
-      ctx.textAlign = 'center';
-      const tw = ctx.measureText(c.label).width;
-      const ty = p.y - r * 0.95 - 20;
-      ctx.fillStyle = 'rgba(5,9,16,.78)';
-      if (ctx.roundRect) {
-        ctx.beginPath();
-        ctx.roundRect(p.x - tw / 2 - 7, ty - 11, tw + 14, 17, 8);
-        ctx.fill();
-      }
-      ctx.fillStyle = color;
-      ctx.fillText(c.label, p.x, ty + 1);
-      atlas._labelPos.push({ x: p.x, y: ty });
-    }
-  }
-  ctx.globalAlpha = 1;
-
-  // 散星（外围的小白点）
-  for (const s of atlas.scatter) {
-    const p = atlasProject(s);
-    const fog = Math.max(0.12, Math.min(1, (atlas.cam.camZ * 0.5 + p.depth) / (atlas.cam.camZ * 0.9)));
-    const hit = !dimAll || isMatch(s);
-    ctx.globalAlpha = hit ? 0.32 + fog * 0.46 + s.s * 0.06 : 0.04;
-    ctx.fillStyle = hit && s.s >= 3 ? '#cfe0ff' : '#9db3d4';
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, Math.max(0.7, (0.9 + s.s * 0.35) * p.persp * Math.min(1.4, atlas.cam.zoom)), 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.globalAlpha = 1;
-
-  // 光点：按深度排序，同星云同色
-  const stars = atlas.stars
-    .map((s) => ({ s, p: atlasProject(s) }))
-    .sort((a, b) => a.p.depth - b.p.depth);
-  for (const { s, p } of stars) {
-    const fog = Math.max(0.16, Math.min(1, (atlas.cam.camZ * 0.5 + p.depth) / (atlas.cam.camZ * 0.92)));
-    const hit = isMatch(s);
-    const inFocus = !focusId || s.cloud === focusId;
-    const isActive = atlas.active && atlas.active.id === s.id;
-    const isHover = atlas.hover && atlas.hover.id === s.id;
-    let alpha = inFocus ? 0.5 + fog * 0.45 : 0.07;
-    if (dimAll) alpha = hit && inFocus ? 1 : 0.06;
-    ctx.globalAlpha = isActive || isHover ? 1 : alpha;
-    ctx.fillStyle = isActive ? '#8fc0ff' : (hit || !dimAll ? s.color : '#6f86a8');
-    const r = Math.max(0.9, (1.0 + s.weight * 0.95) * p.persp * Math.min(1.4, atlas.cam.zoom));
-    // 高权重/选中/悬停的点加一圈光晕
-    if ((isActive || isHover || s.weight >= 2.2) && (inFocus || !focusId)) {
-      const glow = ctx.createRadialGradient(p.x, p.y, r * 0.3, p.x, p.y, r * 3);
-      glow.addColorStop(0, `${isActive ? '#8fc0ff' : s.color}88`);
-      glow.addColorStop(1, `${isActive ? '#8fc0ff' : s.color}00`);
-      ctx.fillStyle = glow;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, r * 3, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = isActive ? '#8fc0ff' : s.color;
-    }
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.globalAlpha = 1;
-
-  // 中心的小太阳
-  const sunR = 9 * Math.min(1.6, atlas.cam.zoom);
-  const sunHalo = ctx.createRadialGradient(sun.x, sun.y, 2, sun.x, sun.y, sunR * 5);
-  sunHalo.addColorStop(0, 'rgba(255,225,150,.6)');
-  sunHalo.addColorStop(0.4, 'rgba(255,200,110,.16)');
-  sunHalo.addColorStop(1, 'rgba(255,200,110,0)');
-  ctx.fillStyle = sunHalo;
-  ctx.beginPath();
-  ctx.arc(sun.x, sun.y, sunR * 5, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(255,235,180,.55)';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(sun.x - sunR * 2.6, sun.y);
-  ctx.lineTo(sun.x + sunR * 2.6, sun.y);
-  ctx.moveTo(sun.x, sun.y - sunR * 2.6);
-  ctx.lineTo(sun.x, sun.y + sunR * 2.6);
-  ctx.stroke();
-  ctx.fillStyle = '#fff3d0';
-  ctx.beginPath();
-  ctx.arc(sun.x, sun.y, sunR, 0, Math.PI * 2);
-  ctx.fill();
-}
-
-function atlasRenderStats(u) {
-  const s = u.stats || {};
-  const box = document.getElementById('atlasStats');
-  if (!box) return;
-  box.innerHTML = [
-    `<div class="atlas-stat"><b>${s.stars || 0}</b><span>真实记录光点</span></div>`,
-    `<div class="atlas-stat"><b>${s.clusters || 0}</b><span>记忆星云</span></div>`,
-    `<div class="atlas-stat"><b>${s.coreMemory || 0}</b><span>她自己的一生</span></div>`,
-  ].join('');
-}
-
-function atlasRenderLeft(u) {
-  const legend = document.getElementById('atlasLegend');
-  if (legend) {
-    legend.innerHTML = [
-      `<span><i style="background:#ffd166"></i>她自己</span>`,
-      `<span><i style="background:${ATLAS_COLORS.person}"></i>她认识的人</span>`,
-      `<span><i style="background:${ATLAS_COLORS.thread}"></i>约定</span>`,
-      `<span><i style="background:${ATLAS_COLORS.topic}"></i>她经历的日子</span>`,
-      `<span><i style="background:#9db3d4"></i>散星（还没连成故事）</span>`,
-    ].join('');
-  }
-  const clouds = document.getElementById('atlasClouds');
-  if (!clouds) return;
-  clouds.innerHTML = atlas.clusters.map((c) => {
-    const color = ATLAS_COLORS[c.kind] || '#9fb4d8';
-    return `<button class="atlas-cloud-btn ${atlas.focus === c.id ? 'active' : ''}" data-cloud="${esc(c.id)}"><span><i style="display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;background:${color}"></i>${esc(c.label)}</span><em>${c.stars.length}</em></button>`;
-  }).join('');
-  clouds.querySelectorAll('[data-cloud]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      atlas.focus = atlas.focus === btn.dataset.cloud ? null : btn.dataset.cloud;
-      atlasRenderLeft(atlas.universe);
-      atlasDraw();
-    });
-  });
-}
-
-function atlasRenderCore(u) {
-  const box = document.getElementById('atlasCore');
-  if (!box) return;
-  const layers = u?.core?.layers || {};
-  const chips = Object.entries(ATLAS_LAYERS).map(([k, label]) => `<span class="ac-chip">${esc(label)} ${Number(layers[k]) || 0}</span>`).join('');
-  box.innerHTML = `<h4>她自己（记忆的核心）</h4><div class="ac-chips">${chips}</div>`;
-}
-
-function atlasKindText(s) {
-  if (s.type === 'self') return '她自己的一生';
-  if (s.type === 'fact') return '她记住的一个人';
-  if (s.type === 'thread') return '她在意的事';
-  return '她经历过的日子';
-}
-
-function atlasRenderDetail(star) {
-  const box = document.getElementById('graphDetail');
-  if (!box) return;
-  if (!star) {
-    box.innerHTML = '点一颗星，看看她记得什么。';
-    return;
-  }
-  const when = star.at ? new Date(star.at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '没记时间';
-  const strength = Math.min(100, Math.round((Number(star.s) || 1) / 3 * 100));
-  const rows = [
-    `<div><b>重要度</b> ${strength}%</div>`,
-    `<div><b>时间</b> ${esc(when)}</div>`,
-    `<div><b>类型</b> ${esc(atlasKindText(star))}</div>`,
-    star.who ? `<div><b>来源</b> ${esc(star.who)}</div>` : '',
-  ].filter(Boolean).join('');
-  box.innerHTML = `<div class="ad-quote">「${esc(String(star.text || ''))}」</div><div class="ad-rows">${rows}</div>`
-    + (star.cloudLabel ? `<span class="ad-cloud">${esc(star.cloudLabel)}</span>` : '<span class="ad-cloud">散星 · 还没连成故事</span>');
-}
-
-function atlasPick(clientX, clientY) {
-  const canvas = document.getElementById('memoryGraphCanvas');
-  if (!canvas) return null;
-  const rect = canvas.getBoundingClientRect();
-  const sx = ((clientX - rect.left) / rect.width) * atlas.W;
-  const sy = ((clientY - rect.top) / rect.height) * atlas.H;
-  let best = null;
-  let bestScore = Infinity;
-  for (const s of atlas.stars) {
-    const p = atlasProject(s);
-    const r = (2.5 + s.weight * 1.4) * p.persp * Math.min(1.5, atlas.cam.zoom) + 4;
-    const d = Math.hypot(p.x - sx, p.y - sy);
-    if (d <= r && d - p.persp * 3 < bestScore) { best = s; bestScore = d - p.persp * 3; }
-  }
-  return best;
-}
-
-function atlasShowTip(html, clientX, clientY) {
-  const tip = document.getElementById('graphTooltip');
-  if (!tip) return;
-  tip.innerHTML = html;
-  tip.hidden = false;
-  const wrap = tip.parentElement.getBoundingClientRect();
-  const x = Math.min(clientX - wrap.left + 14, wrap.width - tip.offsetWidth - 8);
-  const y = Math.max(6, clientY - wrap.top - tip.offsetHeight - 10);
-  tip.style.left = `${Math.max(6, x)}px`;
-  tip.style.top = `${y}px`;
-}
-
-async function loadMemoryGraph() {
-  const canvas = document.getElementById('memoryGraphCanvas');
-  if (!canvas) return;
-  try {
-    const r = await api('/api/memory/universe?days=7&maxStars=420');
-    if (!r || !r.ok) throw new Error((r && r.error) || '加载失败');
-    const u = r.universe || { clusters: [], scatter: [], stats: {} };
-    atlas.universe = u;
-    const built = atlasBuildPositions(u);
-    atlas.clusters = built.clusters;
-    atlas.scatter = built.scatter;
-    atlas.stars = [...built.clusters.flatMap((c) => c.stars), ...built.scatter];
-    atlas.byId = new Map(atlas.stars.map((s) => [s.id, s]));
-    atlas.hover = null;
-    atlas.active = null;
-    atlas.focus = null;
-    atlas.keyword = '';
-    const search = document.getElementById('graphSearch');
-    if (search) search.value = '';
-    atlasFit();
-    atlasRenderStats(u);
-    atlasRenderLeft(u);
-    atlasRenderCore(u);
-    atlasRenderDetail(null);
-    atlasDraw();
-  } catch (e) {
-    const box = document.getElementById('graphDetail');
-    if (box) box.innerHTML = `加载失败：${esc((e && e.message) || e)}`;
-  }
-}
-
-function atlasBindEvents() {
-  const canvas = document.getElementById('memoryGraphCanvas');
-  if (!canvas) return;
-  canvas.addEventListener('wheel', (ev) => {
-    ev.preventDefault();
-    const rect = canvas.getBoundingClientRect();
-    const mx = ((ev.clientX - rect.left) / Math.max(1, rect.width)) * atlas.W;
-    const my = ((ev.clientY - rect.top) / Math.max(1, rect.height)) * atlas.H;
-    const old = atlas.cam.zoom;
-    const next = Math.min(4.2, Math.max(0.2, old * (ev.deltaY < 0 ? 1.1 : 1 / 1.1)));
-    // 让鼠标指着的那个点缩放前后保持不动（地图式缩放）
-    const k = next / old;
-    atlas.cam.panX = mx - (mx - atlas.cam.panX) * k;
-    atlas.cam.panY = my - (my - atlas.cam.panY) * k;
-    atlas.cam.zoom = next;
-    atlasDraw();
-  }, { passive: false });
-  canvas.addEventListener('pointerdown', (ev) => {
-    atlas.dragging = true;
-    // 右键 / 中键 / Shift+左键 = 平移视角（左键还是旋转）
-    atlas.panning = ev.button === 2 || ev.button === 1 || ev.shiftKey;
-    atlas.moved = false;
-    atlas.lastX = ev.clientX;
-    atlas.lastY = ev.clientY;
-    canvas.classList.add('dragging');
-    canvas.setPointerCapture?.(ev.pointerId);
-  });
-  canvas.addEventListener('pointermove', (ev) => {
-    if (atlas.dragging) {
-      const dx = ev.clientX - atlas.lastX;
-      const dy = ev.clientY - atlas.lastY;
-      if (Math.abs(dx) + Math.abs(dy) > 2) atlas.moved = true;
-      atlas.lastX = ev.clientX;
-      atlas.lastY = ev.clientY;
-      if (atlas.panning) {
-        const rect = canvas.getBoundingClientRect();
-        atlas.cam.panX += dx * (atlas.W / Math.max(1, rect.width));
-        atlas.cam.panY += dy * (atlas.H / Math.max(1, rect.height));
-      } else {
-        atlas.cam.yaw += dx * 0.0055;
-        atlas.cam.pitch = Math.max(-1.3, Math.min(1.3, atlas.cam.pitch + dy * 0.0045));
-      }
-      atlasDraw();
-      return;
-    }
-    const hit = atlasPick(ev.clientX, ev.clientY);
-    if ((hit ? hit.id : null) !== (atlas.hover ? atlas.hover.id : null)) {
-      atlas.hover = hit;
-      atlasDraw();
-    }
-    if (hit) {
-      atlasShowTip(`<b>${esc(String(hit.text || '').slice(0, 90))}</b>`, ev.clientX, ev.clientY);
-      canvas.style.cursor = 'pointer';
-    } else {
-      const tip = document.getElementById('graphTooltip');
-      if (tip) tip.hidden = true;
-      canvas.style.cursor = '';
-    }
-  });
-  canvas.addEventListener('pointerup', (ev) => {
-    atlas.dragging = false;
-    atlas.panning = false;
-    canvas.classList.remove('dragging');
-    if (atlas.moved) return;
-    const hit = atlasPick(ev.clientX, ev.clientY);
-    atlas.active = hit;
-    atlasRenderDetail(hit);
-    atlasDraw();
-  });
-  canvas.addEventListener('contextmenu', (ev) => ev.preventDefault());
-  // 双击 = 复位视角（含平移）
-  canvas.addEventListener('dblclick', () => {
-    atlas.cam.yaw = -0.42;
-    atlas.cam.pitch = 0.22;
-    atlas.cam.zoom = 0.92;
-    atlas.cam.panX = 0;
-    atlas.cam.panY = 0;
-    atlasFit();
-    atlasDraw();
-  });
-  canvas.addEventListener('pointerleave', () => {
-    atlas.hover = null;
-    const tip = document.getElementById('graphTooltip');
-    if (tip) tip.hidden = true;
-    atlasDraw();
-  });
-  document.getElementById('graphSearch')?.addEventListener('input', (ev) => {
-    atlas.keyword = String(ev.target.value || '').trim();
-    atlasDraw();
-  });
-  document.getElementById('graphReset')?.addEventListener('click', () => {
-    atlas.cam.yaw = -0.42;
-    atlas.cam.pitch = 0.22;
-    atlas.cam.zoom = 0.92;
-    atlas.cam.ox = 0;
-    atlas.cam.oy = 0;
-    atlas.cam.panX = 0;
-    atlas.cam.panY = 0;
-    atlas.focus = null;
-    atlasFit();
-    atlas.keyword = '';
-    const search = document.getElementById('graphSearch');
-    if (search) search.value = '';
-    atlasRenderLeft(atlas.universe);
-    atlasDraw();
-  });
-  document.getElementById('graphPause')?.addEventListener('click', (ev) => {
-    atlas.spinning = !atlas.spinning;
-    ev.currentTarget.textContent = atlas.spinning ? '暂停旋转' : '继续旋转';
-  });
-  document.getElementById('graphReload')?.addEventListener('click', loadMemoryGraph);
-  document.getElementById('graphPanels')?.addEventListener('click', (ev) => {
-    const root = document.querySelector('.atlas');
-    if (!root) return;
-    const hidden = root.classList.toggle('panels-hidden');
-    ev.currentTarget.textContent = hidden ? '展开侧栏' : '收起侧栏';
-    // 下一帧容器宽度才更新，交给 ResizeObserver 处理
-  
-  });
-  document.getElementById('graphFull')?.addEventListener('click', (ev) => {
-    const root = document.querySelector('.atlas');
-    if (!root) return;
-    const on = root.classList.toggle('is-full');
-    ev.currentTarget.textContent = on ? '退出全屏' : '全屏';
-    if (on) {
-      atlas._home = root.parentElement;
-      document.body.appendChild(root);
-    } else if (atlas._home) {
-      atlas._home.appendChild(root);
-    }
-    // 尺寸交给 ResizeObserver：容器变了就重算 W/H、重新取景再重绘
-  });
-  // 自动巡航：宇宙不该静止。悬停/拖拽/搜索时停住，方便看细节。
-  const tick = () => {
-    if (!document.hidden && atlas.spinning && !atlas.dragging && !atlas.hover && atlas.stars.length) {
-      atlas.cam.yaw += 0.0012;
-      atlasDraw();
-    }
-    atlas.raf = requestAnimationFrame(tick);
-  };
-  if (!atlas.raf) atlas.raf = requestAnimationFrame(tick);
-  // 容器尺寸变化（切页、收起侧栏、全屏、窗口缩放）都要重新对齐，
-  // 否则 canvas 内部坐标还停在上一个尺寸，画面就会只显示一部分或整片黑。
-  const wrap = canvas.parentElement;
-  if (wrap && typeof ResizeObserver !== 'undefined') {
-    const ro = new ResizeObserver(() => {
-      const rect = wrap.getBoundingClientRect();
-      const w = Math.max(320, Math.round(rect.width));
-      const h = Math.max(360, Math.round(rect.height));
-      if (Math.abs(w - atlas.W) > 2 || Math.abs(h - atlas.H) > 2) {
-        atlas.W = w;
-        atlas.H = h;
-        atlas.cam.ox = 0;
-        atlas.cam.oy = 0;
-        atlasFit();
-        atlasDraw();
-      }
-    });
-    ro.observe(wrap);
-    atlas._ro = ro;
-  }
-}
-atlasBindEvents();
 
 </script>
 </body>

@@ -59,6 +59,10 @@ export async function handleSocialV2StateApi({
   currentMode: getCurrentMode,
   slangEntries: getSlangEntries,
   stickerEntries: getStickerEntries,
+  // 控制台「她的情绪」页：最近每句话的情绪快照（bridge 注入，只读）。
+  readMoodHistory = null,
+  isMoodHistoryDegraded = null,
+  canonicalV2Key = null,
 }) {
         // 情绪/关系只读视图（不写状态、不触发行为）。
         const moodLayer = moodLayerFor(getSocialV2State, socialV2);
@@ -82,7 +86,17 @@ export async function handleSocialV2StateApi({
             lastWakeReason: st.lastWakeReason,
             lastAiReplyAt: st.lastAiReplyAt,
             // 落盘健康状态（审查 r5 P2）：null=最近一次保存成功；否则 {at,message} 说明内存态可能未落盘。
-            lastSaveError: socialV2?.lastSaveError ?? null,
+            // 只暴露错误码/时间，不回传原始 message：atomicWriteJson 的失败消息可能含绝对路径。
+            lastSaveError: socialV2?.lastSaveError
+              ? {
+                at: Number(socialV2.lastSaveError.at) || 0,
+                // 只外发白名单错误码：原始 message / 路径一律不出去（本地日志里已有）。
+                code: (() => {
+                  const raw = String(socialV2.lastSaveError.code ?? 'IO');
+                  return /^[A-Z0-9_]{1,40}$/.test(raw) ? raw : 'IO';
+                })(),
+              }
+              : null,
             mood: moodSummary(moodView),
             relationship: relationshipUid ? relationshipSummary(moodLayer.getRelationship(relationshipUid)) : null,
             // 会话 C：可解释性 —— 最近一次唤醒/发送用了哪份表达计划（为什么这样回应）。
@@ -271,6 +285,25 @@ export async function handleSocialV2StateApi({
             },
             events: view.events
           });
+          return true;
+        }
+
+        // 只读：某会话最近「发出去的每句话」的情绪快照（控制台「她的情绪」页）。
+        // 这类发送轨迹只给控制台看：带 agent token 的请求一律拒绝（会话级主体不能读发送历史）。
+        if (req.method === 'GET' && url.pathname === '/api/socialV2/mood-history') {
+          if (req.headers['x-agent-token']) { sendJson({ ok: false, error: '该接口仅控制台可用' }, 403); return true; }
+          const rawKey = String(url.searchParams.get('key') ?? '').trim();
+          if (!rawKey) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return true; }
+          // 与会话其它端点同一套 canonical key 校验：拒绝 0 / 前导零 / 超出安全整数。
+          const key = typeof canonicalV2Key === 'function' ? canonicalV2Key(rawKey) : null;
+          if (!key) { sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号（QQ号必须为正整数）' }, 400); return true; }
+          // limit：只接受有限数字，取整后 clamp 到 1..1000；缺省/空串用 60。
+          const rawLimit = url.searchParams.get('limit');
+          const parsedLimit = rawLimit == null || rawLimit.trim() === '' ? NaN : Number(rawLimit);
+          const limit = Number.isFinite(parsedLimit) ? Math.max(1, Math.min(1000, Math.trunc(parsedLimit))) : 60;
+          const history = typeof readMoodHistory === 'function' ? readMoodHistory(key, limit) : [];
+          const degraded = typeof isMoodHistoryDegraded === 'function' ? Boolean(isMoodHistoryDegraded()) : false;
+          sendJson({ ok: true, key, count: history.length, degraded, history });
           return true;
         }
 

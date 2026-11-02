@@ -26,9 +26,12 @@
  * 本模块只做纯计算，文件 I/O 在 memory-store.mjs，便于离线单测。
  */
 
+// 情绪标注映射复用情绪层的事件表（src/core/mood.mjs）。mood 是纯模块、不 import 记忆库，
+// 所以这里不会形成循环依赖；以后情绪事件幅度调整时，记忆标注会跟着变。
+import { EMOTION_EVENTS, MOOD_BASELINE, clamp } from './mood.mjs';
+
 /** 记忆配置默认值（会被 config.json 的 socialV2.memory 覆盖）。 */
-export const MEMORY_DEFAULTS = Object.freeze({
-  enabled: true,
+export const MEMORY_DEFAULTS = Object.freeze({  enabled: true,
   // 单次唤醒注入记忆的字符上限（硬上限，超出按优先级砍）
   injectMaxChars: 1000,
   // 检索：取前 K 条、返回字符上限
@@ -70,6 +73,65 @@ export const SALIENCE_TUNING = Object.freeze([
   { key: 'S2', label: '值得记', halfLifeDays: 90, floor: 0.25 },
   { key: 'S3', label: '关键', halfLifeDays: 3650, floor: 0.60 },
 ]);
+
+/**
+ * 情绪标注（记忆库 ← 情绪模块 的桥）。
+ *
+ * 字段名与情绪层（src/core/mood.mjs）维护的 mood 视图一致：
+ *   valence ∈ [-1, 1]（负=难过、正=开心），arousal ∈ [0, 1]（平静～激动）。
+ * 记忆事件上另存 emotionType（情绪模块的事件类型，如 praised / ignored / quarrel），
+ * 便于审计「这条标注是从哪来的」。
+ *
+ * 情绪模块的事件表是「一次事件的增量」，而记忆标注要的是「这条事实本身的情绪色彩」：
+ * 把增量按 valenceScale 放大成绝对值，arousal 以基线为起点偏移。参数集中在此处便于调。
+ */
+export const EMOTION_ANNOTATION = Object.freeze({
+  valenceScale: 2,
+  arousalBase: MOOD_BASELINE.arousal,
+});
+
+/** 情绪事件类型 → 记忆标注 { emotionType, valence, arousal }；未知类型返回 null（不标注）。 */
+export function emotionAnnotation(emotionType) {
+  const type = String(emotionType ?? '').trim();
+  if (!type) return null;
+  // 必须用 own-property 判断：EMOTION_EVENTS['constructor'/'toString'] 会命中原型属性，
+  // 把无关字符串误判成合法事件类型（审查 memory-emotion P2）。
+  if (!Object.hasOwn(EMOTION_EVENTS, type)) return null;
+  const meta = EMOTION_EVENTS[type];
+  if (!meta || typeof meta !== 'object') return null;
+  // 映射值必须是有限数字，配置/未来改动出错时宁可不标注。
+  if (typeof meta.valence !== 'number' || !Number.isFinite(meta.valence)) return null;
+  if (typeof meta.arousal !== 'number' || !Number.isFinite(meta.arousal)) return null;
+  const valence = clamp(meta.valence * EMOTION_ANNOTATION.valenceScale, -1, 1);
+  const arousal = clamp(EMOTION_ANNOTATION.arousalBase + meta.arousal, 0, 1);
+  return { emotionType: type, valence, arousal };
+}
+
+/**
+ * 归一化情绪查询/坐标：严格要求 valence、arousal 都是有限 number，否则返回 null。
+ * 不用 Number() 强转——那会把 null 当 0、把 "-0.6" 字符串当合法（审查 memory-emotion P2）。
+ */
+export function normalizeEmotionQuery(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const valence = raw.valence;
+  const arousal = raw.arousal;
+  if (typeof valence !== 'number' || !Number.isFinite(valence)) return null;
+  if (typeof arousal !== 'number' || !Number.isFinite(arousal)) return null;
+  return { valence: clamp(valence, -1, 1), arousal: clamp(arousal, 0, 1) };
+}
+
+/** 两条情绪坐标的相似度（0..1）：valence 差按 2 归一，arousal 差按 1 归一，欧氏距离。 */
+export function emotionSimilarity(a, b) {
+  const av = a?.valence;
+  const aa = a?.arousal;
+  const bv = b?.valence;
+  const ba = b?.arousal;
+  if (typeof av !== 'number' || typeof aa !== 'number' || typeof bv !== 'number' || typeof ba !== 'number') return 0;
+  if (![av, aa, bv, ba].every(Number.isFinite)) return 0;
+  const dv = (clamp(av, -1, 1) - clamp(bv, -1, 1)) / 2;
+  const da = clamp(aa, 0, 1) - clamp(ba, 0, 1);
+  return clamp(1 - Math.sqrt(dv * dv + da * da) / Math.SQRT2, 0, 1);
+}
 
 /** 档案体积护栏：防止「完整的一生」把 profile.json 撑成第二个上下文。 */
 export const PROFILE_LIMITS = Object.freeze({
@@ -288,6 +350,47 @@ export function rankDocuments(query, docs, options = {}) {
 
   scored.sort((a, b2) => b2.score - a.score);
   return scored.filter((d) => d.score > minScore).slice(0, Math.max(1, Number(limit) || 20));
+}
+
+/**
+ * 情绪通道检索（与 rankDocuments 的关键词/重要度排序并行）。
+ *
+ * 只对**带情绪标注**的文档打分（没标注的旧事件直接跳过、不报错）；
+ * 分数 = 情绪相似度 × 权重 × 分档时间衰减。调用方负责把结果与关键词结果合并；
+ * 默认检索不启用本函数（不改变原排序行为）。
+ */
+export function rankByEmotion(mood, docs, options = {}) {
+  const { limit = 20, minSimilarity = 0.55, now = Date.now(), halfLifeDays = MEMORY_DEFAULTS.halfLifeDays } = options;
+  // 目标 mood 也严格校验：非法输入返回空数组（不把 null 当 0 参与召回）。
+  const target = normalizeEmotionQuery(mood);
+  if (!target) return [];
+  const out = [];
+  for (const doc of Array.isArray(docs) ? docs : []) {
+    if (!doc) continue;
+    // 严格判断「有标注」：只接受真正的 number。null/undefined/字符串都不算——
+    // 注意 Number(null) === 0，用 Number() 会让没标注的旧事件被当成 valence=0。
+    const dv = doc.valence;
+    const da = doc.arousal;
+    if (typeof dv !== 'number' || typeof da !== 'number' || !Number.isFinite(dv) || !Number.isFinite(da)) continue;
+    const similarity = emotionSimilarity(target, { valence: dv, arousal: da });
+    if (similarity < minSimilarity) continue;
+    // 与 rankDocuments 口径一致：没有档位时按 S1（日常闲聊），不是 S2。
+    const tier = Number.isInteger(doc.salience) ? doc.salience : 1;
+    const tuning = salienceTuning(tier);
+    const halfLife = Math.max(1, Number(tuning.halfLifeDays) || Number(halfLifeDays) || MEMORY_DEFAULTS.halfLifeDays);
+    const ts = Number(doc.ts) || 0;
+    const ageDays = ts > 0 ? Math.max(0, (now - ts) / 86400000) : halfLife;
+    const decay = Math.max(tuning.floor, Math.pow(0.5, ageDays / halfLife));
+    const weight = Number.isFinite(doc.weight) ? Math.max(0, Number(doc.weight)) : 1;
+    out.push({
+      ...doc,
+      emotionSimilarity: Math.round(similarity * 1000) / 1000,
+      emotionChannel: true,
+      score: similarity * weight * decay,
+    });
+  }
+  out.sort((x, y) => y.score - x.score || y.emotionSimilarity - x.emotionSimilarity);
+  return out.slice(0, Math.max(1, Number(limit) || 20));
 }
 
 /**

@@ -2594,3 +2594,161 @@ test('--ack-manifest-errors 在 bridge 运行时 exit 2 且不改诊断文件', 
   assert.equal(fs.readFileSync(diagFile, 'utf8'), before, '拒绝时不能动诊断文件');
   cleanup(base);
 });
+
+/* ── 反例：幂等判重必须是「合法记录」，不能是原文子串匹配 ── */
+
+test('L1 里只有含 id 的截断行时，replay 不能当成已恢复', () => {
+  const { dir, store } = freshStore();
+  const ts = Date.now() - 86400000;
+  const id = 'trunc-1';
+  const d = day(ts);
+  fs.mkdirSync(path.join(dir, 'events'), { recursive: true });
+  // 含 id 的坏行（JSON 被截断）
+  fs.writeFileSync(
+    path.join(dir, 'events', `${d}.jsonl`),
+    '{"id":"trunc-1","t":' + ts + ',"k":"g:1","kind":"msg","text":"被截断的事"\n',
+    'utf8',
+  );
+  const row = { id, t: ts, k: 'g:1', kind: 'msg', text: '被截断的事', s: 3 };
+  fs.writeFileSync(
+    path.join(dir, 'write-failures.jsonl'),
+    JSON.stringify({ at: Date.now(), phase: 'event', id, row, error: 'simulated' }) + '\n',
+    'utf8',
+  );
+  const r = store.replayWriteFailures();
+  assert.equal(r.replayed, 0, '坏行不能当已恢复');
+  assert.equal(r.skipped, 0, '坏行不能算已存在');
+  assert.ok(fs.existsSync(path.join(dir, 'write-failures.jsonl')), '失败清单必须保留');
+  cleanup(dir);
+});
+
+test('L1 已有同 id 但内容不同：不能覆盖，也不能丢待恢复记录', () => {
+  const { dir, store } = freshStore();
+  const ts = Date.now() - 86400000;
+  const id = 'conf-1';
+  const d = day(ts);
+  fs.mkdirSync(path.join(dir, 'events'), { recursive: true });
+  const existing = { id, t: ts, k: 'g:1', kind: 'msg', text: '原有内容', s: 3 };
+  fs.writeFileSync(path.join(dir, 'events', `${d}.jsonl`), JSON.stringify(existing) + '\n', 'utf8');
+  const row = { id, t: ts, k: 'g:1', kind: 'msg', text: '待恢复内容', s: 3 };
+  fs.writeFileSync(
+    path.join(dir, 'write-failures.jsonl'),
+    JSON.stringify({ at: Date.now(), phase: 'event', id, row, error: 'simulated' }) + '\n',
+    'utf8',
+  );
+  const r = store.replayWriteFailures();
+  assert.equal(r.replayed, 0);
+  assert.equal(r.skipped, 0);
+  assert.ok(Array.isArray(r.idConflicts) && r.idConflicts.length >= 1, '必须报冲突');
+  const manifest = fs.readFileSync(path.join(dir, 'write-failures.jsonl'), 'utf8');
+  assert.ok(manifest.includes('待恢复内容'), '失败清单必须保留待恢复记录');
+  const l1 = fs.readFileSync(path.join(dir, 'events', `${d}.jsonl`), 'utf8');
+  assert.ok(l1.includes('原有内容') && !l1.includes('待恢复内容'), '不能覆盖 L1');
+  cleanup(dir);
+});
+
+test('失败清单同 id 不同内容：整组回填，不能只写第一条', () => {
+  const { dir, store } = freshStore();
+  const ts = Date.now() - 86400000;
+  const id = 'dup-1';
+  const a = { id, t: ts, k: 'g:1', kind: 'msg', text: '内容 A', s: 3 };
+  const b = { id, t: ts, k: 'g:1', kind: 'msg', text: '内容 B', s: 3 };
+  fs.writeFileSync(
+    path.join(dir, 'write-failures.jsonl'),
+    JSON.stringify({ at: Date.now(), phase: 'event', id, row: a, error: 'simulated A' }) + '\n'
+    + JSON.stringify({ at: Date.now(), phase: 'event', id, row: b, error: 'simulated B' }) + '\n',
+    'utf8',
+  );
+  const r = store.replayWriteFailures();
+  assert.equal(r.replayed, 0, '冲突组不能写任何一条');
+  assert.ok(Array.isArray(r.idConflicts) && r.idConflicts.length >= 1);
+  const manifest = fs.readFileSync(path.join(dir, 'write-failures.jsonl'), 'utf8');
+  assert.ok(manifest.includes('内容 A') && manifest.includes('内容 B'), '两条都必须保留');
+  cleanup(dir);
+});
+
+test('overflow 计数写入失败后重启仍可见（不能静默消失）', () => {
+  const { dir } = freshStore();
+  // 失败清单写满上限，让下一条写入进入 overflow 分支
+  const rows = [];
+  for (let i = 0; i < 10000; i += 1) {
+    rows.push(JSON.stringify({ at: 1, phase: 'event', id: 'r' + i, row: { id: 'r' + i, t: 1, text: 'x' }, error: 'x' }));
+  }
+  fs.writeFileSync(path.join(dir, 'write-failures.jsonl'), rows.join('\n') + '\n', 'utf8');
+  // 让 events 不可写（做成同名文件），appendEvent 必然失败
+  fs.rmSync(path.join(dir, 'events'), { recursive: true, force: true });
+  fs.writeFileSync(path.join(dir, 'events'), 'blocked', 'utf8');
+  // overflow append 模拟 ENOSPC
+  const store = createMemoryStore({ dir });
+  const origAppend = fs.appendFileSync;
+  fs.appendFileSync = (p, ...args) => {
+    if (String(p).endsWith('.overflow')) throw Object.assign(new Error('ENOSPC: no space'), { code: 'ENOSPC' });
+    return origAppend(p, ...args);
+  };
+  try {
+    store.appendEvent({ id: 'x1', t: Date.now(), k: 'g:1', kind: 'msg', text: '写不进去', s: 2 });
+  } finally {
+    fs.appendFileSync = origAppend;
+  }
+  const st = store.stats();
+  assert.ok(st.failureManifestWriteError, 'overflow 写失败必须留下可观测线索');
+  // 重启后（新 store）仍必须可见
+  const store2 = createMemoryStore({ dir });
+  const st2 = store2.stats();
+  assert.ok(st2.failureManifestWriteError, '重启后仍必须可见');
+  assert.equal(st2.failureManifestWriteError.code, 'ENOSPC', '重启后必须保留原始错误码（overflow 是合法 phase）');
+  assert.equal(st2.failureManifestWriteError.phase, 'overflow', 'phase 必须为 overflow');
+  cleanup(dir);
+});
+
+test('同一 id 但 JSON 带空格格式：replay 必须判为已存在（不能按字节预过滤）', () => {
+  const { dir, store } = freshStore();
+  const ts = Date.now() - 86400000;
+  const id = 'space-id';
+  const d = day(ts);
+  fs.mkdirSync(path.join(dir, 'events'), { recursive: true });
+  const existing = { id, t: ts, k: 'g:1', kind: 'msg', text: '同一条合法事件', s: 3 };
+  // 手工写成带空格的 JSON：合法，但不含 "id":"space-id" 子串
+  fs.writeFileSync(
+    path.join(dir, 'events', `${d}.jsonl`),
+    JSON.stringify(existing, null, 0).replace('"id":"', '"id" : "') + '\n',
+    'utf8',
+  );
+  fs.writeFileSync(
+    path.join(dir, 'write-failures.jsonl'),
+    JSON.stringify({ at: Date.now(), phase: 'event', id, row: existing, error: 'simulated' }) + '\n',
+    'utf8',
+  );
+  const r = store.replayWriteFailures();
+  // L1 已存在（带空格格式也要认出）→ 只补 S3 副本，绝不能重复写 L1
+  assert.equal(r.skipped + r.replayed, 1, '必须识别为已存在（只补副本）');
+  const lines = countLines(path.join(dir, 'events', `${d}.jsonl`));
+  assert.equal(lines, 1, 'L1 仍只有一行（不能重复写入）');
+  cleanup(dir);
+});
+
+test('带空格格式的同 id 异文：必须报冲突并保留恢复记录', () => {
+  const { dir, store } = freshStore();
+  const ts = Date.now() - 86400000;
+  const id = 'space-conf';
+  const d = day(ts);
+  fs.mkdirSync(path.join(dir, 'events'), { recursive: true });
+  const existing = { id, t: ts, k: 'g:1', kind: 'msg', text: '原有内容', s: 3 };
+  fs.writeFileSync(
+    path.join(dir, 'events', `${d}.jsonl`),
+    JSON.stringify(existing).replace('"id":"', '"id" : "') + '\n',
+    'utf8',
+  );
+  const row = { id, t: ts, k: 'g:1', kind: 'msg', text: '待恢复内容', s: 3 };
+  fs.writeFileSync(
+    path.join(dir, 'write-failures.jsonl'),
+    JSON.stringify({ at: Date.now(), phase: 'event', id, row, error: 'simulated' }) + '\n',
+    'utf8',
+  );
+  const r = store.replayWriteFailures();
+  assert.equal(r.replayed, 0);
+  assert.ok(Array.isArray(r.idConflicts) && r.idConflicts.length >= 1, '必须报冲突');
+  const manifest = fs.readFileSync(path.join(dir, 'write-failures.jsonl'), 'utf8');
+  assert.ok(manifest.includes('待恢复内容'), '失败清单必须保留');
+  cleanup(dir);
+});

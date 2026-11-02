@@ -46,6 +46,7 @@ if (!check && !msg) {
 
 function git(argv, { allowFail = false } = {}) {
   const r = spawnSync('git', ['-C', outDir, ...argv], { encoding: 'utf8', timeout: 120000 });
+  r.argv = argv;
   if (!allowFail && r.status !== 0) {
     console.error(`❌ git ${argv.join(' ')} 失败：${(r.stderr || r.stdout || '').trim()}`);
     process.exit(1);
@@ -67,6 +68,16 @@ if (check) {
   const status = git(['status', '--short'], { allowFail: true });
   const ahead = git(['rev-list', '--count', 'origin/main..HEAD'], { allowFail: true });
   const head = git(['log', '--oneline', '-1'], { allowFail: true });
+  // 命令失败（safe.directory、仓库不可读等）不能被解释成「没有改动、已同步」——
+  // 以前 allowFail 把空输出当干净，--check 会在权限异常时 fail-open 报假绿。
+  const failed = [status, ahead, head].filter((r) => r.status !== 0);
+  if (failed.length) {
+    console.error('❌ 无法读取公开仓库状态（命令失败），不能把「命令失败」当成「已同步」：');
+    for (const r of failed) {
+      console.error(`   git ${(r.argv || []).join(' ')}：${String(r.stderr || r.stdout || '').trim().split('\n')[0] || '(无输出)'}`);
+    }
+    process.exit(1);
+  }
   console.log(`公开目录：${outDir}`);
   console.log(`HEAD：${(head.stdout || '').trim() || '(无提交)'}`);
   console.log(`未推送提交：${(ahead.stdout || '').trim() || '?'}`);

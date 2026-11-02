@@ -101,8 +101,9 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
     assert.ok(h.state.sessionPolicies['private:123'], 'policy should exist before reset');
     h.calls.cancelled.length = 0;
     const status = await new Promise((resolve, reject) => {
-      const request = http.request({ host: '127.0.0.1', port: server.address().port, path: '/api/session/reset?token=fixture-console-token', method: 'POST',
-        headers: { 'content-type': 'application/json' } }, (response) => {
+      // API 只接受 x-console-token header（?token= 仅用于页面引导）。
+      const request = http.request({ host: '127.0.0.1', port: server.address().port, path: '/api/session/reset', method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-console-token': 'fixture-console-token' } }, (response) => {
         response.resume();
         response.on('end', () => resolve(response.statusCode));
       });

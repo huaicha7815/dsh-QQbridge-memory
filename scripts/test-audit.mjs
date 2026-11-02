@@ -26,6 +26,8 @@ const tests = [
   // 语音图形界面（参数解析/鉴权/路径穿越/文件名净化；live 段需普通终端）
   'test-voice-gui.mjs',
   // 控制台静态契约（跑不了 Playwright 的环境下的替代回归）
+  // 路由鉴权：agent 工具面与 bridge 允许表双向一致 + 真实 HTTP 关卡
+  'test-auth-routes.mjs', 'test-auth-http.mjs',
   'test-console-static.mjs',
   // 语音系统整体结构检查（入口/依赖/端点/开关/文档一致性）
   'test-voice-system.mjs',

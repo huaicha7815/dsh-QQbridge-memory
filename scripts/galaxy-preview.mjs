@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { exportGalaxy } from './lib/galaxy-export.mjs';
+import { GALAXY_CSP } from '../src/lib/galaxy-security.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const HERE = path.join(root, 'tools', 'memory-galaxy');
@@ -34,9 +35,10 @@ try {
 const SECURITY_HEADERS = {
   'x-content-type-options': 'nosniff',
   'referrer-policy': 'no-referrer',
-  'x-frame-options': 'DENY',
-  'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'",
+  'x-frame-options': 'SAMEORIGIN',
+  'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; frame-ancestors 'self'",
 };
+
 
 const ALLOWED_HOSTS = () => new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`, `[::1]:${PORT}`]);
 const isAllowedHost = (req) => ALLOWED_HOSTS().has(String(req.headers.host || '').toLowerCase());
@@ -50,8 +52,18 @@ http.createServer((req, res) => {
   const url = new URL(req.url || '/', 'http://localhost');
   const p = url.pathname;
   if (p === '/memory-galaxy/' || p === '/memory-galaxy') {
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', ...SECURITY_HEADERS });
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', ...SECURITY_HEADERS, 'content-security-policy': GALAXY_CSP });
     res.end(fs.readFileSync(HTML));
+    return;
+  }
+  if (p === '/memory-galaxy/app.css') {
+    res.writeHead(200, { 'content-type': 'text/css; charset=utf-8', 'cache-control': 'no-store', ...SECURITY_HEADERS });
+    res.end(fs.readFileSync(path.join(HERE, 'app.css')));
+    return;
+  }
+  if (p === '/memory-galaxy/app.js') {
+    res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store', ...SECURITY_HEADERS });
+    res.end(fs.readFileSync(path.join(HERE, 'app.js')));
     return;
   }
   if (p === '/memory-galaxy/api/data' || p === '/memory-galaxy/api/galaxy') {

@@ -4,6 +4,47 @@
 
 ---
 
+## v0.3.0 — 2026-11-02
+
+这一版的主线是**「让她的一生可以被看见」**——新增记忆银河可视化；同时把认证边界和发布流程各收紧了一轮。
+
+### 新增：记忆银河（Galaxy）
+
+把 V3 记忆库（事件流 / S3 关键记忆 / 档案 / 日周月摘要 / 归档）投影成一张可交互的星系图：
+
+- **核心恒星是她自己**，旋臂上每条记忆一个光点，按语义分色
+- 点光点看原话，支持筛选、悬停气泡、全屏
+- 控制台 `#memory-graph` 自动重定向到 `#memory-galaxy`
+
+上游布局代码 vendoring 自 [dsh-Memory-Galaxy](https://github.com/leesingx/dsh-Memory-Galaxy)（MIT），
+本地补丁：核心标签绘制、DOM XSS 转义、CSP 拆分（内联脚本/样式拆到 `app.js` / `app.css`）。
+来源与哈希记录在 `tools/memory-galaxy/UPSTREAM.md`。
+
+### 安全加固
+
+- **agent 路由策略抽成共享模块**（`src/lib/agent-route-policy.mjs`），bridge 与测试同源，避免两份白名单各自漂移
+- agent 白名单改为 **method + 精确路径** 表（含 16 个 GET 路由），删除 `/api/authorize/read`
+- tokenless `x-agent-call` 仅放行 `GET /api/status`（legacy 只读探测）
+- CSRF：`content-type` 改严格媒体类型（拒绝 `text/application/json` 等变体）
+- **路由位置审计**：任何在鉴权关卡之前注册的 `/api` 路由都视为绕过，纳入每日自检
+- 鉴权契约测试：词法扫描 + 真实桥接 HTTP harness 双向覆盖
+
+### 发布流程
+
+- `scripts/release-preflight.mjs`：source / public-only 两种模式，**manifest 双向一致 + 每个文件哈希**
+- `docs/guides/RELEASE-SMOKE.md`：9 节发布验收清单（干净检出 / 浏览器 / ACL / 启动 / 集成 / UPSTREAM / 导出 / tag）
+- `scripts/sync-public.mjs`：每轮同步（export + commit，默认不 push）
+- 导出规则抽取成 `scripts/lib/public-export.mjs`，导出与 preflight 共用唯一规则
+
+### 修复
+
+- vm 测试未注入新拆出的 `mcp-api-error` → `apiErrorFromResponse is not defined`
+- `UPSTREAM.md` 的 vendored 哈希过期（`app.js` / `app.css` 字节数与 SHA-256 都对不上）
+- `/galaxy` 无尾斜杠入口 404
+- 表达层复审：MCP 对「200 + ok:false」业务拒绝的状态码处理、LRU 淘汰语义
+
+---
+
 ## v0.2.2 — 2026-10-30
 
 第 34-53 轮，二十轮全在同一个方向上：**让维护脚本和运行中的桥接互不伤害**。

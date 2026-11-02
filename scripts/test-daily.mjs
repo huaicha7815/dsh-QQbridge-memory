@@ -31,6 +31,12 @@ const stamp = now.toLocaleString('zh-CN');
 const node = process.execPath;
 const suite = [
   {
+    // DSH preset patch 生成一致性（--check；Windows 干净 clone 下曾因 CRLF 假失败）
+    name: 'DSH preset patch 一致性',
+    args: ['scripts/test-agent-preset-patches.mjs'],
+    expect: 0,
+  },
+  {
     // 记忆银河 HTTP hermetic fixture：401/403（Host、agent）/200/no-store/脱敏/状态投影
     name: '记忆银河 HTTP',
     args: ['scripts/test-galaxy-http.mjs'],
@@ -49,8 +55,52 @@ const suite = [
     expect: 0,
   },
   {
+    // 发布资产契约：导出 .gitignore 单点写入、共享导出规则、preflight skip 语义
+    name: '发布资产契约',
+    args: ['scripts/test-release-assets.mjs'],
+    expect: 0,
+  },
+  {
+    // /api/* 路由位置审计：所有路由处理必须在集中鉴权关卡之后（关卡前即绕过）
+    name: '/api 路由位置审计',
+    args: ['scripts/audit-route-positions.mjs'],
+    expect: 0,
+  },
+  {
+    // 路由鉴权契约：MCP agent 工具面与 bridge 精确允许表双向一致（含反例防假绿）
+    name: '路由鉴权契约',
+    args: ['scripts/test-auth-routes.mjs'],
+    expect: 0,
+  },
+  {
+    // 真实桥接 HTTP 鉴权：tokenless status probe、agent 声明 403、无效 token 拒绝
+    name: '路由鉴权 HTTP',
+    args: ['scripts/test-auth-http.mjs'],
+    expect: 0,
+  },
+  {
+    // 控制台静态契约：视图/页面一一对应、样式预算（HTML/JS style=0）、
+    // class/规则契约、运行时 style 0、重复 class 0（voice-tool 缺失时 SKIP）
+    name: '控制台静态契约',
+    args: ['scripts/test-console-static.mjs'],
+    expect: 0,
+  },
+  {
     name: '记忆库单测',
     args: ['--test', 'scripts/test-memory-lib.mjs'],
+    expect: 0,
+  },
+  {
+    // 记忆库：情绪检索通道（事件标注 valence/arousal、同类情绪场景召回、
+    // 默认检索行为不变、旧数据向后兼容）。
+    name: '记忆库情绪检索',
+    args: ['--test', 'scripts/test-memory-emotion.mjs'],
+    expect: 0,
+  },
+  {
+    // 控制台「她的情绪」：每句话发出时的情绪快照 + 只读 API（控制台专用）。
+    name: '她的情绪（控制台）',
+    args: ['--test', 'scripts/test-mood-history.mjs'],
     expect: 0,
   },
   {

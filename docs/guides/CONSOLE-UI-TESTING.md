@@ -72,3 +72,32 @@ node scripts/test-console-ui.mjs --original --record-baseline
 普通回归不依赖 `console.before.html`。不要用真实的 `test-console.mjs` 替代本脚本：那个脚本可能向真实 QQ 发送消息。
 
 此回归验证前端行为和提交契约，不能替代真实 QQ / DSH 集成测试。
+
+
+## 样式预算（CSP style-src 收敛）
+
+- 静态 `<style>` 已外置：`public/console.css`、`tools/memory-galaxy/app.css`；
+- CSP 已收紧为 `style-src 'self'; style-src-elem 'self'; style-src-attr 'none'`；
+- 新增样式必须走 CSS 类，不再添加内联 `style` 属性；
+- 样式属性预算只允许下降（`test-console-static` 分类断言）：
+  - `settings` 范围内联 style = 0；
+  - 静态 HTML 内联 style = 0；
+  - 当前允许的 JS 动态 style 模板数量为 0；新增任何 `style` 属性或 CSSOM 写入都必须先更新契约测试；
+  - 最终目标：JS 模板与 runtime style 均为 0；
+- 每批样式改造后必须跑 `test-console-static`、主脚本 `node --check` 和人工视觉 smoke（宽/窄屏、深/浅色）。
+
+
+## settings 样式迁移 smoke
+
+每批样式类化后，在真实 Chrome/Edge 检查：
+
+1. 打开 1560px、1100px、窄屏三个宽度；
+2. 深浅主题各检查一次；
+3. settings details 展开/收起正常；
+4. `label.field-flex` 正确分配宽度；
+5. `span.field-flex-2` 明显比普通说明占更多宽度；
+6. number 输入宽度符合 70/80/90/110/120 等原值；
+7. checkbox 与文字纵向居中，无过大空白；
+8. 页面无横向滚动；
+9. 控制台无 CSP violation、无 JS error；
+10. 各保存按钮仍可正常提交一次 fixture/测试请求。

@@ -242,7 +242,8 @@ test('bridge 真实路径：保存失败设置 lastSaveError，恢复后清空�
     };
     h.saveSocialV2State();
     assert.ok(h.socialV2.lastSaveError, '保存失败必须记录 lastSaveError');
-    assert.equal(h.socialV2.lastSaveError.message.includes('ENOSPC'), true, '错误原因要可读');
+    assert.equal(h.socialV2.lastSaveError.code, 'ENOSPC', '内部只记录错误码');
+    assert.equal('message' in h.socialV2.lastSaveError, false, '原始 message 不落内存态');
 
     fs.renameSync = originalRename;
     h.saveSocialV2State();
@@ -375,6 +376,44 @@ test('bridge 真实路径（会话 C）：两张解释 Map 都有 200 key 上限
   }
 });
 
+test('bridge 真实路径（会话 C）：setBounded 更新已有 key 会刷新淘汰顺序（LRU，审查 expression-r3 P2）', async () => {
+  const h = await bridgeHarness();
+  try {
+    for (let i = 0; i < 200; i++) h.setBounded(h.lastExpressionByKey, `private:${1000 + i}`, { at: 1 });
+    assert.equal(h.lastExpressionByKey.size, 200);
+    // 更新最旧的 key：语义是「最近更新保留」
+    h.setBounded(h.lastExpressionByKey, 'private:1000', { at: 2, updated: true });
+    // 再插新 key：应淘汰次旧 private:1001，而不是刚更新的 private:1000
+    h.setBounded(h.lastExpressionByKey, 'private:9999', { at: 3 });
+    assert.equal(h.lastExpressionByKey.size, 200);
+    assert.equal(h.lastExpressionByKey.has('private:1000'), true, '被更新的 key 必须保留');
+    assert.equal(h.lastExpressionByKey.has('private:1001'), false, '次旧 key 应被淘汰');
+    assert.equal(h.lastExpressionByKey.get('private:1000').updated, true);
+  } finally {
+    await h.close();
+  }
+});
+
+test('bridge 真实路径（会话 C）：retireSession 有映射/无映射都清理解释（审查 expression-r3 测试缺口）', async () => {
+  const h = await bridgeHarness();
+  try {
+    // 无 sessionId 路径
+    h.buildWakePromptV2('private:7403', 'replyCheck');
+    assert.ok(h.socialV2.lastExpression.get('private:7403'));
+    h.retireSession('private:7403');
+    assert.equal(h.socialV2.lastExpression.get('private:7403'), undefined, '无映射路径也要清理');
+    // 有 sessionId 路径（让 retireSession 走完整分支）
+    h.state.sessions['private:123'] = 'sess-fake-1';
+    h.buildWakePromptV2('private:123', 'replyCheck');
+    assert.ok(h.socialV2.lastExpression.get('private:123'));
+    h.retireSession('private:123');
+    assert.equal(h.socialV2.lastExpression.get('private:123'), undefined, '有映射路径也要清理');
+    assert.equal(h.state.sessions['private:123'], undefined, '会话映射应被删除');
+  } finally {
+    await h.close();
+  }
+});
+
 test('bridge 真实路径（会话 C）：默认平静状态不拦表情/语音（避免误伤无情绪会话）', async () => {
   const h = await bridgeHarness();
   try {
@@ -385,6 +424,109 @@ test('bridge 真实路径（会话 C）：默认平静状态不拦表情/语音�
     assert.ok(plan, '应有表达计划');
     assert.equal(plan.hasMoodState, false, '只有普通互动时不应视为有情绪状态');
   } finally {
+    await h.close();
+  }
+});
+
+test('bridge 真实路径（会话 D）：入站情绪事件 → 记忆事件带情绪标注（真实链路闭环）', async () => {
+  const h = await bridgeHarness();
+  h.setMode('reserved2');
+  try {
+    const key = 'private:123';
+    h.appendSocialV2Message(key, '阿明', '你好可爱呀', '你好可爱呀', false, false, 5001, [], '123', []);
+    // 情绪分发先执行（mood 已记 praised），随后记忆归档带 emotionType → 自动标注 valence/arousal。
+    const rows = h.memoryStore.search('可爱', { now: Date.now(), topK: 5, days: 1 });
+    assert.ok(rows.length > 0, '入站消息应写入记忆库');
+    const hit = rows[0];
+    assert.equal(hit.emotionType, 'praised', '记忆事件应带情绪事件类型');
+    assert.ok(hit.valence > 0, '被夸的记忆应有正向 valence');
+    assert.ok(hit.arousal >= 0 && hit.arousal <= 1);
+  } finally {
+    await h.close();
+  }
+});
+
+test('bridge 真实路径：拍一拍 → 记忆事件带 emotionType/valence/arousal', async () => {
+  const h = await bridgeHarness();
+  try {
+    // 真实 bridge 函数：内部 dispatchPoke 先取 eventType，再 archiveMemoryEventV3({ emotionType })
+    h.appendSocialV2Poke('private:7101', {
+      sender: '阿明', userId: '7101', targetId: '7101', targetIsSelf: true,
+    });
+    const now = new Date();
+    const day = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+    // 用 bridge 内部真实 memoryStore 实例读取（覆盖统一读取契约与坏行处理，而不是绕过 API 直接读文件）
+    const rows = h.memoryStore.readDayEvents(day);
+    const ev = rows.find((r) => r.kind === 'poke');
+    assert.ok(ev, 'poke 事件应持久化');
+    assert.equal(ev.emotionType, 'poked', '拍到自己应带 poked 情绪类型');
+    assert.ok(typeof ev.valence === 'number' && typeof ev.arousal === 'number', '情绪标注必须落盘');
+  } finally {
+    await h.close();
+  }
+});
+
+test('bridge 真实路径（会话 D）：唤醒检索把当前 mood 传给记忆检索（P1 生产接线）', async () => {
+  const h = await bridgeHarness();
+  h.setMode('reserved2');
+  try {
+    const key = 'private:123';
+    // 消息要够长（memoryQueryV3 过滤掉「好」「嗯」这类过短查询），且含 praised 关键词。
+    h.appendSocialV2Message(key, '阿明', '你好可爱呀真的好可爱', '你好可爱呀真的好可爱', false, false, 5001, [], '123', []);
+    const captured = [];
+    const orig = h.memoryStore.search;
+    h.memoryStore.search = (q, opts) => {
+      captured.push(opts || {});
+      return orig(q, opts);
+    };
+    try {
+      h.buildWakePromptV2(key, 'replyCheck');
+      assert.ok(captured.length > 0, '唤醒必须触发记忆检索');
+    } finally {
+      h.memoryStore.search = orig;
+    }
+    const withEmotion = captured.find((o) => o && o.emotion);
+    assert.ok(withEmotion, `唤醒记忆检索必须带 emotion（否则情绪检索在生产不可用）；captured=${JSON.stringify(captured)}`);
+    assert.equal(typeof withEmotion.emotion.valence, 'number');
+    assert.equal(typeof withEmotion.emotion.arousal, 'number');
+    assert.ok(withEmotion.emotion.valence > 0, '被夸后 valence 应为正');
+  } finally {
+    await h.close();
+  }
+});
+
+test('bridge 真实路径（会话 D）：暂停/无情绪事件时记忆事件不带任何情绪字段（P2 兼容）', async () => {
+  const h = await bridgeHarness();
+  h.setMode('reserved2');
+  try {
+    // 暂停：dispatch 被跳过 → 归档不应带标注
+    h.socialV2.paused = true;
+    h.appendSocialV2Message('private:123', '阿明', '你好可爱呀', '你好可爱呀', false, false, 5001, [], '123', []);
+    h.socialV2.paused = false;
+    // 普通消息：没有情绪事件
+    h.appendSocialV2Message('private:123', '阿明', '今天吃什么', '今天吃什么', false, false, 5002, [], '123', []);
+    const pausedHit = h.memoryStore.search('可爱', { now: Date.now(), topK: 5, days: 1 }).find((r) => r.text.includes('可爱'));
+    assert.ok(pausedHit, '暂停期间消息也应写入记忆库');
+    assert.equal(pausedHit.emotionType, '', '暂停期间不能标注 emotionType');
+    assert.equal(pausedHit.valence, null, '暂停期间不能有 valence');
+    const plainHit = h.memoryStore.search('吃什么', { now: Date.now(), topK: 5, days: 1 }).find((r) => r.text.includes('吃什么'));
+    assert.equal(plainHit.emotionType, '', '无情绪事件不能标注');
+    assert.equal(plainHit.valence, null);
+    // 直接读当日事件行，确认字段根本不存在（不是 search 投影成空值）——审查缺口。
+    const now = new Date();
+    const dayStr = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+    const rawRows = h.memoryStore.readDayEvents(dayStr);
+    const pausedRow = rawRows.find((r) => r.text === '你好可爱呀');
+    assert.ok(pausedRow, '暂停期间消息应落盘');
+    assert.equal('valence' in pausedRow, false, '暂停期间事件 JSON 不能有 valence 键');
+    assert.equal('arousal' in pausedRow, false, '暂停期间事件 JSON 不能有 arousal 键');
+    assert.equal('emotionType' in pausedRow, false, '暂停期间事件 JSON 不能有 emotionType 键');
+    const plainRow = rawRows.find((r) => r.text === '今天吃什么');
+    assert.ok(plainRow, '普通消息应落盘');
+    assert.equal('valence' in plainRow, false, '无情绪事件 JSON 不能有 valence 键');
+    assert.equal('emotionType' in plainRow, false, '无情绪事件 JSON 不能有 emotionType 键');
+  } finally {
+    h.socialV2.paused = false;
     await h.close();
   }
 });
