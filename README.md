@@ -36,7 +36,7 @@ QQ 消息 ──► SnowLuma（OneBot v11 WS）──► 本桥接进程 ──�
 
 ![记忆银河](assets/screenshot-galaxy.png)
 
-> 以上截图来自真实运行的控制台；QQ 号、昵称、角色名与聊天内容已打码。
+> 以上截图来自真实运行的控制台；会话 QQ 号已打码。
 
 ## 长期记忆
 
