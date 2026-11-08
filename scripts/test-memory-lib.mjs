@@ -749,7 +749,9 @@ test('事件归档：未过期的日文件不受影响', () => {
 
 test('事件归档：ensureConsolidation 会顺带归档且先生成摘要', () => {
   const { store } = makeTempStore({ eventArchiveAfterDays: 30 });
-  const now = Date.now();
+  // 固定时间（中午）：旧实现用 Date.now()，在午夜附近 -40d+分钟 会跨天，
+  // 每天事件数不足 summaryMinEvents，摘要被 skipped → 时间敏感的偶发失败。
+  const now = new Date(2026, 4, 10, 12, 0, 0).getTime();
   // 造 40 天前、每天 3 条（够生成日摘要）
   for (let i = 0; i < 3; i += 1) {
     const ts = now - 40 * 86400000 + i * 60000;

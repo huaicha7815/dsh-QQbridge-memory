@@ -71,7 +71,13 @@ function isValidEventRow(row) {
   if (!row || typeof row !== 'object' || Array.isArray(row)) return false;
   const t = Number(row.t);
   if (!Number.isFinite(t) || t <= 0) return false;
-  if (typeof row.text !== 'string' || !row.text.trim()) return false;
+  // 情绪事件可以没有正文（只有 meta.emotions 标签）：不能在校验阶段整行丢掉，
+  // 否则情绪页「在记忆银河里看」找不到对应往事（协作检查 B-4）。
+  const hasEmotionMeta = row.kind === 'emotion'
+    && row.meta && typeof row.meta === 'object'
+    && Array.isArray(row.meta.emotions) && row.meta.emotions.length > 0;
+  if (typeof row.text !== 'string') return false;
+  if (!row.text.trim() && !hasEmotionMeta) return false;
   if (row.k !== undefined && typeof row.k !== 'string') return false;
   if (row.id !== undefined && typeof row.id !== 'string' && typeof row.id !== 'number') return false;
   if (row.s !== undefined && !Number.isFinite(Number(row.s))) return false;
@@ -192,7 +198,17 @@ export function exportGalaxy({ memoryDir, outFile, labels = {} }) {
   const scanEvents = (dir, { archived = false } = {}) => {
     for (const f of listFiles(dir, '.jsonl', errors)) {
       for (const e of readJsonl(path.join(dir, f), errors)) {
-        const text = String(e.text || '').replace(/\s+/g, ' ').trim();
+        const isEmotion = e.kind === 'emotion';
+        // 情绪事件可能没有正文（只有 meta.emotions 标签）：不能因为 text 空就整条丢掉，
+        // 否则情绪页「在记忆银河里看」找不到对应往事（协作检查 B-4）。
+        const rawText = String(e.text || '').replace(/\s+/g, ' ').trim();
+        const emotionTags = isEmotion && Array.isArray(e.meta?.emotions)
+          ? e.meta.emotions.map((x) => String(x?.kind || '').slice(0, 16)).filter(Boolean)
+          : [];
+        const fallbackTitle = isEmotion
+          ? `[${String(e.meta?.eventType || '情绪').slice(0, 16)}]`
+          : '';
+        const text = rawText || fallbackTitle;
         if (!text) continue;
         const t = Number(e.t) || 0;
         const k = String(e.k || 'chat');
@@ -219,17 +235,25 @@ export function exportGalaxy({ memoryDir, outFile, labels = {} }) {
         }
 
         const s = Number(e.s) || 0;
-        if (s < 2) continue;
+        // 情绪事件即使显著度低（s=0）也必须可见：情绪页「在记忆银河里看」靠它定位往事。
+        if (s < (isEmotion ? 0 : 2)) continue;
         if (srcId && salientById.has(srcId)) continue;   // 与 S3 同一条：只留 S3 那颗
         addStar({
           id: srcId || stableId(archived ? 'archived' : 'event', text, t),
-          rawKind: 'event',
-          kind: 'event',
+          // 情绪事件投影为「感受」类星（前端 KIND.feeling 有标签与配色），
+          // 情绪标签进 tags，银河里能看出「这条往事带什么情绪」（协作检查 B-4）。
+          // rawKind 必须是 tau schema 内的已知类型（emotion 不在 schema 会触发 partial）；
+          // 情绪事件复用 feeling 类型，情绪标签放 tags。
+          rawKind: isEmotion ? 'feeling' : 'event',
+          kind: isEmotion ? 'feeling' : 'event',
           weight: s,
           at: t,
           title: text,
           text,
-          tags: [archived ? '归档' : (scopeOf(k) === 'private' ? '私聊' : '群聊')],
+          tags: [
+            archived ? '归档' : (scopeOf(k) === 'private' ? '私聊' : '群聊'),
+            ...emotionTags,
+          ],
         });
       }
     }

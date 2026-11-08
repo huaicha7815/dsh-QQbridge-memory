@@ -255,7 +255,8 @@ test('bridge 真实路径：保存失败设置 lastSaveError，恢复后清空�
 });
 
 test('bridge 真实路径（会话 C）：两种 mood 下唤醒提示词可观测地不同', async () => {
-  const h = await bridgeHarness();
+  // 1D：prompt 情绪段默认 legacy（不注入）；本测试显式开 treatment
+  const h = await bridgeHarness({ config: { emotion: { v2: { prompt: { mode: 'treatment' } } } } });
   try {
     const key = 'private:7401';
     // 先制造开心状态（被夸）

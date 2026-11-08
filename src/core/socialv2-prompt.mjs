@@ -405,34 +405,58 @@ export function createWakePromptBuilder({
   getMoodView = null,
   getRelationshipView = null,
   expressionCfg = null,
+  // 1D：情绪决策段 opt-in（默认 null = 保持旧行为；返回 false 时不注入 moodLine）
+  promptOptIn = null,
   rng = Math.random,
 }) {
 
   /** 当前会话的表达计划（没有注入状态视图时返回 null）。 */
+  /**
+ * 阶段 4：表达精调（§4.16）——按背景心情（slowValence）与慢性负荷（chronicLoad）温和收敛表达。
+ * 仅在 `emotion.v2.tuning.expression.refine === true` 时生效；默认关闭，行为与 1D 完全一致。
+ */
+
+/** 运行时表达计划（贴纸/语音/文本门禁/explainMood 用；不受 prompt opt-in 影响）。 *//** 运行时表达计划（贴纸/语音/文本门禁/explainMood 用；不受 prompt opt-in 影响）。 */
   function expressionPlanFor(key) {
     if (typeof getMoodView !== 'function') return null;
     let mood = null;
     try {
       mood = getMoodView(key);
     } catch {
-      mood = null;
+      // 状态读取失败 → 不生成计划（不得用默认「平静」冒充真实状态）
+      return null;
     }
+    if (!mood || typeof mood !== 'object') return null;
     let relationship = null;
     const privateUid = /^private:(\d+)$/.exec(String(key))?.[1] ?? null;
     if (privateUid && typeof getRelationshipView === 'function') {
       try {
         relationship = getRelationshipView(privateUid);
       } catch {
-        relationship = null;
+        return null;
       }
     }
-    return resolveExpressionPlan({
+    const expressionConfig = typeof expressionCfg === 'function' ? expressionCfg() : (expressionCfg ?? {});
+    const plan = resolveExpressionPlan({
       key,
       mood,
       relationship,
-      cfg: { socialV2: { moodExpression: typeof expressionCfg === 'function' ? expressionCfg() : (expressionCfg ?? {}) } },
+      cfg: { socialV2: { moodExpression: expressionConfig } },
       rng,
     });
+    return refineExpressionPlanWithBackground(plan, mood, expressionConfig ?? {});
+  }
+
+  /** prompt 情绪决策段计划（受 promptOptIn 控制；运行时门禁不受影响）。 */
+  function promptMoodPlanFor(key) {
+    if (typeof promptOptIn === 'function') {
+      try {
+        if (promptOptIn(key) !== true) return null;
+      } catch {
+        return null; // 开关异常 → fail-closed
+      }
+    }
+    return expressionPlanFor(key);
   }
 
   function replyTimingV2(st) {
@@ -487,7 +511,6 @@ export function createWakePromptBuilder({
     }
     return packet;
   }
-
 
   // 写日记前帮她把自己最近几条说说取回来：不依赖她主动调工具，保证她真的「看见」自己写过什么。
   let diaryPrevNotes = '';
@@ -583,7 +606,7 @@ export function createWakePromptBuilder({
     // 没有注入状态视图时为空字符串，prompt 与旧版逐字节一致。
     let moodLine = '';
     try {
-      const plan = expressionPlanFor(key);
+      const plan = promptMoodPlanFor(key);
       if (plan) moodLine = buildMoodGuidance(plan);
     } catch {
       moodLine = '';
@@ -679,4 +702,33 @@ export function createWakePromptBuilder({
     // 会话 C：控制台可解释性 —— 返回「这次为什么这样回应」的完整依据。
     explainMood: expressionPlanFor,
   };
+}
+
+/**
+ * 阶段 4：表达精调（§4.16）——按背景心情（slowValence）与慢性负荷（chronicLoad）温和收敛表达。
+ * 仅在 `emotion.v2.tuning.expression.refine === true` 时生效；默认关闭，行为与 1D 完全一致。
+ */
+export function refineExpressionPlanWithBackground(plan, mood, cfg = {}) {
+  if (!plan || typeof plan !== 'object') return plan;
+  // 配置来源：emotion.v2.tuning.expression.refine（bridge 注入到 moodExpression.refine）
+  if (!(cfg?.refine === true)) return plan;
+  const slowValence = Number(mood?.slowValence);
+  const chronicLoad = Number(mood?.chronicLoad);
+  let factor = 1;
+  const reasons = [];
+  if (Number.isFinite(chronicLoad) && chronicLoad >= 0.6 && Number(mood?.valence) > 0) {
+    factor *= 0.85;
+    reasons.push({ field: 'backgroundRefine', value: factor, rule: `chronicLoad>=0.6 且即时心情为正 → 表达收敛 ×0.85` });
+  }
+  if (Number.isFinite(slowValence) && slowValence < -0.3 && Number(mood?.valence) > 0) {
+    factor *= 0.9;
+    reasons.push({ field: 'backgroundRefine', value: factor, rule: `slowValence<-0.3 → 表达带保留 ×0.9` });
+  }
+  if (factor === 1) return plan;
+  const next = { ...plan };
+  if (Number.isFinite(next.stickerProbability)) next.stickerProbability = Math.max(0, Math.min(1, next.stickerProbability * factor));
+  if (Number.isFinite(next.maxReplyChars)) next.maxReplyChars = Math.max(20, Math.round(next.maxReplyChars * factor));
+  next.background = { slowValence: Number.isFinite(slowValence) ? slowValence : null, chronicLoad: Number.isFinite(chronicLoad) ? chronicLoad : null, factor };
+  next.reasons = [...(Array.isArray(next.reasons) ? next.reasons : []), ...reasons];
+  return next;
 }

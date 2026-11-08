@@ -84,6 +84,13 @@ export const SALIENCE_TUNING = Object.freeze([
  *
  * 情绪模块的事件表是「一次事件的增量」，而记忆标注要的是「这条事实本身的情绪色彩」：
  * 把增量按 valenceScale 放大成绝对值，arousal 以基线为起点偏移。参数集中在此处便于调。
+ *
+ * ⚠️ 与情绪系统 V2 的 meta.emotions 是**两套语义**，不要混用：
+ *   - 本函数的 {emotionType, valence, arousal}：记忆库旧版事件标注（mood.mjs 事件表口径），
+ *     供旧链路/情绪检索通道使用；
+ *   - 情绪系统 V2 写入的 entry.meta.emotions = [{kind, intensity}]（≤3，appraise 候选）：
+ *     事件级的「这件事带哪些情绪」，由 socialv2-exec 写入，记忆库只读不改。
+ *   新代码若需要情绪标签，优先读 meta.emotions；不要用本函数去反推 V2 状态。
  */
 export const EMOTION_ANNOTATION = Object.freeze({
   valenceScale: 2,

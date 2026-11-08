@@ -83,15 +83,15 @@ export const RELATIONSHIP_EVENTS = Object.freeze({
   interaction: Object.freeze({ label: '互动', intimacy: 0.001, tension: -0.001 }),
   praised: Object.freeze({ label: '被夸', intimacy: 0.03, tension: 0 }),
   thanked: Object.freeze({ label: '被感谢', intimacy: 0.03, tension: 0 }),
-  comforted: Object.freeze({ label: '被哄', intimacy: 0.04, tension: -0.08 }),
+  comforted: Object.freeze({ label: '被哄', intimacy: 0.04, tension: -0.08, resentment: -0.02 }),
   missed: Object.freeze({ label: '被想念', intimacy: 0.04, tension: 0 }),
   teased: Object.freeze({ label: '被调侃', intimacy: 0.01, tension: 0.02 }),
-  ignored: Object.freeze({ label: '被冷落', intimacy: -0.03, tension: 0.06 }),
+  ignored: Object.freeze({ label: '被冷落', intimacy: -0.03, tension: 0.06, resentment: 0.03 }),
   jealous: Object.freeze({ label: '吃醋', intimacy: 0, tension: 0.05 }),
   quarrel: Object.freeze({ label: '争吵', intimacy: -0.05, tension: 0.15 }),
-  insulted: Object.freeze({ label: '被贬低', intimacy: -0.06, tension: 0.18 }),
-  rejected: Object.freeze({ label: '被拒绝', intimacy: -0.04, tension: 0.10 }),
-  makeup: Object.freeze({ label: '和好', intimacy: 0.05, tension: -0.20 }),
+  insulted: Object.freeze({ label: '被贬低', intimacy: -0.06, tension: 0.18, resentment: 0.06 }),
+  rejected: Object.freeze({ label: '被拒绝', intimacy: -0.04, tension: 0.10, resentment: 0.04 }),
+  makeup: Object.freeze({ label: '和好', intimacy: 0.05, tension: -0.20, resentment: -0.08 }),
   poked: Object.freeze({ label: '拍一拍', intimacy: 0.01, tension: 0 }),
   lonely: Object.freeze({ label: '冷场', intimacy: -0.01, tension: 0.03 }),
   openLoop: Object.freeze({ label: '记下未了结的事', intimacy: 0, tension: 0 }),
@@ -894,7 +894,7 @@ export function createMoodEventDispatcher({
 
   /** 所有事件源的统一暂停闸门：暂停 = 冻结，任何 mood/relationship 变更都不写，但返回统一结构。 */
   function pausedResult(t) {
-    return isPaused() ? { ok: true, at: t, skipped: 'paused' } : null;
+    return isPaused() ? { ok: true, at: t, skipped: 'paused', interactionApplied: false, classifiedApplied: false } : null;
   }
 
   /** 事件两边的时间锚：mood 的 since、关系的 lastInteraction。 */
@@ -955,7 +955,7 @@ export function createMoodEventDispatcher({
     // 群友之间的聊天、评价别人或作品不产生 AI 的情绪。私聊天然都是对她说的。
     const isPrivate = contextKey.startsWith('private:');
     if (!isPrivate && directedAtSelf !== true) {
-      return { ok: true, at: normalizeEventAt(at, now()), skipped: 'not-directed-at-ai' };
+      return { ok: true, at: normalizeEventAt(at, now()), skipped: 'not-directed-at-ai', interactionApplied: false, classifiedApplied: false };
     }
     const targetUid = target.uid;
     const t = normalizeEventAt(at, now());
@@ -963,7 +963,7 @@ export function createMoodEventDispatcher({
     const paused = pausedResult(t);
     if (paused) return paused;
     const anchors = anchorsFor(contextKey, targetUid);
-    if (anchors.some((anchor) => t < anchor)) return { ok: false, reason: 'stale_event', at: t };
+    if (anchors.some((anchor) => t < anchor)) return { ok: false, reason: 'stale_event', at: t, interactionApplied: false, classifiedApplied: false };
 
     const classified = classifyIncomingEvent(text);
     const rawText = String(text ?? '').replace(/\s+/g, ' ').trim();
@@ -975,7 +975,7 @@ export function createMoodEventDispatcher({
     if (classified?.type === 'closeLoop') {
       if (!targetUid) return { ok: true, at: t, eventType: null, skipped: 'no-uid' };
       const loops = layer.getRelationship(targetUid).openLoops;
-      if (!loops.length) return { ok: false, reason: 'loop_not_found', eventType: 'closeLoop', at: t };
+      if (!loops.length) return { ok: false, reason: 'loop_not_found', eventType: 'closeLoop', at: t, interactionApplied: false, classifiedApplied: false };
       closedLoopTarget = loops.reduce((a, b) => (a.openedAt <= b.openedAt ? a : b));
     }
 
@@ -990,7 +990,7 @@ export function createMoodEventDispatcher({
       layer.applyRelationshipEvent(targetUid, { type: 'interaction', cause, at: t, key: contextKey });
     }
     if (!classified) return { ok: true, at: t, eventType: null, emotion: null, relationship: null };
-    if (cooled) return { ok: true, at: t, eventType: classified.type, skipped: 'cooldown' };
+    if (cooled) return { ok: true, at: t, eventType: classified.type, skipped: 'cooldown', interactionApplied: true, classifiedApplied: false };
 
     // openLoop / closeLoop 只写关系：
     // - openLoop 用消息原文当未了结事项的文本（截断 80）；
@@ -1005,7 +1005,7 @@ export function createMoodEventDispatcher({
           at: t,
           key: contextKey,
         });
-        return { ...closed, eventType: 'closeLoop' };
+        return { ...closed, eventType: 'closeLoop', closedLoopId: closedLoopTarget.id, interactionApplied: true, classifiedApplied: true };
       }
       const opened = layer.applyRelationshipEvent(targetUid, {
         type: 'openLoop',
@@ -1014,7 +1014,7 @@ export function createMoodEventDispatcher({
         at: t,
         key: contextKey,
       });
-      return { ...opened, eventType: 'openLoop' };
+      return { ...opened, eventType: 'openLoop', interactionApplied: true, classifiedApplied: true };
     }
 
     const pair = applyPair({
@@ -1025,7 +1025,7 @@ export function createMoodEventDispatcher({
       cause,
       at: t,
     });
-    return { ...pair, eventType: classified.type };
+    return { ...pair, eventType: classified.type, interactionApplied: true, classifiedApplied: true };
   }
 
   /** 拍一拍：拍到自己才算情绪事件；拍别人只记一次互动。 */
@@ -1038,14 +1038,14 @@ export function createMoodEventDispatcher({
     const t = normalizeEventAt(at, now());
     const paused = pausedResult(t);
     if (paused) return paused;
-    if (!targetUid) return { ok: true, at: t, skipped: 'no-uid' };
+    if (!targetUid) return { ok: true, at: t, skipped: 'no-uid', interactionApplied: false, classifiedApplied: false };
     const anchors = anchorsFor(contextKey, targetUid);
-    if (anchors.some((anchor) => t < anchor)) return { ok: false, reason: 'stale_event', at: t };
+    if (anchors.some((anchor) => t < anchor)) return { ok: false, reason: 'stale_event', at: t, interactionApplied: false, classifiedApplied: false };
     layer.applyRelationshipEvent(targetUid, { type: 'interaction', cause: '拍一拍', at: t, key: contextKey });
-    if (!targetIsSelf) return { ok: true, at: t, eventType: null };
+    if (!targetIsSelf) return { ok: true, at: t, eventType: null, interactionApplied: true, classifiedApplied: false };
     // 拍一拍也是情绪事件，同样受同类冷却约束（审查 r6 P1）：冷却期间仍记 interaction，但不叠加 poked。
     if (isCooling(targetUid, 'poked', t)) {
-      return { ok: true, at: t, eventType: 'poked', skipped: 'cooldown' };
+      return { ok: true, at: t, eventType: 'poked', skipped: 'cooldown', interactionApplied: true, classifiedApplied: false };
     }
     const pair = applyPair({
       contextKey,
@@ -1055,7 +1055,7 @@ export function createMoodEventDispatcher({
       cause: '被拍了一拍',
       at: t,
     });
-    return { ...pair, eventType: 'poked' };
+    return { ...pair, eventType: 'poked', interactionApplied: true, classifiedApplied: true };
   }
 
   /** 出站消息：只更新关系互动（私聊才有唯一对象；群聊跳过）。 */
@@ -1063,13 +1063,13 @@ export function createMoodEventDispatcher({
     const contextKey = canonicalKey(key);
     if (!contextKey) return { ok: false, reason: 'invalid_key' };
     const targetUid = uidFromKey(contextKey);
-    if (!targetUid) return { ok: true, skipped: 'group' };
+    if (!targetUid) return { ok: true, skipped: 'group', interactionApplied: false, classifiedApplied: false };
     const t = normalizeEventAt(at, now());
     const paused = pausedResult(t);
     if (paused) return paused;
     const anchors = anchorsFor(contextKey, targetUid);
-    if (anchors.some((anchor) => t < anchor)) return { ok: false, reason: 'stale_event', at: t };
-    return layer.applyRelationshipEvent(targetUid, { type: 'interaction', cause: '我发了一条消息', at: t, key: contextKey });
+    if (anchors.some((anchor) => t < anchor)) return { ok: false, reason: 'stale_event', at: t, interactionApplied: false, classifiedApplied: false };
+    return { ...layer.applyRelationshipEvent(targetUid, { type: 'interaction', cause: '我发了一条消息', at: t, key: contextKey }), interactionApplied: true, classifiedApplied: false };
   }
 
   /** 冷落：私聊里我发言后对方长时间没回；3 小时内只记一次。 */
@@ -1086,7 +1086,7 @@ export function createMoodEventDispatcher({
     const moodView = layer.getMood(contextKey);
     const lastIgnored = [...moodView.events].reverse().find((event) => event.type === 'ignored');
     if (lastIgnored && t - lastIgnored.at < NEGLECT_REPEAT_GAP_MS) {
-      return { ok: true, at: t, skipped: 'recent_neglect' };
+      return { ok: true, at: t, skipped: 'recent_neglect', interactionApplied: false, classifiedApplied: false };
     }
     const pair = applyPair({
       contextKey,
@@ -1096,7 +1096,7 @@ export function createMoodEventDispatcher({
       cause: '对方很久没回我',
       at: t,
     });
-    return { ...pair, eventType: 'ignored' };
+    return { ...pair, eventType: 'ignored', interactionApplied: true, classifiedApplied: true };
   }
 
   return {

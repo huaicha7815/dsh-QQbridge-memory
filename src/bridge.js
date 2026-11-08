@@ -68,8 +68,11 @@ import {
   acquireMaintenanceGate, releaseMaintenanceGate, releaseHeldMaintenanceGates, inspectMaintenanceGate,
 } from './lib/maintenance-gate.mjs';
 import { canonicalV2Key, createConversationStateV2, defaultWakeConfigV2, hydrateConversationStateV2, normalizeSpeakerIdsV2, refreshDefaultWakeConfig, serializeSocialV2 } from './core/socialv2-store.mjs';
+import { serializeSocialV2 as serializeSocialV2State } from './core/socialv2-state.mjs';
 // 情绪与关系状态层：状态在 core/mood.mjs，这里只负责在真实消息/拍拍/出站/冷落发生时调用分发器。
 import { createMoodEventDispatcher } from './core/mood.mjs';
+import { decayEpisodes, MIN_ACTIVE_INTENSITY } from './core/mood-v2.mjs';
+import { createSocialV2Runtime } from './core/socialv2-runtime.mjs';
 import { createScheduler } from './core/socialv2-scheduler.mjs';
 import {
   createWakePromptBuilder,
@@ -723,6 +726,24 @@ function loadConfig() {
     memoryRefine: { enabled: true, time: '23:10', maxItems: 5, ...(file.memoryRefine ?? {}) },
     // 价目表覆盖项（可选）。留空即用 src/model-prices.js 的官方默认价。
     pricing: file.pricing ?? null,
+    // 情绪系统 V2（1C）：默认 legacy（enabled=false）；启用 main 需显式配置 emotion.v2。
+    emotion: (() => {
+      const rawEmotion = file.emotion;
+      const emotionIsPlain = rawEmotion && typeof rawEmotion === 'object' && !Array.isArray(rawEmotion);
+      const rawV2 = emotionIsPlain ? rawEmotion.v2 : undefined;
+      const v2IsPlain = rawV2 === undefined || (rawV2 && typeof rawV2 === 'object' && !Array.isArray(rawV2));
+      const v2 = v2IsPlain ? (rawV2 ?? {}) : {};
+      const rawPrompt = v2IsPlain ? rawV2?.prompt : '__invalid__';
+      return { v2: {
+        ...v2,
+        enabled: v2.enabled === true,
+        shadow: v2.shadow !== false,
+        writeSchema: v2.writeSchema ?? null,
+        prompt: { ab: false, ...(v2IsPlain && v2.prompt && typeof v2.prompt === 'object' && !Array.isArray(v2.prompt) ? v2.prompt : {}) },
+        _promptRaw: rawPrompt,
+        _v2Invalid: !v2IsPlain,
+      } };
+    })(),
     security: {
       interceptNotify: true,
       ...(file.security ?? {})
@@ -1431,6 +1452,154 @@ let stateDirHardened = null;
 // ── 主流程 ──────────────────────────────────────────────────────────────────
 async function main() {
   const cfg = loadConfig();
+  // 情绪系统 V2 配置默认值：默认 legacy（enabled=false）；主路径需显式开 main。
+  cfg.emotion = cfg.emotion ?? {};
+  cfg.emotion.v2 = { enabled: false, shadow: true, writeSchema: null, ...(cfg.emotion.v2 ?? {}) };
+  // 阶段 2：tuning 严格校验（双通道/切换曲线/per-kind 半衰期；非法值回退默认 + 告警）
+  (function sanitizeTuning() {
+    const raw = cfg.emotion.v2.tuning;
+    const defaults = {
+      slowFactor: 6,
+      halfLifeByKind: {},
+      switch: { floor: 0.25, minDwellMs: 60000, maxSwitchesPerTurn: 1, reverseSuppressMs: 120000 },
+    };
+    const warnings = [];
+    const out = { slowFactor: defaults.slowFactor, halfLifeByKind: {}, switch: { ...defaults.switch }, sensitization: {}, chronicLoad: {}, needs: {}, expression: {} };
+    const plain = (value) => value && typeof value === 'object' && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+    if (raw !== undefined) {
+      if (!plain(raw)) warnings.push('emotion.v2.tuning 必须为 plain object');
+      else {
+        if (raw.slowFactor !== undefined) {
+          const sf = Number(raw.slowFactor);
+          if (Number.isFinite(sf) && sf >= 2 && sf <= 24) out.slowFactor = sf;
+          else warnings.push('tuning.slowFactor 非法（2..24），回退 6');
+        }
+        if (raw.halfLifeByKind !== undefined) {
+          if (!plain(raw.halfLifeByKind)) warnings.push('tuning.halfLifeByKind 必须为 plain object');
+          else {
+            for (const [kind, value] of Object.entries(raw.halfLifeByKind)) {
+              const ms = Number(value);
+              const min = 60 * 1000;
+              const max = 7 * 24 * 60 * 60 * 1000;
+              if (Number.isFinite(ms) && ms >= min && ms <= max) out.halfLifeByKind[kind] = ms;
+              else warnings.push(`tuning.halfLifeByKind.${kind} 非法（1min..7d）`);
+            }
+          }
+        }
+        if (raw.sensitization !== undefined) {
+          if (!plain(raw.sensitization)) warnings.push('tuning.sensitization 必须为 plain object');
+          else {
+            const lambda = Number(raw.sensitization.lambda);
+            const cap = Number(raw.sensitization.cap);
+            const windowMs = Number(raw.sensitization.windowMs);
+            if (raw.sensitization.lambda !== undefined) {
+              if (Number.isFinite(lambda) && lambda >= 0 && lambda <= 1) out.sensitization = { ...out.sensitization, lambda };
+              else warnings.push('tuning.sensitization.lambda 非法（0..1）');
+            }
+            if (raw.sensitization.cap !== undefined) {
+              if (Number.isFinite(cap) && cap >= 1 && cap <= 3) out.sensitization = { ...out.sensitization, cap };
+              else warnings.push('tuning.sensitization.cap 非法（1..3）');
+            }
+            if (raw.sensitization.windowMs !== undefined) {
+              if (Number.isFinite(windowMs) && windowMs >= 60 * 1000 && windowMs <= 72 * 60 * 60 * 1000) out.sensitization = { ...out.sensitization, windowMs };
+              else warnings.push('tuning.sensitization.windowMs 非法（1min..72h）');
+            }
+          }
+        }
+        if (raw.expression !== undefined) {
+          if (!plain(raw.expression)) warnings.push('tuning.expression 必须为 plain object');
+          else if (raw.expression.refine !== undefined) {
+            if (typeof raw.expression.refine === 'boolean') out.expression = { refine: raw.expression.refine };
+            else warnings.push('tuning.expression.refine 必须为 boolean');
+          }
+        }
+        if (raw.needs !== undefined) {
+          if (!plain(raw.needs)) warnings.push('tuning.needs 必须为 plain object');
+          else {
+            const ranges = { halfLifeMs: [60 * 1000, 7 * 24 * 60 * 60 * 1000], riseRate: [0, 1], satisfyRate: [0, 1], cap: [0.1, 1] };
+            for (const [field, [min, max]] of Object.entries(ranges)) {
+              if (raw.needs[field] === undefined) continue;
+              const value = Number(raw.needs[field]);
+              if (Number.isFinite(value) && value >= min && value <= max) out.needs = { ...out.needs, [field]: value };
+              else warnings.push(`tuning.needs.${field} 非法（${min}..${max}）`);
+            }
+          }
+        }
+        if (raw.chronicLoad !== undefined) {
+          if (!plain(raw.chronicLoad)) warnings.push('tuning.chronicLoad 必须为 plain object');
+          else {
+            const tauMs = Number(raw.chronicLoad.tauMs);
+            const repairRate = Number(raw.chronicLoad.repairRate);
+            const cap = Number(raw.chronicLoad.cap);
+            if (raw.chronicLoad.tauMs !== undefined) {
+              if (Number.isFinite(tauMs) && tauMs >= 60 * 1000 && tauMs <= 7 * 24 * 60 * 60 * 1000) out.chronicLoad = { ...out.chronicLoad, tauMs };
+              else warnings.push('tuning.chronicLoad.tauMs 非法（1min..7d）');
+            }
+            if (raw.chronicLoad.repairRate !== undefined) {
+              if (Number.isFinite(repairRate) && repairRate >= 0 && repairRate <= 1) out.chronicLoad = { ...out.chronicLoad, repairRate };
+              else warnings.push('tuning.chronicLoad.repairRate 非法（0..1）');
+            }
+            if (raw.chronicLoad.cap !== undefined) {
+              if (Number.isFinite(cap) && cap >= 0.1 && cap <= 1) out.chronicLoad = { ...out.chronicLoad, cap };
+              else warnings.push('tuning.chronicLoad.cap 非法（0.1..1）');
+            }
+          }
+        }
+        if (raw.switch !== undefined) {
+          if (!plain(raw.switch)) warnings.push('tuning.switch 必须为 plain object');
+          else {
+            const ranges = { floor: [0, 1], minDwellMs: [0, 60 * 60 * 1000], maxSwitchesPerTurn: [1, 10], reverseSuppressMs: [0, 24 * 60 * 60 * 1000] };
+            for (const [field, [min, max]] of Object.entries(ranges)) {
+              if (raw.switch[field] === undefined) continue;
+              const value = Number(raw.switch[field]);
+              const integerOk = field !== 'maxSwitchesPerTurn' || Number.isInteger(value);
+              if (Number.isFinite(value) && value >= min && value <= max && integerOk) out.switch[field] = value;
+              else warnings.push(`tuning.switch.${field} 非法（${min}..${max}${field === 'maxSwitchesPerTurn' ? '，必须整数' : ''}），回退默认`);
+            }
+          }
+        }
+      }
+    }
+    out.warnings = warnings;
+    cfg.emotion.v2.tuning = out;
+    if (warnings.length > 0) log('[emotion-v2] tuning 配置告警（非法值已回退默认）:', warnings.join('; '));
+  })();
+  // 1D：prompt 三态 rollout 严格校验（非法配置 fail-closed → legacy，不静默 treatment）
+  const EMOTION_V2_PROMPT_MODES = ['legacy', 'treatment', 'ab'];
+  (function sanitizePromptCfg() {
+    const raw = cfg.emotion.v2._promptRaw !== undefined ? cfg.emotion.v2._promptRaw : cfg.emotion.v2.prompt;
+    const warnings = [];
+    let mode = 'legacy';
+    if (raw !== undefined) {
+      const isPlain = raw && typeof raw === 'object' && !Array.isArray(raw) && Object.getPrototypeOf(raw) === Object.prototype;
+      if (!isPlain) {
+        warnings.push('emotion.v2.prompt 必须为 plain object');
+        mode = 'legacy';
+      } else {
+        for (const field of ['enabled', 'ab']) {
+          if (raw[field] !== undefined && typeof raw[field] !== 'boolean') warnings.push(`emotion.v2.prompt.${field} 必须为布尔`);
+        }
+        if (raw.mode !== undefined && !EMOTION_V2_PROMPT_MODES.includes(raw.mode)) {
+          warnings.push('emotion.v2.prompt.mode 非法');
+          mode = 'legacy';
+        } else if (raw.mode !== undefined) {
+          mode = raw.mode;
+        } else if (raw.ab === true) {
+          mode = 'ab';
+        } else if (raw.enabled === false) {
+          mode = 'legacy';
+        } else if (raw.enabled === true) {
+          mode = 'treatment';
+        } else {
+          mode = 'legacy';
+        }
+        // 任意校验告警都强制 legacy（显式 mode 也不能豁免非法字段）
+        if (warnings.length > 0) mode = 'legacy';
+      }
+    }
+    cfg.emotion.v2.prompt = { mode, ab: mode === 'ab', enabled: mode !== 'legacy', warnings };
+    if (warnings.length > 0) log('[emotion-v2] prompt 配置告警（已 fail-closed 到 legacy）:', warnings.join('; '));
+  })();
   fs.mkdirSync(STATE_DIR, { recursive: true });
   hardenStateDirAcl();
   const acquired = acquireLock();
@@ -3240,13 +3409,77 @@ async function main() {
         if (a.length !== b.length) return false;
         return crypto.timingSafeEqual(a, b);
       })();
+      const RESET_PATHS_V2 = ['/api/socialV2/reset', '/api/socialV2/emotion/reset', '/api/socialV2/relationship/reset', '/api/session/reset'];
       if (consoleToken && !tokenMatches) {
+        // 情绪 V2 reset：agent-only（带 agent token 但无有效控制台令牌）返回 403，先于通用 401
+        if (emotionV2Runtime.enabled && req.method === 'POST' && RESET_PATHS_V2.includes(url.pathname) && req.headers['x-agent-token']) {
+          sendJson({ ok: false, error: 'forbidden' }, 403);
+          return;
+        }
+        // 1E：情绪详情是控制台专用视图；agent-only 请求返回 403（先于通用 401）
+        if (emotionV2Runtime.viewEnabled && req.method === 'GET' && url.pathname === '/api/socialV2/emotion/detail' && req.headers['x-agent-token']) {
+          sendJson({ ok: false, error: '该接口仅控制台可用' }, 403);
+          return;
+        }
         if (req.method === 'GET' && url.pathname === '/') {
           res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
           res.end('<!doctype html><meta charset="utf-8"><title>需要令牌</title><script>const t=prompt(\'请输入控制台访问令牌\');if(t)location.href=\'/?token=\'+encodeURIComponent(t);</script>');
         } else {
           sendJson({ ok: false, error: '未授权：请提供控制台访问令牌' }, 401);
         }
+        return;
+      }
+      // 1E：控制台暂停/恢复（V2 事件源短路；admin only）
+      if (req.method === 'POST' && url.pathname === '/api/socialV2/pause') {
+        const body = await readBody(req).catch(() => ({}));
+        const wantPaused = body?.paused === true;
+        const beforePaused = socialV2.paused;
+        socialV2.paused = wantPaused;
+        // V2 启用时用专用持久化（绕过 paused 保存短路）；legacy 走原保存
+        let saved = { ok: true };
+        if (emotionV2Runtime.viewEnabled) saved = emotionV2Runtime.savePauseState(wantPaused);
+        else saveSocialV2State();
+        if (!saved.ok) {
+          // 落盘失败 → 回滚 live 状态，保持内存与磁盘一致
+          socialV2.paused = beforePaused;
+          sendJson({ ok: false, error: '暂停状态未能落盘：' + (saved.code || 'write-failed') }, 500);
+          return;
+        }
+        sendJson({ ok: true, paused: socialV2.paused });
+        return;
+      }
+      // 情绪 V2 reset（1C）：控制台凭证通过后走统一 reset service（复用旧会话清理）
+      if (emotionV2Runtime.enabled && req.method === 'POST' && RESET_PATHS_V2.includes(url.pathname)) {
+        const body = await readBody(req).catch(() => ({}));
+        const service = emotionV2Runtime.makeResetService();
+        let out;
+        try {
+          out = service.handle({
+            pathname: url.pathname,
+            uid: body?.uid ?? url.searchParams.get('uid'),
+            key: body?.key ?? url.searchParams.get('key'),
+          });
+        } catch (error) {
+          sendJson({ ok: false, error: error?.message ?? String(error) }, 500);
+          return;
+        }
+        if (url.pathname === '/api/socialV2/reset') {
+          socialV2.conversations.clear();
+          seenForwardIds.clear();
+          socialV2.paused = false;
+        } else if (url.pathname === '/api/session/reset') {
+          const resetKey = canonicalV2Key(String(body?.key ?? url.searchParams.get('key') ?? '')) ?? String(body?.key ?? url.searchParams.get('key') ?? '');
+          if (resetKey) {
+            // 先无条件删 bridge 本地会话（无 DSH mapping 的孤儿 conversation 也必须清）
+            socialV2.conversations.delete(resetKey);
+            seenForwardIds.delete(resetKey);
+            if (state.sessions[resetKey]) {
+              try { await resetSessionContext(resetKey); } catch (error) { log('V2 会话重置清理失败:', error?.message ?? error); }
+            }
+          }
+        }
+        saveSocialV2State();
+        sendJson(out.body, out.status);
         return;
       }
       // 智能体调用隔离（集中关卡）。
@@ -4206,7 +4439,7 @@ async function main() {
         // ── 二代仿真模式（reserved2）内部 Agent API ─────────────────────────
         // socialV2 控制类端点（会改状态）已拆到 src/routes/socialv2-control-api.mjs
         if (await handleSocialV2ControlApi({
-          acknowledgeMessagesV2, agentTokenOk, atomicWriteJson, cancelReplyCheckV2, clearAllPendingWakeLeases, clearAllSocialV2Timers, computeWakeSafetyV2, drainAllPromptQueues, ensureWakeableV2, forgetAgentToken, getSocialV2State, isSleepingConfigV2, log, normalizeSpeakerIdsV2, preSleepWaitBlockedV2, readBody, readConfigObject, readThroughSeqV2, refreshAllDefaultWakeConfigsV2, requestedReadThroughSeqV2, saveSocialV2State, saveState, scheduleProactiveCheckV2, sendJson, setupSleepTimerV2, stopRetiredSessionWork, v2SessionAllowed, v2ToolEnabled, cfg, socialV2, SOCIAL_V2_FILE, ROOT, wakeConfigUpdatedKeys, wakeConfigMissCount, readRoleState, roleHintForMode, roleNameFor, syncStickerLibrary, stickerEnabled, voiceCfg, voiceLibrary, state, retireSession, sessionEpoch,
+          acknowledgeMessagesV2, agentTokenOk, atomicWriteJson, cancelReplyCheckV2, clearAllPendingWakeLeases, clearAllSocialV2Timers, computeWakeSafetyV2, drainAllPromptQueues, ensureWakeableV2, explainMoodV2, forgetAgentToken, getSocialV2State, isSleepingConfigV2, log, normalizeSpeakerIdsV2, preSleepWaitBlockedV2, readBody, readConfigObject, readThroughSeqV2, refreshAllDefaultWakeConfigsV2, requestedReadThroughSeqV2, saveSocialV2State, saveState, scheduleProactiveCheckV2, sendJson, setupSleepTimerV2, stopRetiredSessionWork, v2SessionAllowed, v2ToolEnabled, cfg, socialV2, SOCIAL_V2_FILE, ROOT, wakeConfigUpdatedKeys, wakeConfigMissCount, readRoleState, roleHintForMode, roleNameFor, syncStickerLibrary, stickerEnabled, voiceCfg, voiceLibrary, state, retireSession, sessionEpoch,
           sessionPromises,
           sessionModels,
           modelAppliedSessions,
@@ -4226,7 +4459,7 @@ async function main() {
         })) return;
         // socialV2 只读端点已拆到 src/routes/socialv2-state-api.mjs
         if (await handleSocialV2StateApi({
-          acknowledgeMessagesV2, agentTokenOk, confirmedSlangListV2, cfg, computeWakeSafetyV2, buildSlangContext, buildStickerContext, buildStickerStrategyHint, ensureWakeableV2, formatMemoryV2, formatParticipationV2, getSocialV2State, isSleepingConfigV2, log, noteModelMessagesV2, preSleepWaitBlockedV2, readBody, readRoleState, readThroughSeqV2, replyTimingV2, requestedReadThroughSeqV2, roleHintForMode, roleNameFor, saveSocialV2State, sendJson, stickerEnabled, syncStickerLibrary, v2SessionAllowed, v2ToolEnabled, voiceCfg, voiceLibrary, socialV2,
+          acknowledgeMessagesV2, agentTokenOk, confirmedSlangListV2, cfg, computeWakeSafetyV2, buildSlangContext, buildStickerContext, buildStickerStrategyHint, ensureWakeableV2, formatMemoryV2, formatParticipationV2, getSocialV2State, isSleepingConfigV2, log, noteModelMessagesV2, preSleepWaitBlockedV2, readBody, readRoleState, readThroughSeqV2, replyTimingV2, requestedReadThroughSeqV2, roleHintForMode, roleNameFor, saveSocialV2State, sendJson, stickerEnabled, syncStickerLibrary, v2SessionAllowed, v2ToolEnabled, voiceCfg, voiceLibrary, socialV2, explainMoodV2,
           req, url,
           currentMode: () => currentMode,
           slangEntries: () => slangEntries,
@@ -4235,6 +4468,94 @@ async function main() {
           readMoodHistory,
           isMoodHistoryDegraded,
           canonicalV2Key,
+          // 情绪 V2（1C）：控制台只读视图/预算状态统一走 runtime adapter
+          getMoodView: (key) => (emotionV2Runtime.viewEnabled && emotionV2Runtime.adapter ? emotionV2Runtime.adapter.getMood(key) : moodEvents.getMood(key)),
+          getRelationshipView: (uid) => (emotionV2Runtime.viewEnabled && emotionV2Runtime.adapter ? emotionV2Runtime.adapter.getRelationship(uid) : moodEvents.getRelationship(uid)),
+          getEmotionV2AbVariant: (key) => socialV2.emotionV2AbVariantFor(key),
+          getEmotionV2Detail: (key) => {
+            if (!emotionV2Runtime.viewEnabled || !emotionV2Runtime.state) return null;
+            const st = emotionV2Runtime.state;
+            const adapter = emotionV2Runtime.adapter;
+            // 读取时衰减 + target-aware：直接使用 adapter 的 synthesizeMood 视图（契约 §4.4）
+            const view = adapter?.getMood?.(key) ?? null;
+            const now = Date.now();
+            const decayed = decayEpisodes(Array.isArray(st.agentMood?.episodes) ? st.agentMood.episodes : [], now, cfg.emotion?.v2?.tuning ?? null)
+              .filter((episode) => Number(episode.currentIntensity) >= MIN_ACTIVE_INTENSITY);
+            const episodes = decayed.slice(0, 8).map((episode) => {
+              const id = String(episode.id ?? '');
+              return {
+                id,
+                // 阶段 4 UI：迁移副本（v1→v2 迁移生成）标记，供曲线/评价链区分
+                migrated: id.startsWith('ep-migrated-'),
+                kind: String(episode.kind ?? ''),
+                currentIntensity: Number(episode.currentIntensity) || 0,
+                peak: Number(episode.peak) || 0,
+                at: Number(episode.decayAnchorAt) || 0,
+                source: String(episode.latestSourceEventId ?? ''),
+                note: String(episode.appraisalNote ?? ''),
+              };
+            });
+            const uid = /^private:(\d+)$/.exec(String(key))?.[1] ?? null;
+            const relationship = uid ? (adapter?.getRelationship?.(uid) ?? null) : null;
+            const thresholds = { negativeValence: -0.2, negativeTension: 0.5 };
+            const valence = Number(view?.valence) || 0;
+            const tension = Number(relationship?.tension) || 0;
+            const negativeLoop = valence <= thresholds.negativeValence && tension >= thresholds.negativeTension;
+            return {
+              agentMood: {
+                episodes,
+                // mixed/dominant 来自 synthesizeMood（target-aware、读取时衰减），不是遍历原始 episodes
+                mixed: (Array.isArray(view?.mix) ? view.mix : []).slice(0, 8),
+                fastValence: Number(view?.valence) || 0,
+                slowValence: Number(view?.slowValence) || 0,
+                arousal: Number(view?.arousal) || 0,
+                energy: Number(view?.energy) || 0,
+                dominance: Number(view?.dominance) || 0,
+                dominant: view?.dominant ?? null,
+                label: String(view?.label ?? ''),
+                reasons: (Array.isArray(view?.reasons) ? view.reasons : []).slice(0, 6),
+                byTarget: (() => {
+                  const raw = view?.byTarget && typeof view.byTarget === 'object' ? view.byTarget : {};
+                  const out = [];
+                  for (const [targetUid, entry] of Object.entries(raw)) {
+                    const rel = typeof adapter?.getRelationship === 'function' ? adapter.getRelationship(targetUid) : null;
+                    out.push({ uid: String(targetUid), dominant: entry?.dominant ?? null, mix: Array.isArray(entry?.mix) ? entry.mix.slice(0, 3) : [], attachmentStyle: rel?.attachmentStyle ?? null });
+                  }
+                  return out;
+                })(),
+                baseline: st.agentMood?.baseline ?? null,
+                episodeCount: Number(view?.episodeCount) || episodes.length,
+                chronicLoad: Number(st.agentMood?.chronicLoad) || 0,
+                sensitivityLog: Array.isArray(st.agentMood?.sensitivityLog) ? st.agentMood.sensitivityLog.slice(-20) : [],
+                sensitivity: (() => {
+                  const raw = st.agentMood?.sensitivity ?? {};
+                  const out = {};
+                  for (const [kind, item] of Object.entries(raw)) {
+                    const value = item && typeof item === 'object' ? Number(item.value) : Number(item);
+                    if (Number.isFinite(value)) out[kind] = value;
+                  }
+                  return out;
+                })(),
+                needs: (() => {
+                  const raw = st.agentMood?.needs ?? {};
+                  const out = {};
+                  for (const [need, item] of Object.entries(raw)) {
+                    const value = item && typeof item === 'object' ? Number(item.value) : Number(item);
+                    if (Number.isFinite(value)) out[need] = value;
+                  }
+                  return out;
+                })(),
+              },
+              relationship,
+              health: { valence, tension, negativeLoop, thresholds, chronicLoad: Number(st.agentMood?.chronicLoad) || 0, degraded: Array.isArray(emotionV2Runtime.lastSave?.degradedReasons) ? emotionV2Runtime.lastSave.degradedReasons : [] },
+            };
+          },
+          getEmotionV2Status: () => ({
+            mode: emotionV2Runtime.mode,
+            enabled: emotionV2Runtime.enabled,
+            viewEnabled: emotionV2Runtime.viewEnabled,
+            lastSave: emotionV2Runtime.lastSave,
+          }),
         })) return;
         // socialV2 唤醒与黑话端点已拆到 src/routes/socialv2-wake-slang-api.mjs
         if (await handleSocialV2WakeSlangApi({
@@ -4294,7 +4615,7 @@ async function main() {
           auditProfile, groupSelfNotes, memoryQueryV3, formatMemoryInjectionV3,
           filterProfileBySource,
           // 记忆检索的情绪通道：按会话取当前 decay 后的 mood。
-          getMoodFor: (key) => moodEvents.getMood(key),
+          getMoodFor: (key) => (emotionV2Runtime.enabled && emotionV2Runtime.adapter ? emotionV2Runtime.adapter.getMood(key) : moodEvents.getMood(key)),
         })) return;
         // ── 二代黑话学习（reserved2）：AI 查询/提交黑话候选 ─────────────────
         if (req.method === 'GET' && url.pathname === '/api/images/message') {
@@ -4456,59 +4777,9 @@ async function main() {
         if (req.method === 'POST' && url.pathname === '/api/session/reset') {
           const body = await readBody();
           const key = String(body.key ?? '');
-          // 审计：这条路径会真的把会话上下文清掉（2026-10-25 22:53 出现过一次没人承认的调用），
-          // 记下来源地址与 UA，至少下次能分辨是控制台页面、本机脚本还是别的什么。
           log(`控制台：收到会话重置请求 ${key || '(空)'}（来源 ${req.socket?.remoteAddress ?? '?'}；UA ${String(req.headers['user-agent'] ?? '').slice(0, 140)}）`);
           if (!key || !state.sessions[key]) { sendJson({ ok: false, error: '会话不存在' }, 404); return; }
-          sessionEpoch++;
-          const oldSessionId = state.sessions[key];
-          delete state.sessions[key];
-          modelAppliedSessions.delete(oldSessionId);
-          // 权限元数据必须与映射一起删除，否则会永久残留在 sessions.json 里。
-          delete state.sessionPolicies[key];
-          reverse.delete(oldSessionId);
-          collectors.delete(oldSessionId);
-          sendToolSucceededSessions.delete(oldSessionId);
-          pendingSendToolCalls.delete(oldSessionId);
-          v2TurnStartAt.delete(oldSessionId);
-          toolCallNames.delete(oldSessionId);
-          const pe = pending.get(key);
-          if (pe) {
-            clearTimeout(pe.timer);
-            cancelPendingEntry(pe).catch(() => {});
-          }
-          pending.delete(key);
-          queued.delete(key);
-          queuedHintAt.delete(key);
-          sessionPromises.delete(key);
-          drainPromptQueue(key, '会话已重置');
-          social.recentMessages.delete(key);
-          messageMediaStore.delete(key);
-          social.pendingSummaries.delete(key);
-          social.states.delete(key);
-          social.silentContext.delete(key);
-          social.silentTurns.delete(oldSessionId);
-          social.exitingSessions.delete(oldSessionId);
-          slangWindows.delete(key);
-          slangExtractionCooldowns.delete(key);
-          slangSubmitTimes.delete(key);
-          cancelSocialTimers(key);
-          clearSocialV2Timers(key);
-          pendingWakeKeys.delete(key);
-          wakeConfigUpdatedKeys.delete(key);
-          markReadCalledKeys.delete(key);
-          wakeConfigMissCount.delete(key);
-          forgetAgentToken(key);
-          socialV2.conversations.delete(key);
-          // 会话 C：清掉该会话的表达解释缓存（避免 reset 后显示旧解释、Map 无界增长）。
-          forgetExpression(key);
-          seenForwardIds.delete(key);
-          saveSocialV2State();
-          saveState();
-          // 归档只隐藏会话，不终止 DSH 侧排队的工作；先清队列并取消当前回合。
-          try { await api.stopSessionWork(oldSessionId); }
-          catch (error) { log(`⚠️ 停止旧会话失败 ${key}：${error?.message ?? error}；请在 DSH 检查旧任务`); }
-          try { await api.workspace.archiveSession({ sessionId: oldSessionId }); } catch {}
+          const oldSessionId = await resetSessionContext(key);
           log(`控制台：已清除会话上下文 ${key}（旧会话 ${oldSessionId} 已停止并归档）`);
           sendJson({ ok: true, key, archived: oldSessionId });
           return;
@@ -5637,7 +5908,28 @@ async function main() {
           return null;
         }
       })();
-      const raw = readJsonSafe(SOCIAL_V2_FILE, null);
+      // 一次读取 + 一次解析（避免 TOCTOU 双读）；parse 失败 → fail-closed（不迁移/不写盘）
+      const fileInfo = (() => {
+        try {
+          const text = fs.readFileSync(SOCIAL_V2_FILE, 'utf8');
+          try { return { text, raw: JSON.parse(text) }; } catch { return { text, parseError: true }; }
+        } catch (error) {
+          return error?.code === 'ENOENT' ? { missing: true } : { error: String(error?.code ?? 'IO') };
+        }
+      })();
+      const raw = fileInfo.missing ? null : (fileInfo.parseError ? null : fileInfo.raw);
+      if (fileInfo.parseError) {
+        log('[emotion-v2] social-v2.json JSON 解析失败 → V2 启动 fail-closed（原文件保持不动，legacy 只读）');
+      } else if (fileInfo.error) {
+        log('[emotion-v2] 读取失败，跳过 V2 加载（不写盘）:', fileInfo.error);
+      } else {
+        try {
+          const v2Boot = emotionV2Runtime.load(fileInfo.missing ? null : fileInfo.raw);
+          if (!v2Boot.ok && emotionV2Runtime.enabled) log('[emotion-v2] 启动失败，保持 legacy:', v2Boot.error);
+        } catch (error) {
+          log('[emotion-v2] 启动异常，保持 legacy:', error?.message ?? error);
+        }
+      }
       socialV2.paused = raw?.paused === true;
       if (raw && typeof raw.conversations === 'object') {
         const seenTokens = new Set();
@@ -5708,13 +6000,172 @@ async function main() {
     }
   }
 
-  function saveSocialV2State() {
+
+  /** 清理会话级内存状态（/api/session/reset 与 V2 reset 共用，返回旧 sessionId）。 */
+  async function resetSessionContext(key) {
+    sessionEpoch++;
+    const oldSessionId = state.sessions[key];
+    delete state.sessions[key];
+    modelAppliedSessions.delete(oldSessionId);
+    // 权限元数据必须与映射一起删除，否则会永久残留在 sessions.json 里。
+    delete state.sessionPolicies[key];
+    reverse.delete(oldSessionId);
+    collectors.delete(oldSessionId);
+    sendToolSucceededSessions.delete(oldSessionId);
+    pendingSendToolCalls.delete(oldSessionId);
+    v2TurnStartAt.delete(oldSessionId);
+    toolCallNames.delete(oldSessionId);
+    const pe = pending.get(key);
+    if (pe) {
+      clearTimeout(pe.timer);
+      cancelPendingEntry(pe).catch(() => {});
+    }
+    pending.delete(key);
+    queued.delete(key);
+    queuedHintAt.delete(key);
+    sessionPromises.delete(key);
+    drainPromptQueue(key, '会话已重置');
+    social.recentMessages.delete(key);
+    messageMediaStore.delete(key);
+    social.pendingSummaries.delete(key);
+    social.states.delete(key);
+    social.silentContext.delete(key);
+    social.silentTurns.delete(oldSessionId);
+    social.exitingSessions.delete(oldSessionId);
+    slangWindows.delete(key);
+    slangExtractionCooldowns.delete(key);
+    slangSubmitTimes.delete(key);
+    cancelSocialTimers(key);
+    clearSocialV2Timers(key);
+    pendingWakeKeys.delete(key);
+    wakeConfigUpdatedKeys.delete(key);
+    markReadCalledKeys.delete(key);
+    wakeConfigMissCount.delete(key);
+    forgetAgentToken(key);
+    socialV2.conversations.delete(key);
+    forgetExpression(key);
+    seenForwardIds.delete(key);
+    lastAbExposureByKey.delete(key);
+    pendingAbTurnByKey.delete(key);
+    saveSocialV2State();
+    saveState();
+    // 归档只隐藏会话，不终止 DSH 侧排队的工作；先清队列并取消当前回合。
+    try { await api.stopSessionWork(oldSessionId); }
+    catch (error) { log(`⚠️ 停止旧会话失败 ${key}：${error?.message ?? error}；请在 DSH 检查旧任务`); }
+    try { await api.workspace.archiveSession({ sessionId: oldSessionId }); } catch {}
+    return oldSessionId;
+  }
+
+  // 双写对账限流（canary 阶段：只记日志，不阻断；每 60s 最多 20 条）
+  let emotionV2DiffWindow = 0;
+  let emotionV2DiffCount = 0;
+  function recordEmotionV2Diff(key, type, oldRel, newRel) {
     try {
-      const obj = serializeSocialV2({
-        paused: socialV2.paused,
-        conversations: socialV2.conversations,
-        seenForwardIds,
-      });
+      const t = Date.now();
+      if (t - emotionV2DiffWindow > 60000) { emotionV2DiffWindow = t; emotionV2DiffCount = 0; }
+      if (emotionV2DiffCount >= 20) return;
+      const fields = ['intimacy', 'tension', 'trust'];
+      const diffs = [];
+      for (const field of fields) {
+        const a = Number(oldRel?.[field] ?? NaN);
+        const b = Number(newRel?.[field] ?? NaN);
+        if (Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) > 1e-6) diffs.push(`${field} ${a}→${b}`);
+      }
+      const countOpen = (rel) => (Array.isArray(rel?.openLoops) ? rel.openLoops.filter((loop) => !loop?.closedAt).length : 0);
+      const oldLoops = countOpen(oldRel);
+      const newLoops = countOpen(newRel);
+      if (oldLoops !== newLoops) diffs.push(`openLoops ${oldLoops}→${newLoops}`);
+      const oldEvents = oldRel?.events?.length ?? 0;
+      const newEvents = newRel?.events?.length ?? 0;
+      if (oldEvents !== newEvents) diffs.push(`events ${oldEvents}→${newEvents}`);
+      if (diffs.length > 0) {
+        emotionV2DiffCount += 1;
+        log(`[emotion-v2][diff] ${key} ${type}: ${diffs.join('; ')}`);
+      }
+    } catch { /* 对账只记日志 */ }
+  }
+
+  function saveSocialV2State(candidateState = null) {
+    // 1C：shadow 模式 → shadow serializer（读旧文件透传五块，绝不用 legacy writer 覆盖 V2）
+    if (emotionV2Runtime.mode === 'shadow' && emotionV2Runtime.viewEnabled) {
+      try {
+        const candidate = candidateState ?? emotionV2Runtime.candidateFromLegacy({ socialV2, seenForwardIds });
+        const result = emotionV2Runtime.shadowSave(candidate);
+        if (result.ok) socialV2.lastSaveError = null;
+        else { socialV2.lastSaveError = { at: Date.now(), code: String(result.code ?? 'SHADOW') }; log('[emotion-v2] shadow 保存失败:', result.code); }
+        return result;
+      } catch (error) {
+        socialV2.lastSaveError = { at: Date.now(), code: 'SHADOW' };
+        log('[emotion-v2] shadow 保存异常:', error?.message ?? error);
+        return { ok: false, code: 'shadow-error' };
+      }
+    }
+    // 1C：V2 main 模式 → 候选态原子写（预算/归档/淘汰在 runtime 内执行）
+    if (emotionV2Runtime.enabled) {
+      try {
+        const candidate = candidateState ?? emotionV2Runtime.candidateFromLegacy({ socialV2, seenForwardIds });
+        const result = emotionV2Runtime.saveCandidate(candidate);
+        if (result.ok) {
+          socialV2.lastSaveError = null;
+          // 归档/淘汰后同步旧 store，避免下次 candidateFromLegacy 把已归档会话灌回
+          if (result.state?.conversations) {
+            for (const key of [...socialV2.conversations.keys()]) {
+              if (!result.state.conversations.has(key)) socialV2.conversations.delete(key);
+            }
+          }
+          if (result.state?.seenForwardIds?.has) {
+            for (const key of [...seenForwardIds.keys()]) {
+              if (!result.state.seenForwardIds.has(key)) seenForwardIds.delete(key);
+            }
+          }
+        } else {
+          socialV2.lastSaveError = { at: Date.now(), code: String(result.code ?? 'V2') };
+          log('[emotion-v2] 保存被拒:', result.code, (result.degradedReasons ?? []).join(','));
+        }
+        return result;
+      } catch (error) {
+        socialV2.lastSaveError = { at: Date.now(), code: 'V2' };
+        log('[emotion-v2] 保存异常:', error?.message ?? error);
+        return { ok: false, code: 'v2-error' };
+      }
+    }
+    try {
+      // 数据保护（R79）：legacy 保存不得把已有 V2 状态覆盖成空 v2。
+      // 若磁盘文件是 v2：用 shadow 序列化保留 5 块（agentMood/relationships/relationshipArchive/pendingArchive/migration），
+      // 只更新会话数据；否则按原 legacy 序列化。
+      let preservedV2Blocks = null;
+      try {
+        if (fs.existsSync(SOCIAL_V2_FILE)) {
+          const existing = JSON.parse(fs.readFileSync(SOCIAL_V2_FILE, 'utf8'));
+          if (existing && existing.version === 2 && existing.agentMood && typeof existing.agentMood === 'object') {
+            preservedV2Blocks = {
+              agentMood: existing.agentMood,
+              relationships: existing.relationships ?? {},
+              relationshipArchive: existing.relationshipArchive ?? { orphanLoops: [], pendingCold: [], pendingEvict: [] },
+              pendingArchive: existing.pendingArchive ?? null,
+              migration: existing.migration ?? { version: 2, fromVersion: 2, status: 'done', revision: 0 },
+            };
+          }
+        }
+      } catch { preservedV2Blocks = null; }
+      if (preservedV2Blocks) log('[emotion-v2] legacy 保存：已保护 V2 状态（5 块保留，示例 episodes=' + (preservedV2Blocks.agentMood?.episodes?.length ?? 0) + '）');
+      // 用 state 层三模式序列化器（final）携带 5 块 → 输出 version 2 + 完整 V2 状态
+      const obj = preservedV2Blocks
+        ? serializeSocialV2State({
+          paused: socialV2.paused,
+          conversations: socialV2.conversations,
+          seenForwardIds,
+          agentMood: preservedV2Blocks.agentMood,
+          relationships: preservedV2Blocks.relationships,
+          relationshipArchive: preservedV2Blocks.relationshipArchive,
+          pendingArchive: preservedV2Blocks.pendingArchive,
+          migration: preservedV2Blocks.migration,
+        }, { mode: 'final' })
+        : serializeSocialV2({
+          paused: socialV2.paused,
+          conversations: socialV2.conversations,
+          seenForwardIds,
+        });
       atomicWriteJson(SOCIAL_V2_FILE, obj);
       // 健康状态（审查 r5 P2）：落盘成功即清空最近失败标记，控制台可区分「内存态」和「已落盘态」。
       socialV2.lastSaveError = null;
@@ -5825,6 +6276,33 @@ async function main() {
   // ---------------------------------------------------------------------------
   const memoryStore = createMemoryStore({ dir: MEMORY_DIR, config: cfg.socialV2?.memory ?? {} });
 
+  // ── 情绪系统 V2（1C）：main 模式启用 V2 权威 runtime；legacy/shadow 不改变旧路径 ──
+  // 会话内存仍由 socialV2.conversations 持有；save 时转成 V2 候选（main 才算预算/归档/淘汰）。
+  const emotionV2Runtime = createSocialV2Runtime({
+    config: cfg,
+    memory: memoryStore,
+    getTuning: () => cfg.emotion.v2.tuning,
+    readFile: () => {
+      try { return fs.readFileSync(SOCIAL_V2_FILE, 'utf8'); } catch { return null; }
+    },
+    readFileInfo: () => {
+      try { return { text: fs.readFileSync(SOCIAL_V2_FILE, 'utf8') }; }
+      catch (error) {
+        // 只有 ENOENT 视为「文件不存在」；EACCES/EIO 等必须 fail-closed（不得覆盖现有 V2 状态）
+        if (error?.code === 'ENOENT') return { missing: true };
+        return { error: String(error?.code ?? 'IO') };
+      }
+    },
+    writeFile: (obj) => atomicWriteJson(SOCIAL_V2_FILE, obj),
+    writeCheckpoint: (state) => {
+      // checkpoint 必须先落盘才写 memory：用 final 序列化原子写
+      atomicWriteJson(SOCIAL_V2_FILE, serializeSocialV2(state, { mode: 'final' }));
+    },
+    now: () => Date.now(),
+    log: (message, error) => log('[emotion-v2]', message, error?.message ?? error ?? ''),
+    audit: (action, target) => appendActivity(`[emotion-v2] reset ${action}${target ? ' ' + target : ''}`),
+  });
+
   // 提示词组装已抽到 core/socialv2-prompt.mjs（纯读 + 拼字符串，可单测）
   const wakePromptBuilder = createWakePromptBuilder({
     getState: (key) => getSocialV2State(key),
@@ -5838,13 +6316,52 @@ async function main() {
     stickerEntries: () => stickerEntries,
     memoryStore,
     // 会话 C：情绪/关系状态 → 表达层。状态视图从 dispatcher 读（它持有 mood layer）。
-    getMoodView: (key) => moodEvents.getMood(key),
-    getRelationshipView: (uid) => moodEvents.getRelationship(uid),
-    expressionCfg: () => cfg.socialV2?.moodExpression ?? {},
+    getMoodView: (key) => (emotionV2Runtime.viewEnabled && emotionV2Runtime.adapter ? emotionV2Runtime.adapter.getMood(key) : moodEvents.getMood(key)),
+    getRelationshipView: (uid) => (emotionV2Runtime.viewEnabled && emotionV2Runtime.adapter ? emotionV2Runtime.adapter.getRelationship(uid) : moodEvents.getRelationship(uid)),
+    expressionCfg: () => ({
+      ...(cfg.socialV2?.moodExpression ?? {}),
+      refine: cfg.emotion?.v2?.tuning?.expression?.refine === true,
+    }),
+    // 1D：情绪决策段 opt-in（默认关；ab 模式按 key 稳定分桶，control 组不注入）
+    promptOptIn: (key) => {
+      const promptCfg = cfg.emotion?.v2?.prompt ?? {};
+      // 三态：legacy（不注入）/ treatment（注入）/ ab（稳定分桶）
+      if (promptCfg.mode === 'legacy') return false;
+      if (promptCfg.mode === 'ab') {
+        const variant = emotionV2AbVariantFor(key);
+        return variant === 'treatment';
+      }
+      if (promptCfg.mode === 'treatment') return true;
+      return false; // 未知 → fail-closed
+      // FNV-1a 稳定分桶：~50% 进入 treatment
+      let hash = 2166136261;
+      const text = String(key ?? '');
+      for (let i = 0; i < text.length; i += 1) {
+        hash ^= text.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+      }
+      return (hash >>> 0) % 2 === 0;
+    },
   });
   // 会话 C：控制台可解释性 —— 最近一次表达决策（source + plan + outcome）。
   // 运行时 Map，不落盘；按 key 记录、带上限、会话删除时清理。
   const lastExpressionByKey = new Map();
+  // 1D：A/B 变体（enabled/ab 配置 → control/treatment），供控制台与实验分析读取
+  const emotionV2AbVariantFor = (key) => {
+    const promptCfg = cfg.emotion?.v2?.prompt ?? {};
+    if (promptCfg.mode === 'legacy') return 'off';
+    if (promptCfg.mode === 'treatment') return 'treatment';
+    if (promptCfg.mode !== 'ab') return 'off';
+    let hash = 2166136261;
+    const text = String(key ?? '');
+    for (let i = 0; i < text.length; i += 1) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0) % 2 === 0 ? 'treatment' : 'control';
+  };
+  socialV2.emotionV2AbVariantFor = emotionV2AbVariantFor;
+  socialV2.finalizeEmotionV2AbTurn = finalizeAbTurn;
   const lastProactiveByKey = new Map();
   const MAX_EXPRESSION_KEYS = 200;
   // 挂到 socialV2 上供只读路由取（serialize 白名单不含该字段，不会落盘）。
@@ -5899,7 +6416,101 @@ async function main() {
   }
 
   function replyTimingV2(st) { return wakePromptBuilder.replyTimingV2(st); }
+  // 阶段 4：真实 builder 的表达计划入口（smoke/控制台只读，走真实 expressionCfg 注入）
+  function explainMoodV2(key) {
+    try { return wakePromptBuilder.explainMood?.(key) ?? null; } catch { return null; }
+  }
   function buildWakeSnapshotV2(key) { return wakePromptBuilder.buildWakeSnapshot(key); }
+  // 1D A/B：turn 级 outcome 聚合（一次 wake = 一个 turn；turn 结束时写一条 outcome）
+  const pendingAbTurnByKey = new Map();
+  // 最近一次 exposure（无 turn 关联的兜底路径：queue/非 turn 场景）
+  const lastAbExposureByKey = new Map();
+  // outcome 幂等：同一 exposureId 只写一次（有界；防重复 finalize/重试重复记账）
+  const abOutcomeExposureIds = new Set();
+
+  /** 结束当前 turn 的 A/B 实验记录（turn/end 与超时清理共用；写盘成功才消费）。 */
+  function finalizeAbTurn(key) {
+    const promptCfg = cfg.emotion?.v2?.prompt ?? {};
+    if (promptCfg.mode !== 'ab') return true;
+    const queue = pendingAbTurnByKey.get(key);
+    if (!Array.isArray(queue) || queue.length === 0) return true;
+    const pending = queue[0];
+    const text = pending.replies.join('\n');
+    // turnReplies 用实际消息条数（不是聚合文本的行数）；空文本不计为回复
+    const ok = appendEmotionV2AbOutcome(key, {
+      pending,
+      replied: pending.replies.length > 0,
+      text,
+      turnReplies: pending.replies.length,
+    });
+    if (ok) {
+      queue.shift();
+      if (queue.length === 0) pendingAbTurnByKey.delete(key);
+    }
+    return ok;
+  }
+  function appendEmotionV2AbExposure(entry) {
+    try {
+      const promptCfg = cfg.emotion?.v2?.prompt ?? {};
+      if (promptCfg.mode !== 'ab') return; // 仅实验期记录
+      const file = path.join(STATE_DIR, 'emotion-v2-ab.jsonl');
+      // 轮转：>5MB 时滚动到 .1（实验期防无界增长；失败不阻塞唤醒）
+      try {
+        const stat = fs.statSync(file);
+        if (stat.size > 5 * 1024 * 1024) {
+          // 轮转保留两份（.1/.2），避免覆盖唯一 .1 丢历史
+          try { fs.renameSync(file + '.1', file + '.2'); } catch {}
+          fs.renameSync(file, file + '.1');
+        }
+      } catch { /* 文件不存在/不可 stat：继续 append */ }
+      // 新的 wake 到来：上一个 turn 若未结束（无 turn/end），先按超时口径 finalize；
+      // finalize 写盘失败时保留旧 pending（不覆盖，避免样本静默丢失）
+      const previousFinalized = finalizeAbTurn(entry.key);
+      if (previousFinalized === false) {
+        log('[emotion-v2] A/B 旧 pending finalize 失败，保留重试；本次新 exposure 不建 pending');
+      }
+      fs.appendFileSync(file, JSON.stringify(entry) + '\n');
+      if (entry.exposureId && previousFinalized !== false) {
+        const queue = pendingAbTurnByKey.get(entry.key) ?? [];
+        queue.push({ exposureId: entry.exposureId, variant: entry.variant, at: entry.at, replies: [] });
+        if (queue.length > 5) queue.shift();
+        pendingAbTurnByKey.set(entry.key, queue);
+        if (pendingAbTurnByKey.size > 200) pendingAbTurnByKey.delete(pendingAbTurnByKey.keys().next().value);
+      }
+    } catch (error) { log('[emotion-v2] A/B exposure 记录失败:', error?.message ?? error); }
+  }
+
+  // 1D A/B：outcome 行（回复长度/指纹 → 与最近 exposure 关联；非实验期 no-op）
+  function appendEmotionV2AbOutcome(key, { pending = null, replied = true, text: replyText = '', turnReplies = null } = {}) {
+    try {
+      const promptCfg = cfg.emotion?.v2?.prompt ?? {};
+      if (promptCfg.mode !== 'ab') return false;
+      const queue = pendingAbTurnByKey.get(key);
+      const last = pending ?? (Array.isArray(queue) ? queue[0] : null) ?? lastAbExposureByKey.get(key);
+      if (!last) return false;
+      const text = String(replyText ?? '');
+      const exposureId = last.exposureId;
+      if (abOutcomeExposureIds.has(exposureId)) return true;
+      const file = path.join(STATE_DIR, 'emotion-v2-ab.jsonl');
+      fs.appendFileSync(file, JSON.stringify({
+        exposureId,
+        key,
+        variant: last.variant,
+        kind: 'outcome',
+        at: Date.now(),
+        replied: replied === true,
+        replyChars: text.length,
+        replyHash: crypto.createHash('sha256').update(text).digest('hex'),
+        turnReplies: replied === true ? (Number.isSafeInteger(turnReplies) ? turnReplies : 1) : 0,
+      }) + '\n');
+      // 写盘成功后才消费内存关联（失败保留，下次 finalize 重试）
+      abOutcomeExposureIds.add(exposureId);
+      if (abOutcomeExposureIds.size > 500) abOutcomeExposureIds.delete(abOutcomeExposureIds.values().next().value);
+      lastAbExposureByKey.delete(key);
+      return true;
+    } catch (error) { log('[emotion-v2] A/B outcome 记录失败:', error?.message ?? error); return false; }
+  }
+
   function buildWakePromptV2(key, reason) {
     const prompt = wakePromptBuilder.buildWakePrompt(key, reason);
     // 记录本次唤醒的表达依据，控制台可以回答「这次为什么这样回应」。
@@ -5973,7 +6584,7 @@ async function main() {
       // 让「她难过时想起上次难过时对方说的话」在真实唤醒注入里生效。
       let emotionQuery = null;
       try {
-        emotionQuery = normalizeEmotionQuery(moodEvents.getMood(key));
+        emotionQuery = normalizeEmotionQuery((emotionV2Runtime.viewEnabled && emotionV2Runtime.adapter) ? emotionV2Runtime.adapter.getMood(key) : moodEvents.getMood(key));
       } catch {
         emotionQuery = null;
       }
@@ -6324,6 +6935,8 @@ async function main() {
     };
     if (wakeBlocked()) return skipWake();
     if (!dshReady) {
+      // queue 场景：调用方未构建 prompt 时在此构建一次（离线队列需要文本；交付时允许重建）
+      if (!promptText && opts.wakeReason) promptText = buildWakePromptV2(key, opts.wakeReason);
       const items = queued.get(key) ?? [];
       if (items.length >= QUEUE_MAX) {
         items.shift();
@@ -6352,7 +6965,7 @@ async function main() {
       // offline queue may have received more messages since this wake was queued.
       wakeState = getSocialV2State(key);
       wakeToken = wakeState.agentToken;
-      promptText = buildWakePromptV2(key, opts.wakeReason);
+      promptText = opts.promptText ?? buildWakePromptV2(key, opts.wakeReason);
       wakeSnapshot = buildWakeSnapshotV2(key);
       if (wakeSnapshot) {
         promptText += `\n\n【本次消息快照】\n${JSON.stringify(wakeSnapshot)}\n以上消息已提供，无需重复查询；partial=true 时用 qq_get_unread_messages(afterSeq=readThroughSeq) 继续读取。先处理当前消息；回复前如需确认后续补充，用 qq_wait_for_messages(purpose="reply") 补足短静默，已安静够久会立即返回，不要先长等。收尾只确认你已处理的 readThroughSeq（本地 seq，非 QQ messageId），传给 qq_mark_read 或 qq_set_wake_config 的 throughSeq；新到消息留待处理。`;
@@ -6380,6 +6993,22 @@ async function main() {
       if (!opts.silent) await sendToQQ(key, `⚠️ 消息未被接受：${safeErrText}`);
       return { ok: false, error: safeErrText };
     }
+    // 1D A/B exposure：只记录「模型已接受」的最终 prompt（含 snapshot/slang 后的文本），一次 wake 一条
+    try {
+      if (opts.wakeReason) {
+        const finalText = String(content?.[0]?.text ?? promptText ?? '');
+        appendEmotionV2AbExposure({
+          exposureId: `exp-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
+          at: Date.now(),
+          key,
+          reason: opts.wakeReason,
+          variant: emotionV2AbVariantFor(key),
+          promptHash: crypto.createHash('sha256').update(finalText).digest('hex'),
+          promptLength: finalText.length,
+          promptVersion: 1,
+        });
+      }
+    } catch (error) { log('[emotion-v2] A/B exposure 记录失败:', error?.message ?? error); }
     if (wakeSnapshot && isCurrentSession(key, sessionId)
         && socialV2.conversations.get(canonicalV2Key(key)) === wakeState
         && wakeState.agentToken === wakeToken) {
@@ -6392,6 +7021,9 @@ async function main() {
       await auditAndSend(key, mdToPlain(accepted.result.value.command.text));
     } else if (accepted.result.value.command?.text && opts.silent && opts.farewell) {
       social.exitingSessions.delete(sessionId);
+    } else if (currentMode !== 'reserved2') {
+      // 1D A/B：静默/无文本也记录 no-reply outcome（避免响应率幸存者偏差）
+      appendEmotionV2AbOutcome(key, { replied: false, text: '' });
     }
     return { ok: true };
   }
@@ -7301,6 +7933,51 @@ async function main() {
         // 记忆标注：这条消息若触发情绪事件，把事件类型一并写进记忆事件。
         // 未知/无事件时 store 侧会自动跳过（旧数据形状不变）。
         incomingEmotionType = moodResult?.eventType ?? null;
+        // 1C：V2 main/shadow 双写（fact 两写 + checkpoint；shadow 只更新投影）
+        if (emotionV2Runtime.viewEnabled && emotionV2Runtime.adapter && msg.userId != null && moodResult?.ok !== false) {
+          try {
+            const messageId = msg.messageId ?? msg.seq ?? null;
+            const msgBase = messageId != null ? `fact:msg:${key}:${messageId}` : null;
+            // 任何消息都是一次真实互动（与旧层 parity；稳定 factId 幂等）；
+            // dispatcher 预检失败（ok:false）整块跳过；skipped 语义区分 interaction/classified
+            if (moodResult?.interactionApplied === true) {
+              emotionV2Runtime.adapter.applyRelationshipEvent(msg.userId, 'interaction', {
+                contextKey: key,
+                factId: msgBase ? `${msgBase}:interaction` : undefined,
+              });
+            }
+            if (incomingEmotionType && moodResult?.classifiedApplied === true) {
+              emotionV2Runtime.adapter.applyEmotionEvent(key, {
+                type: incomingEmotionType,
+                text: msg.plain || msg.text,
+                at: msg.time,
+                messageId,
+                actorUid: msg.userId ?? null,
+                // 稳定 eventId：同一 messageId 重复分发只产生一个 fact
+                eventId: msgBase ?? undefined,
+                target: { kind: 'person', uid: msg.userId ?? null },
+              });
+              const relResult = moodResult?.relationship ?? null;
+              const loopExtra = {};
+              if (incomingEmotionType === 'openLoop') {
+                const loop = relResult?.openLoops?.[relResult.openLoops.length - 1] ?? null;
+                if (loop) loopExtra.loop = { id: loop.id, text: loop.text, openedAt: loop.openedAt };
+              } else if (incomingEmotionType === 'closeLoop') {
+                // dispatcher 显式返回 closedLoopId（不从删除后的数组反推）
+                if (moodResult?.closedLoopId) loopExtra.loopId = moodResult.closedLoopId;
+              }
+              const v2Rel = emotionV2Runtime.adapter.applyRelationshipEvent(msg.userId, incomingEmotionType, {
+                contextKey: key,
+                factId: msgBase ? `${msgBase}:rel:${incomingEmotionType}` : undefined,
+                ...loopExtra,
+              });
+              // 双写对账：旧层 vs V2（tension/trust/events/openLoops；每 60s 最多 20 条）
+              if (relResult && v2Rel?.ok) recordEmotionV2Diff(key, incomingEmotionType, relResult, v2Rel.relationship);
+            }
+          } catch (error) {
+            log('[emotion-v2] 双写情绪/关系事件失败:', error?.message ?? error);
+          }
+        }
       } catch (error) {
         log(`[mood] 入站情绪事件失败 ${key}: ${error?.message ?? error}`);
       }
@@ -7361,8 +8038,9 @@ async function main() {
     if (st.unread.length > unreadLimit) st.unread.splice(0, st.unread.length - unreadLimit);
     // 情绪与关系：拍到自己才算「被拍」情绪事件；拍别人只记一次互动。
     let pokeEmotionType = null;
+    let pokeResult = null;
     try {
-      const pokeResult = moodEvents.dispatchPoke({
+      pokeResult = moodEvents.dispatchPoke({
         key,
         uid: msg.userId ?? null,
         targetIsSelf: msg.poke?.targetIsSelf === true,
@@ -7375,6 +8053,41 @@ async function main() {
       pokeEmotionType = pokeResult?.eventType ?? null;
     } catch (error) {
       log(`[mood] 拍一拍情绪事件失败 ${key}: ${error?.message ?? error}`);
+    }
+    // 1C：main/shadow V2 双写（按 dispatcher flags；paused 在事件源边界短路）
+    if (emotionV2Runtime.viewEnabled && emotionV2Runtime.adapter && !socialV2.paused && msg.userId != null) {
+      try {
+        const pokeResultFlags = pokeResult || {};
+        const pokeBase = msg.messageId != null ? `fact:poke:${key}:${msg.messageId}` : null;
+        if (pokeResultFlags.interactionApplied === true) {
+          emotionV2Runtime.adapter.applyRelationshipEvent(msg.userId, 'interaction', {
+            contextKey: key,
+            factId: pokeBase ? `${pokeBase}:interaction` : undefined,
+          });
+        }
+        if (pokeResultFlags.classifiedApplied === true && pokeEmotionType) {
+          // 拍一拍也要有稳定 id 与触发文本（协作检查：情绪事件无 id/正文会断追溯链、银河只剩空星）。
+          const pokeEmotionText = String(msg.plain || msg.text || '').trim();
+          const pokeStableId = pokeBase
+            ? `${pokeBase}:emotion`
+            : `fact:poke:${key}:${msg.userId ?? ''}:${msg.time ?? now()}`;
+          emotionV2Runtime.adapter.applyEmotionEvent(key, {
+            type: pokeEmotionType,
+            at: msg.time,
+            eventId: pokeStableId,
+            text: pokeEmotionText || '[拍一拍]',
+            evidence: { quote: pokeEmotionText || '[拍一拍]' },
+            actorUid: msg.userId ?? null,
+            target: { kind: 'person', uid: msg.userId ?? null },
+          });
+          emotionV2Runtime.adapter.applyRelationshipEvent(msg.userId, pokeEmotionType, {
+            contextKey: key,
+            factId: pokeBase ? `${pokeBase}:rel:${pokeEmotionType}` : undefined,
+          });
+        }
+      } catch (error) {
+        log('[emotion-v2] 双写拍一拍事件失败:', error?.message ?? error);
+      }
     }
     saveSocialV2State();
     archiveMemoryEventV3({ t: msg.time, k: key, kind: 'poke', who: actor, text, targetIsSelf: !!targetIsSelf, emotionType: pokeEmotionType });
@@ -7412,11 +8125,30 @@ async function main() {
     st.preSleepWaitAccumMs = 0;
     // 出站：只更新关系互动（私聊才有唯一对象），不改变情绪——自己发消息不该让自己「被夸」。
     if (list.length > 0) {
+      let outgoingResultRef = null;
       try {
-        moodEvents.dispatchOutgoing({ key, at: now });
+        outgoingResultRef = moodEvents.dispatchOutgoing({ key, at: now });
       } catch (error) {
         log(`[mood] 出站关系事件失败 ${key}: ${error?.message ?? error}`);
       }
+      // 1C：main/shadow V2 双写（仅 dispatcher 确认 interaction 已应用；paused/stale 零副作用）
+      if (emotionV2Runtime.viewEnabled && emotionV2Runtime.adapter && !socialV2.paused) {
+        const uid = /^private:(\d+)$/.exec(key)?.[1] ?? null;
+        const outgoingResult = outgoingResultRef;
+        if (uid && outgoingResult?.interactionApplied === true) {
+          try { emotionV2Runtime.adapter.applyRelationshipEvent(uid, 'interaction', { contextKey: key }); }
+          catch (error) { log('[emotion-v2] 双写出站关系失败:', error?.message ?? error); }
+        }
+      }
+      // 1D A/B：本 turn 的回复聚合（turn 结束时由 finalizeAbTurn 写一条 outcome）
+      try {
+        const queue = pendingAbTurnByKey.get(key);
+        const pendingTurn = Array.isArray(queue) && queue.length > 0 ? queue[queue.length - 1] : null;
+        if (pendingTurn) {
+          const cleaned = list.map((item) => String(item ?? '')).filter((item) => item.trim().length > 0);
+          if (cleaned.length > 0) pendingTurn.replies.push(...cleaned);
+        }
+      } catch {}
     }
     saveSocialV2State();
   }
@@ -7482,7 +8214,7 @@ async function main() {
   function recordMoodSnapshot(key, text, options = {}) {
     const save = options.save !== false;
     try {
-      const view = moodEvents.getMood(key);
+      const view = (emotionV2Runtime.viewEnabled && emotionV2Runtime.adapter) ? emotionV2Runtime.adapter.getMood(key) : moodEvents.getMood(key);
       if (!view || !view.valid) return;
       let plan = null;
       try { plan = wakePromptBuilder.explainMood?.(key) ?? null; } catch { plan = null; }
@@ -7748,7 +8480,8 @@ async function main() {
     if (reason === 'diary' && typeof wakePromptBuilder.refreshDiaryPrevNotes === 'function') {
       await wakePromptBuilder.refreshDiaryPrevNotes();
     }
-    const promptText = buildWakePromptV2(key, reason);
+    // 1D：不在外层构建 prompt（单次构建在交付点；queue 场景允许交付时重建）
+    const promptText = '';
     log(`[reserved2] 唤醒 ${key}（${reason}）`);
     const rollbackWakeTime = () => {
       const idx = st.wakeTimes.lastIndexOf(wakeTime);
@@ -7892,10 +8625,34 @@ async function main() {
           privateReason = 'proactiveCheck';
           // 对方在我发言后超过阈值没回 → 冷落事件（分发器内部 3 小时去重，不会反复涨张力）。
           if (idle >= idleThreshold) {
+            let neglectResult = null;
             try {
-              moodEvents.dispatchNeglect({ key, at: Date.now() });
+              neglectResult = moodEvents.dispatchNeglect({ key, at: Date.now() });
             } catch (error) {
               log(`[mood] 冷落事件失败 ${key}: ${error?.message ?? error}`);
+            }
+            // 1C：main/shadow V2 双写（ignored；paused/去重窗口零副作用）
+            if (emotionV2Runtime.viewEnabled && emotionV2Runtime.adapter && !socialV2.paused
+              && neglectResult?.interactionApplied === true) {
+              const uid = /^private:(\d+)$/.exec(key)?.[1] ?? null;
+              if (uid) {
+                try {
+                  // 冷落没有 messageId：用 key+uid+at 组成稳定 id，重放不会生成新的 fact。
+                  const neglectAt = neglectResult.at ?? Date.now();
+                  const neglectText = '[冷落] 长时间未回复';
+                  emotionV2Runtime.adapter.applyEmotionEvent(key, {
+                    type: 'ignored',
+                    at: neglectAt,
+                    eventId: `fact:neglect:${key}:${uid}:${neglectAt}`,
+                    text: neglectText,
+                    evidence: { quote: neglectText },
+                    target: { kind: 'person', uid },
+                  });
+                  emotionV2Runtime.adapter.applyRelationshipEvent(uid, 'ignored', { contextKey: key });
+                } catch (error) {
+                  log('[emotion-v2] 双写冷落事件失败:', error?.message ?? error);
+                }
+              }
             }
             saveSocialV2State();
           }
@@ -8674,6 +9431,8 @@ async function main() {
               }
               v2TurnStartAt.delete(frame.sessionId);
               collectors.delete(frame.sessionId);
+              // 1D A/B：turn 结束 → 聚合写一条 outcome（no-reply 兜底也在此）
+              try { if (key) finalizeAbTurn(key); } catch {}
               const sendToolSucceeded = sendToolSucceededSessions.has(frame.sessionId);
               sendToolSucceededSessions.delete(frame.sessionId);
               pendingSendToolCalls.delete(frame.sessionId);

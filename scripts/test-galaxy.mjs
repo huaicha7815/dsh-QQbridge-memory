@@ -166,6 +166,31 @@ test('galaxy：前端对记忆字段做转义（防 stored DOM XSS）', () => {
   assert.equal((html.match(/<span>#\$\{t\}/g) || []).length, 0, '不能再有未转义的标签拼接');
 });
 
+test('galaxy：情绪事件（text 空、s=0）也投影为 feeling 星并保留情绪标签', () => {
+  const { base, mem } = makeLib({
+    events: [{
+      id: 'fact:emotion-1', t: Date.parse('2026-01-05T10:00:00Z'), k: 'private:1234', kind: 'emotion',
+      text: '', s: 0,
+      meta: { eventType: 'ignored', emotions: [{ kind: 'hurt', intensity: 0.5 }, { kind: 'anger', intensity: 0.2 }] },
+    }],
+  });
+  try {
+    const r = exportGalaxy({ memoryDir: mem, outFile: outOf(base) });
+    const data = JSON.parse(fs.readFileSync(r.out, 'utf8'));
+    assert.equal(data.meta.partial, false, '情绪事件不能触发 partial（rawKind 必须在 schema 内）');
+    assert.equal(data.meta.errorCount, 0, '情绪事件不能被记成 schema 错误');
+    const star = data.stars.find((s) => s.id === 'fact:emotion-1');
+    assert.ok(star, '情绪事件必须出现在银河里（情绪页要靠它定位往事）');
+    assert.equal(star.kind, 'feeling', '情绪事件投影为 feeling 类型');
+    assert.equal(star.rawKind, 'feeling', 'rawKind 必须是 schema 内已知类型');
+    assert.ok(star.tags.includes('hurt') && star.tags.includes('anger'), '情绪标签必须进 tags');
+    assert.ok(star.title && star.title.length > 0, '空正文要有兜底标题');
+    assert.equal(data.messages.length, 1, '情绪事件也要有消息点');
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test('galaxy：公开导出排除记忆数据文件', () => {
   // 直接测试共享导出规则的「行为」，而不是源码字符串位置（规则在 public-export.mjs）。
   assert.equal(shouldExclude('tools/memory-galaxy/galaxy-data.json'), true, 'galaxy-data.json 必须被排除');

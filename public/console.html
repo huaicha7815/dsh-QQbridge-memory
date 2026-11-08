@@ -555,6 +555,15 @@
         <button id="emotionGalaxyBtn" class="small">在记忆银河里看 →</button>
         <span class="meta" id="emotionMsg"></span>
       </div>
+      <div class="meta" id="emotionV2Status" hidden></div>
+      <div id="emotionV2Stack" hidden></div>
+      <div class="row mt-10" id="emotionV2Controls">
+        <button id="emotionV2ResetMood" class="small" type="button">重置情绪</button>
+        <button id="emotionV2ResetRel" class="small" type="button">重置当前关系</button>
+        <button id="emotionV2Pause" class="small" type="button">暂停</button>
+        <button id="emotionV2Resume" class="small" type="button">恢复</button>
+        <span class="meta" id="emotionV2ControlMsg"></span>
+      </div>
       <div id="emotionBody" class="mt-12">
         <div class="meta">正在读取她的情绪…</div>
       </div>
@@ -3569,7 +3578,10 @@ function formatAgo(ms) {
   return Math.floor(n / 86400000) + ' 天前';
 }
 function formatClock(ts) {
-  const d = new Date(Number(ts) || 0);
+  const n = Number(ts);
+  // epoch 0 = 未知时间（/mood reasons 映射不伪造历史时刻）
+  if (!Number.isFinite(n) || n <= 0) return '时间未知';
+  const d = new Date(n);
   if (!Number.isFinite(d.getTime())) return '—';
   return d.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
 }
@@ -3654,6 +3666,254 @@ function renderEmotionPanel({ mood, moodError, rel, relError, history, historyEr
   cards.push('<div class="emotion-card grid-span-all"><h3>情绪从哪来 <span class="meta">全部 ' + events.length + ' 条（新→旧）</span></h3>' + eventsHtml + '</div>');
   body.innerHTML = '<div class="emotion-grid">' + cards.join('') + '</div>';
 }
+// 情绪 V2（1C）：控制台只读预算/落盘状态卡（emotionV2 由 bridge 注入）
+async function renderEmotionV2Status(key) {
+  const el = document.getElementById('emotionV2Status');
+  if (!el) return;
+  const reqId = (window.__emotionV2StatusReqId || 0) + 1;
+  window.__emotionV2StatusReqId = reqId;
+  try {
+    const r = await api('/api/socialV2/state?key=' + encodeURIComponent(key));
+    if (window.__emotionV2StatusReqId !== reqId) return;
+    const v2 = r && r.emotionV2;
+    if (!v2) { el.hidden = true; return; }
+    const last = v2.lastSave || {};
+    const modeText = v2.enabled ? '主路径' : (v2.viewEnabled ? '影子投影' : '未启用');
+    const degraded = Array.isArray(last.degradedReasons) && last.degradedReasons.length
+      ? ' · 降级：' + last.degradedReasons.join('、')
+      : '';
+    const saveText = last.ok ? '成功' : (last.code ? String(last.code) : '未知');
+    el.hidden = false;
+    el.textContent = '情绪 V2 · ' + String(v2.mode || 'legacy') + '（' + modeText + '）· 最近保存：' + saveText + degraded;
+  } catch {
+    if (window.__emotionV2StatusReqId !== reqId) return;
+    el.hidden = true;
+  }
+}
+
+// 1E 情绪栈：混合心情 + 评价链（episodes）+ 负性循环健康（只读）
+const EMOTION_KIND_LABELS = { joy: '开心', sadness: '难过', anger: '生气', fear: '害怕', disgust: '厌恶', surprise: '惊讶', anticipation: '期待', reassurance: '安心', hurt: '委屈', loneliness: '孤独', pride: '自豪', shame: '羞耻', hope: '希望', disappointment: '失落' };
+const SEVEN_EMOTIONS = [['joy', '喜'], ['anger', '怒'], ['sadness', '哀'], ['fear', '惧'], ['reassurance', '爱'], ['disgust', '恶'], ['anticipation', '欲']];
+function emotionKindLabel(kind) { return EMOTION_KIND_LABELS[kind] || String(kind || ''); }
+function emotionValenceClass(v) { return v >= 0.15 ? 'mood-good' : (v <= -0.15 ? 'mood-bad' : 'mood-flat'); }
+
+// V2 情绪页主视图：心情条 + 七情 + 混合堆叠 + 双通道 + 时间线 + 折叠详情
+async function renderEmotionV2Stack(key) {
+  const el = document.getElementById('emotionV2Stack');
+  if (!el) return;
+  const reqId = (window.__emotionV2StackReqId || 0) + 1;
+  window.__emotionV2StackReqId = reqId;
+  try {
+    const [r, historyResp] = await Promise.all([
+      api('/api/socialV2/emotion/detail?key=' + encodeURIComponent(key)),
+      api('/api/socialV2/mood-history?key=' + encodeURIComponent(key) + '&limit=20').catch((error) => ({ ok: false, error: (error && error.message) || '网络错误' })),
+    ]);
+    if (window.__emotionV2StackReqId !== reqId) return; // 切会话竞态：只渲染最新请求
+    if (!r || !r.ok || !r.agentMood) {
+      el.hidden = true;
+      const legacyEl = document.getElementById('emotionBody');
+      if (legacyEl) legacyEl.hidden = false;
+      const msgEl = document.getElementById('emotionMsg');
+      if (msgEl) { msgEl.textContent = '情绪 V2 读取失败：' + ((r && r.error) || '未知错误'); msgEl.className = 'meta err'; }
+      return;
+    }
+    const am = r.agentMood;
+    const episodes = Array.isArray(am.episodes) ? am.episodes : [];
+    const mixed = Array.isArray(am.mixed) ? am.mixed : [];
+    const dominant = am.dominant || null;
+    const fastV = Number(am.fastValence) || 0;
+    const slowV = Number(am.slowValence) || 0;
+    const chronic = Number(am.chronicLoad) || 0;
+
+    // 七情：固定七格，数据来自 episodes 按 kind 聚合（未出现=0，显示平静）
+    // 七情强度：同 kind 取「最大值」（不是求和）——迁移副本/重复事件不会重复计权，语义=此刻该情绪有多强
+    const strength = {};
+    for (const ep of episodes) {
+      const k = String(ep.kind);
+      const value = Math.min(1, Number(ep.currentIntensity) || 0);
+      strength[k] = Math.max(strength[k] || 0, value);
+    }
+    const sevenHtml = SEVEN_EMOTIONS.map(([kind, mark]) => {
+      const value = strength[kind] || 0;
+      const active = value > 0.05;
+      return '<div class="seven-cell' + (active ? ' active' : '') + '">'
+        + '<div class="seven-head"><b>' + mark + '</b><span>' + esc(emotionKindLabel(kind)) + '</span></div>'
+        + '<progress class="seven-bar" max="100" value="' + Math.round(value * 100) + '" aria-label="' + mark + esc(emotionKindLabel(kind)) + ' ' + Math.round(value * 100) + '%"></progress>'
+        + '<div class="seven-val">' + Math.round(value * 100) + '%</div></div>';
+    }).join('');
+
+    // 混合堆叠条 + 图例
+    // 百分比按 ratio 四舍五入，不补差、不篡改（detail 返回完整 mixed，最多 8 种）
+    const mixedPct = mixed.map((item) => Math.round((Number(item.ratio) || 0) * 100));
+    const stackHtml = mixed.length
+      ? mixed.map((item, i) => '<div class="emotion-metric"><span class="emotion-metric-label">' + esc(emotionKindLabel(item.kind)) + '</span>'
+        + '<span class="emotion-bar"><progress class="emotion-bar-fill" max="100" value="' + mixedPct[i] + '" aria-label="' + esc(emotionKindLabel(item.kind)) + ' 占比 ' + mixedPct[i] + '%"></progress></span>'
+        + '<span class="meta">' + mixedPct[i] + '%</span></div>').join('')
+      : '<div class="meta">暂无混合心情（情绪已回落到平静）</div>';
+
+    // 时间线（同 kind 去重，保留最新 + 条数）
+    const merged = [];
+    const seen = new Map();
+    for (const ep of episodes) {
+      const k = String(ep.kind);
+      const at = Number(ep.at) || 0;
+      if (!seen.has(k)) { const item = { ...ep, count: 1 }; seen.set(k, item); merged.push(item); }
+      else {
+        const item = seen.get(k);
+        item.count += 1;
+        if (at > (Number(item.at) || 0)) { item.at = at; item.currentIntensity = ep.currentIntensity; }
+      }
+    }
+    const timelineHtml = merged.length
+      ? merged.sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0)).slice(0, 8).map((item) => {
+        const intensity = Number(item.currentIntensity) || 0;
+        const at = Number(item.at) || 0;
+        return '<div class="tm-item"><span class="tm-dot ' + (intensity >= 0.5 ? 'tm-strong' : 'tm-soft') + '"></span>'
+          + '<span class="tm-label">' + esc(emotionKindLabel(item.kind)) + (item.migrated ? ' <span class="tag-migrated">迁移</span>' : '') + (item.count > 1 ? ' ×' + item.count : '') + '</span>'
+          + '<progress class="tm-bar" max="100" value="' + Math.round(intensity * 100) + '" aria-label="' + esc(emotionKindLabel(item.kind)) + ' 强度 ' + Math.round(intensity * 100) + '%"></progress>'
+          + '<span class="meta">' + formatClock(at) + (item.note ? ' · ' + esc(String(item.note).slice(0, 24)) : '') + '</span></div>';
+      }).join('')
+      : '<div class="meta">暂无评价记录（她还没被什么触动）</div>';
+
+    // 折叠详情：六需求 / 敏感化 / 慢性负荷 / 关系
+    const needs = am.needs || {};
+    const needLabels = { belonging: '归属', approval: '认可', safety: '安全', autonomy: '自主', exploration: '探索', competence: '能力' };
+    const needsHtml = Object.keys(needLabels).map((need) => {
+      const raw = needs[need];
+      const value = raw && typeof raw === 'object' ? Number(raw.value) : Number(raw);
+      return '<div class="emotion-metric"><span class="emotion-metric-label">' + needLabels[need] + '</span><span class="emotion-bar"><progress class="emotion-bar-fill" max="100" value="' + Math.round((Number.isFinite(value) ? value : 0) * 100) + '" aria-label="' + needLabels[need] + ' 张力 ' + Math.round((Number.isFinite(value) ? value : 0) * 100) + '%"></progress></span><span class="meta">' + (Number.isFinite(value) ? value.toFixed(2) : '0.00') + '</span></div>';
+    }).join('');
+
+    const hero = '<div class="emotion-hero">'
+      + '<span class="hero-orb ' + emotionValenceClass(fastV) + '"></span>'
+      + '<div class="hero-main"><div class="hero-title">' + esc(dominant ? emotionKindLabel(dominant.kind) : '平静') + '</div>'
+      + '<div class="meta">' + (dominant ? '此刻主导的情绪 · 强度 ' + (Number(dominant.intensity) || 0).toFixed(2) : '没有明显情绪') + '</div></div>'
+      + '<div class="hero-nums"><div><span class="meta">心情</span><b>' + (fastV > 0 ? '+' : '') + fastV.toFixed(2) + '</b></div>'
+      + '<div><span class="meta">唤醒</span><b>' + (Number(am.arousal) || 0).toFixed(2) + '</b></div>'
+      + '<div><span class="meta">精神</span><b>' + (Number(am.energy) || 0).toFixed(2) + '</b></div></div></div>';
+
+    const channels = '<div class="channel-row"><div class="channel-item"><span class="meta">即时心情（快）</span><progress class="channel-bar" max="100" value="' + Math.round(Math.abs(fastV) * 100) + '" aria-label="即时心情 ' + Math.round(Math.abs(fastV) * 100) + '%"></progress><b>' + (fastV > 0 ? '+' : '') + fastV.toFixed(2) + '</b></div>'
+      + '<div class="channel-item"><span class="meta">背景心情（慢）</span><progress class="channel-bar channel-bar-slow" max="100" value="' + Math.round(Math.abs(slowV) * 100) + '" aria-label="背景心情 ' + Math.round(Math.abs(slowV) * 100) + '%"></progress><b>' + (slowV > 0 ? '+' : '') + slowV.toFixed(2) + '</b></div>'
+      + '<div class="channel-item"><span class="meta">慢性负荷</span><progress class="channel-bar channel-bar-load" max="100" value="' + Math.round(chronic * 100) + '" aria-label="慢性负荷 ' + Math.round(chronic * 100) + '%"></progress><b>' + chronic.toFixed(2) + '</b></div></div>';
+
+    const details = '<details class="emotion-details"><summary>详细数据（六需求 / 敏感化 / 健康阈值）</summary>'
+      + '<div class="details-body">' + needsHtml
+      + '<div class="meta mt-6">敏感化：' + (() => {
+        const sens = am.sensitivity || {};
+        const kinds = Object.keys(sens).slice(0, 4);
+        return kinds.length ? kinds.map((k) => esc(emotionKindLabel(k)) + ' ×' + Number(sens[k]).toFixed(2)).join(' · ') : '无（同类负性未累积）';
+      })() + ' · 慢性负荷告警阈值 0.60</div>'
+      + '<div class="meta mt-6">健康：' + (r.health && r.health.negativeLoop ? '⚠️ 负性循环（心情低 + 关系张力高）' : '正常') + '</div>'
+      + (Array.isArray(am.byTarget) && am.byTarget.length > 0 ? '<div class="meta mt-6">byTarget 为跨会话数据，仅控制台管理员可见</div>' : '')
+      + '</div></details>';
+
+    el.hidden = false;
+    // 情绪曲线（最近 ≤20 条 episodes 的强度走势，SVG 无外部依赖）
+    // 曲线只画真实事件（迁移副本 ep-migrated-* 不参与，避免重复点/直线）
+    const curvePoints = episodes
+      .filter((item) => Number(item.at) > 0 && item.migrated !== true)
+      .slice()
+      .sort((a, b) => Number(a.at) - Number(b.at))
+      .slice(-20);
+    const curveHtml = (() => {
+      if (curvePoints.length < 2) return '<div class="meta">事件还太少，再聊几句就能画曲线。</div>';
+      const w = 720; const h = 60;
+      // x 用序号均匀分布（同一毫秒的多条 episode 不会挤成一个点）；y 为强度
+      const xAt = (index) => Math.round((index / Math.max(1, curvePoints.length - 1)) * (w - 10) + 5);
+      const yAt = (value) => Math.round(h - 6 - Math.min(1, Number(value) || 0) * (h - 12));
+      const path = curvePoints.map((item, index) => (index === 0 ? 'M' : 'L') + xAt(index) + ' ' + yAt(item.currentIntensity)).join(' ');
+      const dots = curvePoints.map((item, index) => '<circle cx="' + xAt(index) + '" cy="' + yAt(item.currentIntensity) + '" r="3" fill="#8e7cc3"/>').join('');
+      return '<svg class="emotion-curve" width="100%" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" role="img" aria-label="情绪曲线">'
+        + '<path d="' + path + '" fill="none" stroke="#8e7cc3" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>' + dots + '</svg>';
+    })();
+    const historyList = historyResp && historyResp.ok && Array.isArray(historyResp.history) ? historyResp.history.slice(-20).reverse() : [];
+    const historyHtml = (historyResp && historyResp.ok === false)
+      ? '<div class="meta err">逐句情绪读取失败：' + esc(String(historyResp.error || '未知错误')) + '（其余区块不受影响）</div>'
+      : (historyResp && historyResp.ok && historyResp.degraded)
+        ? '<div class="meta err">逐句情绪文件降级（可能损坏），仅显示可读部分</div>'
+          + (historyList.length
+            ? historyList.map((item) => {
+              const v = Number(item.valence) || 0;
+              const band = item.moodBand || (v >= 0.15 ? '开心' : (v <= -0.15 ? '低落' : '平静'));
+              return '<div class="tm-item"><span class="tm-dot ' + (v >= 0.15 ? 'tm-strong' : 'tm-soft') + '"></span>'
+                + '<span class="tm-label">' + esc(String(item.text || '').slice(0, 28)) + '</span>'
+                + '<span class="meta">' + esc(band) + ' · ' + (v > 0 ? '+' : '') + v.toFixed(2) + '</span>'
+                + '<span class="meta">' + formatClock(item.at) + '</span></div>';
+            }).join('')
+            : '')
+      : historyList.length
+      ? historyList.map((item) => {
+        const v = Number(item.valence) || 0;
+        const band = item.moodBand || (v >= 0.15 ? '开心' : (v <= -0.15 ? '低落' : '平静'));
+        return '<div class="tm-item"><span class="tm-dot ' + (v >= 0.15 ? 'tm-strong' : 'tm-soft') + '"></span>'
+          + '<span class="tm-label">' + esc(String(item.text || '').slice(0, 28)) + '</span>'
+          + '<span class="meta">' + esc(band) + ' · ' + (v > 0 ? '+' : '') + v.toFixed(2) + '</span>'
+          + '<span class="meta">' + formatClock(item.at) + '</span></div>';
+      }).join('')
+      : '<div class="meta">还没有发过话；她每次开口后这里会留下当时的心情。</div>';
+
+    const rel = r.relationship || null;
+    const relHtml = rel
+      ? '<div class="emotion-block"><div class="block-title">和她的关系</div><div class="block-hint">亲密＝有多亲近；张力＝还没解决的紧张（吵架/冷落会升高）；信任＝能不能放心；依恋风格由关系慢变量决定；未了结的事是她还记得的挂念。</div>'
+        + '<div class="channel-row">'
+        + '<div class="channel-item"><span class="meta">亲密 intimacy</span><progress class="channel-bar" max="100" value="' + Math.round((Number(rel.intimacy) || 0) * 100) + '" aria-label="亲密 ' + Math.round((Number(rel.intimacy) || 0) * 100) + '%"></progress><b>' + (Number(rel.intimacy) || 0).toFixed(2) + '</b></div>'
+        + '<div class="channel-item"><span class="meta">张力 tension</span><progress class="channel-bar channel-bar-load" max="100" value="' + Math.round((Number(rel.tension) || 0) * 100) + '" aria-label="张力 ' + Math.round((Number(rel.tension) || 0) * 100) + '%"></progress><b>' + (Number(rel.tension) || 0).toFixed(2) + '</b></div>'
+        + '<div class="channel-item"><span class="meta">信任 trust</span><progress class="channel-bar channel-bar-slow" max="100" value="' + Math.round((Number(rel.trust) || 0) * 100) + '" aria-label="信任 ' + Math.round((Number(rel.trust) || 0) * 100) + '%"></progress><b>' + (Number(rel.trust) || 0).toFixed(2) + '</b></div>'
+        + '</div>'
+        + '<div class="meta mt-6">依恋：' + esc(String(rel.attachmentStyle || 'secure')) + (Array.isArray(rel.openLoops) && rel.openLoops.length ? ' · 还欠着：' + rel.openLoops.slice(0, 3).map((x) => esc(String(x.text || x.cause || ''))).join('；') : ' · 没有未了结的事') + '</div></div>'
+      : '<div class="emotion-block"><div class="meta">群聊没有唯一的「她」；私聊会话才有关系账本。</div></div>';
+
+    el.innerHTML = hero + '<div class="emotion-block"><div class="block-title">七情</div><div class="block-hint">传统七情——喜/怒/哀/惧/爱/恶/欲。数字是「此刻这种情绪有多强」，0% = 平静，格子永远在，方便对比。</div><div class="seven-grid">' + sevenHtml + '</div></div>'
+      + relHtml
+      + '<div class="emotion-block"><div class="block-title">混合心情（情绪栈）</div><div class="block-hint">此刻所有活跃情绪各占多少——这就是「她现在是哪种心情」的混合比例；只有一种时就是 100%。</div>' + stackHtml + '</div>'
+      + '<div class="emotion-block"><div class="block-title">双通道</div><div class="block-hint">即时心情＝反应快、回落快；背景心情＝残留久、影响底色（表面开心但底色低落时两个数会拉开）；慢性负荷＝长期负性累积（≥0.60 会告警）。</div>' + channels + '</div>'
+      + '<div class="emotion-block"><div class="block-title">情绪变化曲线</div><div class="block-hint">最近情绪强度的走势（越靠右越新，越高越强）；不刷新会自己回落。</div>' + curveHtml + '</div>'
+      + '<div class="emotion-block"><div class="block-title">最近评价链</div><div class="block-hint">最近触发她情绪的事件：什么情绪、现在多强（0.29＝29%）、什么时候、为什么。同一种情绪合并显示 ×次数。</div>' + timelineHtml + '</div>'
+      + '<div class="emotion-block"><div class="block-title">她每句话的情绪</div><div class="block-hint">她每发一条消息时的情绪快照（新→旧）：气泡里的字是她说的内容，后面是当时心情和强度。</div>' + historyHtml + '</div>'
+      + details;
+    // V2 生效时隐藏 legacy 卡片，避免两套视图重复
+    const legacy = document.getElementById('emotionBody');
+    if (legacy) legacy.hidden = true;
+  } catch (error) {
+    if (window.__emotionV2StackReqId !== reqId) return; // 旧失败请求不得覆盖新会话
+    el.hidden = true;
+    const legacy = document.getElementById('emotionBody');
+    if (legacy) legacy.hidden = false;
+    const msgEl = document.getElementById('emotionMsg');
+    if (msgEl) { msgEl.textContent = '情绪 V2 读取失败：' + ((error && error.message) || '未知错误'); msgEl.className = 'meta err'; }
+  }
+}
+
+// 1E：情绪页控制闭环（复用后端 reset/pause，不在前端复制清理逻辑）
+async function controlEmotionV2(action) {
+  const sel = document.getElementById('emotionKeySel');
+  const key = sel && sel.value ? sel.value : '';
+  const msg = document.getElementById('emotionV2ControlMsg');
+  if (action !== 'pause' && action !== 'resume' && !key) { if (msg) msg.textContent = '先选择会话'; return; }
+  if (action === 'resetMood' && !confirm('重置全局情绪（所有会话共享的 agentMood）？此操作不可撤销。')) return;
+  const uid = /^private:(\d+)$/.exec(key)?.[1] || '';
+  try {
+    let result;
+    if (action === 'resetMood') result = await api('/api/socialV2/emotion/reset', 'POST', { key });
+    else if (action === 'resetRel') { if (!uid) throw new Error('群聊没有关系对象'); result = await api('/api/socialV2/relationship/reset', 'POST', { key, uid }); }
+    else if (action === 'pause') result = await api('/api/socialV2/pause', 'POST', { paused: true });
+    else if (action === 'resume') result = await api('/api/socialV2/pause', 'POST', { paused: false });
+    if (result && result.ok === false) throw new Error(result.error || '服务端拒绝');
+    if (msg) msg.textContent = '已执行：' + action;
+    if (typeof renderEmotionV2Stack === 'function') renderEmotionV2Stack(key);
+    if (typeof renderEmotionV2Status === 'function') renderEmotionV2Status(key);
+  } catch (error) {
+    if (msg) msg.textContent = '失败：' + (error && error.message ? error.message : '未知错误');
+  }
+}
+document.addEventListener('click', (event) => {
+  const map = { emotionV2ResetMood: 'resetMood', emotionV2ResetRel: 'resetRel', emotionV2Pause: 'pause', emotionV2Resume: 'resume' };
+  const id = event.target && event.target.id;
+  if (!id || !map[id]) return;
+  event.preventDefault();
+  controlEmotionV2(map[id]);
+});
+
 async function loadEmotionPanel() {
   const body = document.getElementById('emotionBody');
   if (!body) return;
@@ -3680,6 +3940,8 @@ async function loadEmotionPanel() {
       const priv = list.find((c) => String(c.key || '').startsWith('private:'));
       key = priv ? priv.key : (list[0] ? list[0].key : '');
     }
+    if (key && typeof renderEmotionV2Status === 'function') renderEmotionV2Status(key);
+    if (key && typeof renderEmotionV2Stack === 'function') renderEmotionV2Stack(key);
     if (sel) {
       sel.innerHTML = ['<option value="">（选择会话）</option>'].concat(list.map((c) => {
         const cv = Number(c.valence) || 0;
@@ -3726,6 +3988,7 @@ async function loadEmotionPanel() {
         + (history && history.degraded ? ' · 历史文件损坏，已降级只读' : '');
     }
   } catch (error) {
+    if (stale()) return; // 旧失败请求不得覆盖新会话
     body.innerHTML = emotionErrorLine('读取她的情绪失败：' + (error.message || error));
     bindEmotionRetry();
   }

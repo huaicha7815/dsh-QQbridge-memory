@@ -875,7 +875,197 @@ export function createMemoryStore(options = {}) {
     return true;
   }
 
-  /** 列出有事件文件的所有日期（升序）。 */
+  // ── 1B：稳定 id 幂等 API（ADDENDUM-1B-internals §C）──────────────────────
+  // contentHash 优先比较；否则比较 entry 的字段子集。缓存只作优化，不落盘。
+  // 有界 LRU（≤500）：prune/archive 后清空，避免缓存掩盖「已被删除」的事件。
+  const STABLE_ID_CACHE_MAX = 500;
+  const stableIdCache = new Map(); // id → { event, file, size, mtimeMs }（缓存必须带文件指纹）
+  function cacheStableId(id, entry) {
+    if (stableIdCache.has(id)) stableIdCache.delete(id);
+    stableIdCache.set(id, entry);
+    while (stableIdCache.size > STABLE_ID_CACHE_MAX) {
+      stableIdCache.delete(stableIdCache.keys().next().value);
+    }
+  }
+  /** stat 且区分「确定不存在」（ENOENT）与「无法确认」（EACCES/EIO/ENOTDIR 等 → unknown）。 */
+  function statWithCode(file) {
+    try {
+      const stat = fs.statSync(file);
+      clearReadFailure(file);
+      return { stat, unknown: false };
+    } catch (error) {
+      const code = error && error.code;
+      // 只有显式 ENOENT 才算「确定不存在」；无 code 的普通 Error 一律 unknown（评审 R22）
+      if (code === 'ENOENT') {
+        clearReadFailure(file);
+        return { stat: null, unknown: false };
+      }
+      noteReadFailure(file, error);
+      return { stat: null, unknown: true };
+    }
+  }
+  /** 事件内容签名（同 ID 多行冲突检测）：非空 contentHash 优先，否则 canonical JSON（排除 contentHash，空串=缺失）。 */
+  function eventContentSignature(event) {
+    const hash = String(event?.contentHash ?? '');
+    if (hash) return hash;
+    const stripped = {};
+    for (const [k, v] of Object.entries(event ?? {})) {
+      if (['id', 't', 's', 'contentHash'].includes(k)) continue;
+      stripped[k] = v;
+    }
+    return stableStringify(stripped);
+  }
+  /** 返回副本：调用方修改不得污染缓存/后续命中（评审 R22）。 */
+  function cloneEvent(event) {
+    return event && typeof event === 'object' ? structuredClone(event) : event;
+  }
+  function sameEventContent(existing, entry) {
+    const hashA = String(existing?.contentHash ?? '');
+    const hashB = String(entry?.contentHash ?? '');
+    // 两侧都有非空 hash 才用 hash 比较；空串与缺失等价 → 退回字段比较（评审 R22）
+    if (hashA && hashB) return hashA === hashB;
+    for (const [k, v] of Object.entries(entry ?? {})) {
+      if (['id', 't', 's', 'contentHash'].includes(k)) continue;
+      if (stableStringify(existing?.[k]) !== stableStringify(v)) return false;
+    }
+    return true;
+  }
+  /** 全库快照指纹：目录枚举 + 每文件 ino/size/mtime/ctime（缓存命中前必须重算）。
+   *  返回 null 表示无法确认（枚举/stat 失败）→ 不得命中缓存。 */
+  function eventFileSnapshot() {
+    const parts = [];
+    const collect = (dir, re) => {
+      const { names, error } = listDirStrict(dir);
+      if (error) return false;
+      for (const name of names) {
+        if (!re.test(name)) continue;
+        const { stat, unknown } = statWithCode(path.join(dir, name));
+        if (unknown) return false;
+        if (!stat) continue;
+        parts.push(name + '|' + stat.ino + '|' + stat.size + '|' + stat.mtimeMs + '|' + stat.ctimeMs);
+      }
+      return true;
+    };
+    if (!collect(eventsDir, DAY_RE)) return null;
+    if (!collect(archiveDir, ARCHIVE_RE)) return null;
+    return parts.sort().join('\n');
+  }
+
+  /** 读一个活动日文件并显式传播「不可完整扫描」（stat/读失败/坏行 → unknown）。 */
+  function readDayEventsStrict(day) {
+    const file = path.join(eventsDir, `${day}.jsonl`);
+    const { stat, unknown: statUnknown } = statWithCode(file);
+    if (statUnknown) return { rows: [], unknown: true, file, stat: null };
+    if (!stat) return { rows: [], unknown: false, file, stat: null };
+    const { text, error } = readTextStrict(file);
+    if (text === null) return { rows: [], unknown: !!error, file, stat };
+    const { rows, parseErrors } = parseJsonl(text, file);
+    return { rows, unknown: parseErrors > 0, file, stat };
+  }
+
+  /** 读一个归档月文件并显式传播 unknown。 */
+  function readArchiveMonthStrict(month) {
+    const file = path.join(archiveDir, `${month}.jsonl`);
+    const { stat, unknown: statUnknown } = statWithCode(file);
+    if (statUnknown) return { rows: [], unknown: true, file, stat: null };
+    if (!stat) return { rows: [], unknown: false, file, stat: null };
+    const { text, error } = readTextStrict(file);
+    if (text === null) return { rows: [], unknown: !!error, file, stat };
+    const { rows, parseErrors } = parseJsonl(text, file);
+    return { rows, unknown: parseErrors > 0, file, stat };
+  }
+
+  /**
+   * 按稳定 id 查询（扫描全部活动日 + 归档月档；**任何无法完整扫描的文件 → unknown**，禁止当作不存在）。
+   * @returns {{found:boolean, unknown:boolean, conflict:boolean, event:object|null}}
+   */
+  function findEventByStableId(id) {
+    const target = String(id ?? '').trim();
+    if (!target) return { found: false, unknown: false, conflict: false, event: null };
+    try {
+      // 缓存命中必须重算全库快照指纹（任何日/月档变化都可能引入同 ID 异内容 → 必须重扫）
+      const cached = stableIdCache.get(target);
+      if (cached) {
+        const snapshot = eventFileSnapshot();
+        if (snapshot !== null && snapshot === cached.snapshot) {
+          return { found: true, unknown: false, conflict: false, event: cloneEvent(cached.event) };
+        }
+        stableIdCache.delete(target);
+      }
+      const snapshotBefore = eventFileSnapshot();
+      ensureDirs();
+      const { days, unknown: daysUnknown } = listEventDaysStrict();
+      if (daysUnknown) return { found: false, unknown: true, conflict: false, event: null };
+      const { months, unknown: monthsUnknown } = listArchiveMonthsStrict();
+      if (monthsUnknown) return { found: false, unknown: true, conflict: false, event: null };
+      const matches = [];
+      for (const day of days) {
+        const { rows, unknown, file, stat } = readDayEventsStrict(day);
+        if (unknown) return { found: false, unknown: true, conflict: false, event: null };
+        for (const row of rows) {
+          if (String(row?.id ?? '') === target) matches.push({ row, file, stat });
+        }
+      }
+      for (const month of months) {
+        const { rows, unknown, file, stat } = readArchiveMonthStrict(month);
+        if (unknown) return { found: false, unknown: true, conflict: false, event: null };
+        for (const row of rows) {
+          if (String(row?.id ?? '') === target) matches.push({ row, file, stat });
+        }
+      }
+      if (!matches.length) return { found: false, unknown: false, conflict: false, event: null };
+      // 同 ID 多行：内容签名一致 → found；不一致 → conflict（不覆盖、不静默取第一条）
+      const signatures = new Set(matches.map(({ row }) => eventContentSignature(row)));
+      if (signatures.size > 1) return { found: false, unknown: false, conflict: true, event: null };
+      const first = matches[0];
+      // 先快照→扫描→再快照，两次一致才缓存（避免扫描期间变更导致旧事件配新快照）
+      const snapshotAfter = eventFileSnapshot();
+      if (snapshotBefore && snapshotAfter && snapshotBefore === snapshotAfter) {
+        cacheStableId(target, { event: first.row, snapshot: snapshotAfter });
+      }
+      return { found: true, unknown: false, conflict: false, event: cloneEvent(first.row) };
+    } catch {
+      return { found: false, unknown: true, conflict: false, event: null };
+    }
+  }
+
+  /**
+   * 幂等 append：稳定 id 已存在且内容一致 → duplicate；内容不同 → conflict（不覆盖）。
+   * @returns {{ok:boolean, eventId:string|null, duplicate:boolean, conflict:boolean, code:string}}
+   */
+  function appendEventWithId(entry) {
+    const id = String(entry?.id ?? '').trim();
+    if (!id) return { ok: false, eventId: null, duplicate: false, conflict: false, code: 'io_error' };
+    const existing = findEventByStableId(id);
+    if (existing.unknown) return { ok: false, eventId: id, duplicate: false, conflict: false, code: 'io_error' };
+    if (existing.conflict) return { ok: false, eventId: id, duplicate: false, conflict: true, code: 'conflict' };
+    if (existing.found) {
+      if (sameEventContent(existing.event, entry)) {
+        return { ok: true, eventId: id, duplicate: true, conflict: false, code: 'duplicate' };
+      }
+      return { ok: false, eventId: id, duplicate: false, conflict: true, code: 'conflict' };
+    }
+    if (!appendEvent({ ...entry, id })) {
+      return { ok: false, eventId: id, duplicate: false, conflict: false, code: 'io_error' };
+    }
+    const after = findEventByStableId(id);
+    if (!after.found) return { ok: false, eventId: id, duplicate: false, conflict: false, code: 'io_error' };
+    return { ok: true, eventId: id, duplicate: false, conflict: false, code: 'ok' };
+  }
+  /** 严格版：目录枚举失败 → unknown（不允许把「读不到」当「没有」）。 */
+  function listEventDaysStrict() {
+    const { names, error } = listDirStrict(eventsDir);
+    const days = names.map((name) => DAY_RE.exec(name)?.[1]).filter(Boolean).sort();
+    return { days, unknown: !!error };
+  }
+
+  /** 严格版：归档月目录枚举失败 → unknown。 */
+  function listArchiveMonthsStrict() {
+    const { names, error } = listDirStrict(archiveDir);
+    const months = names.map((name) => ARCHIVE_RE.exec(name)?.[1]).filter(Boolean).sort();
+    return { months, unknown: !!error };
+  }
+
   function listEventDays() {
     const { names } = listDirStrict(eventsDir);
     return names
@@ -1984,6 +2174,7 @@ export function createMemoryStore(options = {}) {
         else fs.writeFileSync(full, keepLines.join('\n') + '\n', 'utf8');
       } catch { /* 写失败就留着 */ }
     }
+    stableIdCache.clear();
     return removed;
   }
 
@@ -2005,6 +2196,7 @@ export function createMemoryStore(options = {}) {
         // 删不掉就留着，不影响主流程
       }
     }
+    stableIdCache.clear();
     return removed;
   }
 
@@ -2475,7 +2667,8 @@ export function createMemoryStore(options = {}) {
   }
 
   /**
-   * 键排序的稳定序列化：同一份内容无论字段顺序如何都得到同一个字符串。
+   * 键排序的稳定序列化（canonical JSON）：同一份内容无论字段顺序如何都得到同一个字符串。
+   * 数组保序、对象键递归排序；undefined 序列化为 'null'。事件内容签名与 archiveRowKey 共用此实现（R23 合并重复定义）。
    */
   function stableStringify(value) {
     if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
@@ -3154,6 +3347,8 @@ export function createMemoryStore(options = {}) {
     configure,
     getConfig,
     appendEvent,
+    appendEventWithId,
+    findEventByStableId,
     readDayEvents,
     listEventDays,
     readEvents,

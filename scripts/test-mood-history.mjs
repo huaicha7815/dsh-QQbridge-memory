@@ -316,12 +316,19 @@ test('情绪快照：满容量（24 会话 × 1000 条 × 最大字段）文件�
     }
     const file = seedHistoryFile(h, byKey);
     h.resetMoodHistoryCacheForTest();
-    const started = Date.now();
-    h.recordMoodSnapshot('private:9998', '触发保存');
-    const elapsed = Date.now() - started;
+    // 预热一次（不计时），再测 3 次取中位数：单次 600ms 阈值在完整 daily 负载下会抖动（评审 P2）
+    h.recordMoodSnapshot('private:9998', '预热保存');
+    const samples = [];
+    for (let i = 0; i < 3; i += 1) {
+      const started = Date.now();
+      h.recordMoodSnapshot('private:9998', `触发保存${i}`);
+      samples.push(Date.now() - started);
+    }
+    samples.sort((a, b) => a - b);
+    const elapsed = samples[1];
     const size = fs.statSync(file).size;
     assert.ok(size < 30 * 1024 * 1024, `最大历史文件必须 < 30MB，实际 ${(size / 1024 / 1024).toFixed(2)}MB`);
-    assert.ok(elapsed < 600, `单次保存必须 < 600ms，实际 ${elapsed}ms`);
+    assert.ok(elapsed < 600, `单次保存（中位数）必须 < 600ms，实际 ${elapsed}ms（样本 ${samples.join('/')}）`);
   } finally {
     await h.close();
   }

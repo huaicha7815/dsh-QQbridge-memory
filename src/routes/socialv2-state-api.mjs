@@ -63,6 +63,11 @@ export async function handleSocialV2StateApi({
   readMoodHistory = null,
   isMoodHistoryDegraded = null,
   canonicalV2Key = null,
+  getEmotionV2Status = null,
+  getEmotionV2AbVariant = null,
+  getEmotionV2Detail = null,
+  getMoodView = null,
+  getRelationshipView = null,
 }) {
         // 情绪/关系只读视图（不写状态、不触发行为）。
         const moodLayer = moodLayerFor(getSocialV2State, socialV2);
@@ -73,7 +78,7 @@ export async function handleSocialV2StateApi({
           if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return true; }
           if (req.headers['x-agent-token'] && !v2ToolEnabled('socialState')) { sendJson({ ok: false, error: '工具未启用：qq_social_state' }, 403); return true; }
           const st = getSocialV2State(key);
-          const moodView = moodLayer.getMood(key);
+          const moodView = typeof getMoodView === 'function' ? getMoodView(key) : moodLayer.getMood(key);
           // 私聊的 key 本身就对应一个 QQ，可以直接给出「与这个人」的关系摘要；群聊没有唯一对象。
           const relationshipUid = /^private:(\d+)$/.exec(key)?.[1] ?? null;
           sendJson({
@@ -98,12 +103,24 @@ export async function handleSocialV2StateApi({
               }
               : null,
             mood: moodSummary(moodView),
-            relationship: relationshipUid ? relationshipSummary(moodLayer.getRelationship(relationshipUid)) : null,
+            relationship: relationshipUid ? relationshipSummary(typeof getRelationshipView === 'function' ? getRelationshipView(relationshipUid) : moodLayer.getRelationship(relationshipUid)) : null,
             // 会话 C：可解释性 —— 最近一次唤醒/发送用了哪份表达计划（为什么这样回应）。
             // 运行时数据（不落盘）：含 moodBand、长度上限、表情/语音允许概率、主动倍率与逐条 reasons。
             expression: socialV2?.lastExpression?.get?.(key) ?? null,
             // 最近一次主动机会检查的完整依据（为什么这次主动/没主动）。
-            lastProactive: socialV2?.lastProactiveByKey?.get?.(key) ?? null
+            lastProactive: socialV2?.lastProactiveByKey?.get?.(key) ?? null,
+            // 情绪 V2 预算/落盘健康（1C 控制台展示；null=未启用）
+            emotionV2: (() => {
+              try {
+                const status = typeof getEmotionV2Status === 'function' ? getEmotionV2Status() : null;
+                if (!status) return null;
+                return {
+                  ...status,
+                  // A/B 标签对 agent 盲化（仅控制台可见）
+                  abVariant: (!req.headers['x-agent-token'] && typeof getEmotionV2AbVariant === 'function') ? getEmotionV2AbVariant(key) : null,
+                };
+              } catch { return null; }
+            })()
           });
           return true;
         }
@@ -266,7 +283,7 @@ export async function handleSocialV2StateApi({
           if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return true; }
           if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return true; }
           if (req.headers['x-agent-token'] && !v2ToolEnabled('socialState')) { sendJson({ ok: false, error: '工具未启用：qq_social_state' }, 403); return true; }
-          const view = moodLayer.getMood(key);
+          const view = (typeof getMoodView === 'function' ? getMoodView(key) : moodLayer.getMood(key));
           if (!view.valid) { sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400); return true; }
           sendJson({
             ok: true,
@@ -277,13 +294,17 @@ export async function handleSocialV2StateApi({
               arousal: view.arousal,
               energy: view.energy,
               raw: view.raw,
-              cause: view.cause,
-              causeType: view.causeType,
+              // V2 adapter 无 cause/causeType：用 reasons 映射（§4.9），旧 UI 兼容
+              cause: view.cause ?? (Array.isArray(view.reasons) && view.reasons[0] ? (view.reasons[0].note || '') : ''),
+              causeType: view.causeType ?? (Array.isArray(view.reasons) && view.reasons[0] ? view.reasons[0].kind : ''),
               since: view.since,
               decayHalfLifeMs: view.decayHalfLifeMs,
               ageMs: view.ageMs
             },
-            events: view.events
+            reasons: Array.isArray(view.reasons) ? view.reasons : [],
+            events: view.events ?? (Array.isArray(view.reasons)
+              ? view.reasons.map((reason) => ({ type: reason.kind, at: null, cause: reason.note || '', sourceEventId: reason.sourceEventId ?? null, intensity: reason.intensity }))
+              : [])
           });
           return true;
         }
@@ -315,7 +336,7 @@ export async function handleSocialV2StateApi({
           const conversations = socialV2?.conversations;
           if (conversations && typeof conversations[Symbol.iterator] === 'function') {
             for (const [key] of conversations) {
-              const view = moodLayer.getMood(key);
+              const view = (typeof getMoodView === 'function' ? getMoodView(key) : moodLayer.getMood(key));
               list.push({
                 key,
                 known: view.known,
@@ -327,13 +348,24 @@ export async function handleSocialV2StateApi({
           return true;
         }
 
+        // 1E 控制台「情绪栈」：V2 agentMood 的 episodes/混合心情/负性循环健康（只读；agent 拒绝）。
+        if (req.method === 'GET' && url.pathname === '/api/socialV2/emotion/detail') {
+          if (req.headers['x-agent-token']) { sendJson({ ok: false, error: '该接口仅控制台可用' }, 403); return true; }
+          const key = String(url.searchParams.get('key') ?? '').trim();
+          if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return true; }
+          const detail = typeof getEmotionV2Detail === 'function' ? getEmotionV2Detail(key) : null;
+          if (!detail) { sendJson({ ok: false, error: '情绪 V2 未启用' }, 404); return true; }
+          sendJson({ ok: true, key, ...detail });
+          return true;
+        }
+
         // 只读：某个 QQ 的关系状态 + 最近来源事件 + 未了结的事（控制台「关系」查询）。
         // 跨会话聚合的全局视图：带 agent token 的请求一律拒绝，防止任意会话 token 读取他人关系。
         if (req.method === 'GET' && url.pathname === '/api/socialV2/relationship') {
           if (req.headers['x-agent-token']) { sendJson({ ok: false, error: '该接口仅控制台可用' }, 403); return true; }
           const uid = String(url.searchParams.get('uid') ?? '').trim();
           if (!uid) { sendJson({ ok: false, error: 'uid 不能为空' }, 400); return true; }
-          const view = moodLayer.getRelationship(uid);
+          const view = (typeof getRelationshipView === 'function' ? getRelationshipView(uid) : moodLayer.getRelationship(uid));
           if (!view.valid) { sendJson({ ok: false, error: 'uid 必须是正整数 QQ 号' }, 400); return true; }
           sendJson({
             ok: true,

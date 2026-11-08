@@ -27,6 +27,9 @@ import * as socialv2Wake from '../src/core/socialv2-wake.mjs';
 import * as socialv2Scheduler from '../src/core/socialv2-scheduler.mjs';
 import * as socialv2Prompt from '../src/core/socialv2-prompt.mjs';
 import * as mood from '../src/core/mood.mjs';
+import * as moodV2 from '../src/core/mood-v2.mjs';
+import * as socialv2Exec from '../src/core/socialv2-exec.mjs';
+import * as socialv2Runtime from '../src/core/socialv2-runtime.mjs';
 // bridge.js 把 HTTP 路由拆成了 src/routes/*.mjs，VM 里剥掉 import 后这些 handler
 // 必须同样注入，否则 bridge 调 handleXxxApiRequest 时是 undefined → 全部端点 500。
 import * as routeMemoryApi from '../src/routes/memory-api.mjs';
@@ -54,7 +57,7 @@ import * as galaxyCache from '../src/lib/galaxy-cache.mjs';
 import { unwrap, createTurnCollector } from '../src/dsh-client.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-export async function bridgeHarness({ config = {}, savedState, globals = {} } = {}) {
+export async function bridgeHarness({ config = {}, savedState, globals = {}, files = {} } = {}) {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-audit-bridge-'));
   fs.mkdirSync(path.join(temp, 'src'));
   fs.mkdirSync(path.join(temp, 'state'));
@@ -64,6 +67,12 @@ export async function bridgeHarness({ config = {}, savedState, globals = {} } = 
     consoleToken: 'fixture-console-token', slang: { enabled: false }, ...config,
   }));
   if (savedState) fs.writeFileSync(path.join(temp, 'state/sessions.json'), JSON.stringify(savedState));
+  // 预置任意状态文件（探针用：截断 JSON / 损坏文件 / 现成 V2 状态）
+  for (const [rel, content] of Object.entries(files)) {
+    const target = path.join(temp, rel);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, content);
+  }
   const calls = { created: [], archived: [], sent: [], prompts: [], follows: [], cancelled: [], images: [], http: [] };
   // 语音发送在桥接里是**直接 fetch 网关**（与文本/表情共用 sendChain，但要自己带 record 段），
   // 所以这里给 VM 注入一个记录型 fetch：既不让测试真的发 QQ 消息，又能断言发出的段内容。
@@ -152,7 +161,7 @@ export async function bridgeHarness({ config = {}, savedState, globals = {} } = 
     sendMessagesV2, forgetExpression, recordExpression, setBounded, lastExpressionByKey, lastProactiveByKey,
     memoryStore,
     recordMoodSnapshot, readMoodHistory, isMoodHistoryDegraded, resetMoodHistoryCacheForTest,
-    buildWakePromptV2, buildWakeSnapshotV2, sendWakePromptV2, socialV2,
+    buildWakePromptV2, buildWakeSnapshotV2, sendWakePromptV2, explainMoodV2, socialV2,
     flushQueue, retireSession,
     voiceCfg, voiceLibrary, resolveVoicePathForV2, resolveVoicePathForOperator,
     voiceBudgetCheck, sendVoiceV2, sendVoiceForV2, assertOutboundAuditOk,
@@ -187,7 +196,8 @@ export async function bridgeHarness({ config = {}, savedState, globals = {} } = 
     ...modelPrices, ...tokenLedger, ...voiceLib, ...stateAcl,
     // 长期记忆：bridge.js 顶层 import 在这里被剥掉，必须把同一份实现注入 VM，
     // 否则 createMemoryStore 未定义会让整个 harness 起不来。
-    ...memoryLib, ...memoryStore, ...socialv2Store, ...socialv2Wake, ...socialv2Scheduler, ...socialv2Prompt, ...mood,
+    ...memoryLib, ...memoryStore, ...socialv2Store, ...socialv2Wake, ...socialv2Scheduler, ...socialv2Prompt, ...mood, ...moodV2,
+    ...socialv2Exec, ...socialv2Runtime,
     // bridge.js 用 `import { evaluateWakeTriggerV2 as evaluateWakeTriggerV2Core }` 引入，
     // VM 里 import 被剥掉后别名不会自动存在；不补这一行，任何走 handleIncoming 的测试都会
     // ReferenceError: evaluateWakeTriggerV2Core is not defined（审查 r6 新问题）。

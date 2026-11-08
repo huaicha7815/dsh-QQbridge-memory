@@ -1960,3 +1960,57 @@ progress.usage-bar-fill::-moz-progress-bar, progress.emotion-bar-fill::-moz-prog
 
 .emotion-legend { display: grid; gap: 6px; margin-top: 8px; font-size: 13px; line-height: 1.6; }
 .emotion-legend b { font-weight: 600; }
+
+.emotion-warning { color: #c0392b; }
+
+/* ── 情绪 V2 主视图（重做）────────────────────────────────────────── */
+.emotion-hero { display:flex; align-items:center; gap:16px; padding:16px; border:1px solid var(--border); border-radius:16px; background:var(--surface-subtle); margin-top:6px }
+.hero-orb { width:56px; height:56px; border-radius:50%; flex:none; background:linear-gradient(135deg,#f7b267,#f4845f) }
+.hero-orb.mood-bad { background:linear-gradient(135deg,#7a8fa6,#4a5a70) }
+.hero-orb.mood-flat { background:linear-gradient(135deg,#b9c2cd,#98a3b2) }
+.hero-main { flex:1 }
+.hero-title { font-size:22px; font-weight:700; margin-bottom:2px }
+.hero-nums { display:flex; gap:18px }
+.hero-nums div { display:flex; flex-direction:column; align-items:flex-end }
+.hero-nums b { font-size:16px }
+.emotion-block { margin-top:18px }
+.block-title { font-weight:700; margin-bottom:8px; font-size:14px; color:var(--text) }
+.seven-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(96px,1fr)); gap:10px }
+.seven-cell { border:1px solid var(--border); border-radius:12px; padding:10px; background:var(--surface-subtle); opacity:.55; transition:opacity .2s }
+.seven-cell.active { opacity:1; border-color:var(--accent) }
+.seven-head { display:flex; align-items:baseline; gap:6px; margin-bottom:6px }
+.seven-head b { font-size:16px }
+.seven-head span { font-size:12px; color:var(--muted) }
+.seven-bar { width:100%; height:8px; appearance:none; border:none; border-radius:999px; background:var(--border); overflow:hidden }
+.seven-bar::-webkit-progress-bar { background:var(--border); border-radius:999px }
+.seven-bar::-webkit-progress-value { background:var(--accent); border-radius:999px }
+.seven-bar::-moz-progress-bar { background:var(--accent); border-radius:999px }
+.seven-val { font-size:12px; color:var(--muted); margin-top:4px }
+.channel-row { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px }
+.channel-item { display:flex; align-items:center; gap:10px; border:1px solid var(--border); border-radius:12px; padding:10px; background:var(--surface-subtle) }
+.channel-item .meta { min-width:88px }
+.channel-bar { flex:1; height:8px; appearance:none; border:none; border-radius:999px; background:var(--border); overflow:hidden }
+.channel-bar::-webkit-progress-bar { background:var(--border); border-radius:999px }
+.channel-bar::-webkit-progress-value { background:var(--accent); border-radius:999px }
+.channel-bar-slow::-webkit-progress-value { background:#8e7cc3 }
+.channel-bar-load::-webkit-progress-value { background:#c0392b }
+.tm-item { display:grid; grid-template-columns:14px 96px 1fr auto; align-items:center; gap:8px; padding:4px 0; border-bottom:1px dashed var(--border) }
+.tm-item:last-child { border-bottom:none }
+.tm-dot { width:10px; height:10px; border-radius:50%; background:var(--muted) }
+.tm-dot.tm-strong { background:var(--accent) }
+.tm-label { font-size:13px }
+.tm-bar { width:100%; height:6px; appearance:none; border:none; border-radius:999px; background:var(--border) }
+.tm-bar::-webkit-progress-bar { background:var(--border); border-radius:999px }
+.tm-bar::-webkit-progress-value { background:var(--accent); border-radius:999px }
+.emotion-details { margin-top:18px; border:1px solid var(--border); border-radius:12px; padding:10px 14px; background:var(--surface-subtle) }
+.emotion-details summary { cursor:pointer; font-weight:600 }
+.details-body { margin-top:10px }
+.block-hint { font-size:12px; color:var(--muted); margin:-4px 0 10px; line-height:1.6 }
+/* 窄屏适配 */
+@media (max-width: 720px) {
+  .emotion-hero { flex-wrap: wrap }
+  .hero-nums { gap: 12px }
+  .tm-item { grid-template-columns: 14px 1fr; row-gap: 4px }
+  .tm-bar { grid-column: 2 }
+}
+.tag-migrated { display:inline-block; margin-left:4px; padding:0 5px; border:1px solid var(--border); border-radius:6px; font-size:10px; color:var(--muted); vertical-align:middle }

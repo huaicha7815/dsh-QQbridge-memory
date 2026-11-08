@@ -142,5 +142,21 @@ const fixture = fs.readFileSync(path.join(ROOT, 'scripts', 'console-ui-fixture.m
 ok(fixture.includes("case '/api/socialV2/voices'"), 'fixture mock 了 /api/socialV2/voices');
 ok(fixture.includes("case '/api/voice/send'"), 'fixture mock 了 /api/voice/send');
 
+  // 情绪页 UI 重做（v2）：七情 / 心情卡 / 混合 / 双通道 / 曲线 / 评价链 / 每句情绪 / 关系
+  ok(html.includes('七情') && html.includes('SEVEN_EMOTIONS'), '情绪页：七情面板');
+  ok(html.includes('emotion-hero') && html.includes('心情'), '情绪页：心情卡');
+  ok(html.includes('混合心情（情绪栈）'), '情绪页：混合心情');
+  ok(html.includes('即时心情（快）') && html.includes('背景心情（慢）'), '情绪页：双通道');
+  ok(html.includes('aria-label="情绪曲线"'), '情绪页：曲线');
+  ok(html.includes('最近评价链'), '情绪页：评价链');
+  ok(html.includes('她每句话的情绪') && html.includes('mood-history'), '情绪页：逐句情绪');
+  ok(html.includes('和她的关系') && html.includes('attachmentStyle'), '情绪页：关系区块');
+  ok(html.includes('block-hint'), '情绪页：逐区解释');
+  ok(!html.includes('preserveAspectRatio="none"'), '曲线不得拉伸圆点');
+  ok(!html.includes('diff = 100'), '混合百分比不得补差');
+  ok(html.includes('逐句情绪文件降级（可能损坏），仅显示可读部分'), 'degraded 提示');
+  ok(html.includes("'情绪 V2 读取失败：'"), 'detail catch 错误文案');
+  ok(html.includes('aria-label="' + '') || html.includes('aria-label="即时心情'), 'progress aria-label');
+
 console.log(bad === 0 ? '\n全部通过' : `\n${bad} 项失败`);
 if (bad > 0) process.exit(1);

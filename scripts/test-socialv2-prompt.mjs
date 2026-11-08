@@ -101,3 +101,79 @@ test('快照：正常时带 unread / recent 结构', () => {
   assert.equal(snap.key, undefined, '快照不直接带 key（由 payload 包）');
   assert.ok('partial' in snap || 'includedUnreadCount' in snap, '应有分页/截断标记');
 });
+
+// ── 1D：prompt opt-in + A/B 分桶 ──────────────────────────────────────────
+
+function minimalBuilder(overrides = {}) {
+  return createWakePromptBuilder({
+    getState: (key) => ({ key, wakeConfig: {}, recentMessages: [], unread: [], lastIncomingAt: 0 }),
+    peekState: (key) => ({ key, wakeConfig: {}, recentMessages: [], unread: [], lastIncomingAt: 0 }),
+    cfg: { socialV2: {} },
+    formatMemoryInjectionV3: () => '',
+    formatParticipationV2: () => '',
+    readThroughSeqV2: () => 0,
+    suggestQuietMsV2: () => 10000,
+    v2ToolEnabled: () => true,
+    wakeRoleLineV2: () => '',
+    buildStickerContext: () => '',
+    buildStickerStrategyHint: () => '',
+    compactModelMessage: (m) => m,
+    looksLikeUnfinished: () => false,
+    buildDiaryDigestV2: () => '',
+    profileDigestForRefine: () => '',
+    threadClosureHints: () => [],
+    stickerEntries: () => [],
+    memoryStore: { getConfig: () => ({ enabled: false }) },
+    getMoodView: () => ({ valence: 0.5, arousal: 0.6, energy: 0.7, causeType: 'praised' }),
+    getRelationshipView: () => ({ intimacy: 0.1, tension: 0 }),
+    expressionCfg: () => ({}),
+    ...overrides,
+  });
+}
+
+test('1D promptOptIn=false → prompt 不含情绪决策段，但运行时 explainMood 仍可用', () => {
+  const builder = minimalBuilder({ promptOptIn: () => false });
+  const text = builder.buildWakePrompt('private:1', 'question');
+  assert.ok(!text.includes('心情'), 'prompt 不得含情绪决策段');
+  assert.ok(builder.explainMood('private:1'), '运行时表达计划不受 prompt opt-in 影响');
+});
+
+test('1D promptOptIn=true → 注入情绪决策段（explainMood 有 plan）', () => {
+  const builder = minimalBuilder({ promptOptIn: () => true });
+  const plan = builder.explainMood('private:1');
+  assert.ok(plan, '必须返回表达计划');
+  assert.ok(typeof plan.moodBand === 'string');
+});
+
+test('1D promptOptIn 抛错 → prompt fail-closed（不注入情绪段）', () => {
+  const builder = minimalBuilder({ promptOptIn: () => { throw new Error('boom'); } });
+  const text = builder.buildWakePrompt('private:1', 'question');
+  assert.ok(!text.includes('心情'), '开关异常不得注入情绪段');
+});
+
+test('1D A/B：同一 key 的分桶结果稳定', async () => {
+  const { bridgeHarness } = await import('./audit-bridge-harness.mjs');
+  const h = await bridgeHarness({ config: { emotion: { v2: { enabled: true, shadow: false, writeSchema: 'v2', prompt: { enabled: true, ab: true } } } } });
+  try {
+    const first = h.socialV2.emotionV2AbVariantFor('private:1');
+    const second = h.socialV2.emotionV2AbVariantFor('private:1');
+    assert.equal(first, second, 'A/B 分桶必须稳定');
+    assert.ok(['control', 'treatment'].includes(first));
+    assert.equal(h.socialV2.emotionV2AbVariantFor('private:1'), h.socialV2.emotionV2AbVariantFor('private:1'));
+  } finally {
+    await h.close();
+  }
+});
+
+test('1D 状态读取异常 → 不生成情绪计划（不得用默认平静冒充）', () => {
+  const builder = minimalBuilder({ promptOptIn: () => true, getMoodView: () => { throw new Error('io'); } });
+  assert.equal(builder.explainMood('private:1'), null, '运行时计划必须 null');
+  const text = builder.buildWakePrompt('private:1', 'question');
+  assert.ok(!text.includes('心情'), '不得注入伪造情绪段');
+});
+
+test('1D promptOptIn=true → prompt 含情绪决策段，其余段不变', () => {
+  const builder = minimalBuilder({ promptOptIn: () => true });
+  const text = builder.buildWakePrompt('private:1', 'question');
+  assert.ok(text.includes('心情') || text.includes('情绪'), '必须含情绪决策段');
+});
