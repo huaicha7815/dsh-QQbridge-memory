@@ -1303,3 +1303,48 @@ test('真实 bridge：poke 写入的记忆事件带正文与稳定 id，episode 
     await h.close();
   }
 });
+
+test('真实 bridge：同一 poke 载荷处理两次 → 同一 eventId、情绪事实只一条、关系不重复累加（幂等）', async () => {
+  const { bridgeHarness } = await import('./audit-bridge-harness.mjs');
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const h = await bridgeHarness({ config: { emotion: { v2: { enabled: true, shadow: false, writeSchema: 'v2' } } } });
+  h.setMode('reserved2');
+  const readState = () => JSON.parse(fs.readFileSync(path.join(h.temp, 'state', 'social-v2.json'), 'utf8'));
+  const readEmotionEvents = () => {
+    const dir = path.join(h.temp, 'state', 'memory', 'events');
+    const out = [];
+    if (!fs.existsSync(dir)) return out;
+    for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.jsonl'))) {
+      for (const line of fs.readFileSync(path.join(dir, f), 'utf8').split('\n')) {
+        if (!line.trim()) continue;
+        try { const e = JSON.parse(line); if (e.kind === 'emotion') out.push(e); } catch {}
+      }
+    }
+    return out;
+  };
+  try {
+    // 同一上游载荷（含 messageId + 上游时间）处理两次 = 上游重投
+    const payload = {
+      sender: '阿明', userId: '123', targetId: '123', targetIsSelf: true,
+      messageId: 'poke-9001', at: 1794000000000,
+    };
+    h.appendSocialV2Poke('private:123', payload);
+    const first = readState();
+    h.appendSocialV2Poke('private:123', payload);
+    const second = readState();
+
+    const emotions1 = readEmotionEvents();
+    assert.equal(emotions1.length, 1, '同一载荷重投后情绪事实只能有一条');
+    const epId1 = (first.agentMood?.episodes || []).find((e) => e.latestSourceEventId)?.latestSourceEventId;
+    const epId2 = (second.agentMood?.episodes || []).find((e) => e.latestSourceEventId)?.latestSourceEventId;
+    assert.ok(epId1, '第一次处理后 episode 必须带 source id');
+    assert.equal(epId2, epId1, '重投后 episode source id 不变');
+    assert.equal(emotions1[0].id, epId1, '记忆事件 id 与 episode source id 一致');
+
+    const pokedCount = (second.relationships['123']?.events || []).filter((e) => e.type === 'poked').length;
+    assert.equal(pokedCount, 1, '关系事件 poked 不得重复累加（同一个 factId 幂等）');
+  } finally {
+    await h.close();
+  }
+});

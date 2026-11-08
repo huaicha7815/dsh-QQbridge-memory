@@ -7998,7 +7998,7 @@ async function main() {
   }
 
   // 二代拍一拍事件写入最近/未读消息流，让 AI 能看到“谁拍了拍谁/拍了拍我”。
-  function appendSocialV2Poke(key, { sender, userId, targetId, targetIsSelf, isOwner = false, groupId = null, action = '', suffix = '' }) {
+  function appendSocialV2Poke(key, { sender, userId, targetId, targetIsSelf, isOwner = false, groupId = null, action = '', suffix = '', messageId = null, at = Date.now() }) {
     const st = getSocialV2State(key);
     const recentLimit = Number(cfg.socialV2?.context?.recentLimit) || 100;
     const unreadLimit = Number(cfg.socialV2?.context?.unreadLimit) || 30;
@@ -8009,7 +8009,7 @@ async function main() {
     const text = `[拍一拍] ${actor} ${actionText} ${target}${suffixText}`.slice(0, 200);
     const msg = {
       seq: (st.lastUnreadSeq || 0) + 1,
-      messageId: null,
+      messageId: messageId != null ? String(messageId) : null,
       sender: actor,
       userId: userId != null ? String(userId) : null,
       text,
@@ -8025,10 +8025,10 @@ async function main() {
       forwardIds: [],
       hasForward: false,
       poke: { targetId: targetId != null ? String(targetId) : null, targetIsSelf: !!targetIsSelf, groupId: groupId != null ? String(groupId) : null },
-      time: Date.now()
+      time: at
     };
     st.lastUnreadSeq = msg.seq;
-    st.lastIncomingAt = Date.now();
+    st.lastIncomingAt = at;
     st.preSleepWaitSatisfiedAt = 0;
     st.preSleepWaitObservedAt = 0;
     st.preSleepWaitAccumMs = 0;
@@ -8058,19 +8058,21 @@ async function main() {
     if (emotionV2Runtime.viewEnabled && emotionV2Runtime.adapter && !socialV2.paused && msg.userId != null) {
       try {
         const pokeResultFlags = pokeResult || {};
-        const pokeBase = msg.messageId != null ? `fact:poke:${key}:${msg.messageId}` : null;
+        // 稳定 ID：有上游 messageId 用消息号；没有则用 key+sender+target+上游时间。
+        // 不能退回 null（否则关系侧无 factId，上游重投会重复累计）。
+        const pokeBase = msg.messageId != null
+          ? `fact:poke:${key}:${msg.messageId}`
+          : `fact:poke:${key}:${msg.userId ?? ''}:${msg.poke?.targetId ?? ''}:${msg.time}`;
         if (pokeResultFlags.interactionApplied === true) {
           emotionV2Runtime.adapter.applyRelationshipEvent(msg.userId, 'interaction', {
             contextKey: key,
-            factId: pokeBase ? `${pokeBase}:interaction` : undefined,
+            factId: `${pokeBase}:interaction`,
           });
         }
         if (pokeResultFlags.classifiedApplied === true && pokeEmotionType) {
           // 拍一拍也要有稳定 id 与触发文本（协作检查：情绪事件无 id/正文会断追溯链、银河只剩空星）。
           const pokeEmotionText = String(msg.plain || msg.text || '').trim();
-          const pokeStableId = pokeBase
-            ? `${pokeBase}:emotion`
-            : `fact:poke:${key}:${msg.userId ?? ''}:${msg.time ?? now()}`;
+          const pokeStableId = `${pokeBase}:emotion`;
           emotionV2Runtime.adapter.applyEmotionEvent(key, {
             type: pokeEmotionType,
             at: msg.time,
@@ -8082,7 +8084,7 @@ async function main() {
           });
           emotionV2Runtime.adapter.applyRelationshipEvent(msg.userId, pokeEmotionType, {
             contextKey: key,
-            factId: pokeBase ? `${pokeBase}:rel:${pokeEmotionType}` : undefined,
+            factId: `${pokeBase}:rel:${pokeEmotionType}`,
           });
         }
       } catch (error) {
@@ -9250,6 +9252,11 @@ async function main() {
     }
     const targetIsSelf = !!targetId && selfId != null && String(targetId) === String(selfId);
     const isOwner = String(senderId) === String(cfg.ownerQQ ?? '');
+    // 上游时间可能是秒级时间戳：>1e12 视为毫秒，否则按秒换算（NaN 时退回 undefined → 内部 Date.now）。
+    const rawUpstreamTime = Number(event.time ?? event.timestamp ?? NaN);
+    const upstreamAt = Number.isFinite(rawUpstreamTime) && rawUpstreamTime > 0
+      ? (rawUpstreamTime > 1e12 ? rawUpstreamTime : Math.round(rawUpstreamTime * 1000))
+      : undefined;
     const msg = appendSocialV2Poke(key, {
       sender,
       userId: senderId || null,
@@ -9258,7 +9265,9 @@ async function main() {
       isOwner,
       groupId: groupId != null ? String(groupId) : null,
       action: event.action,
-      suffix: event.suffix
+      suffix: event.suffix,
+      messageId: event.message_id ?? event.msg_id ?? null,
+      ...(upstreamAt ? { at: upstreamAt } : {}),
     });
     appendActivity(`${key} 拍一拍事件：${msg.text.slice(0, 80)}`);
     if (currentMode !== 'reserved2') return;
