@@ -1348,3 +1348,44 @@ test('真实 bridge：同一 poke 载荷处理两次 → 同一 eventId、情绪
     await h.close();
   }
 });
+
+test('真实 bridge：无 messageId 的 poke 双处理（固定上游 at）→ 同一 eventId、只一条情绪事实（生产实际分支）', async () => {
+  const { bridgeHarness } = await import('./audit-bridge-harness.mjs');
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const h = await bridgeHarness({ config: { emotion: { v2: { enabled: true, shadow: false, writeSchema: 'v2' } } } });
+  h.setMode('reserved2');
+  const readState = () => JSON.parse(fs.readFileSync(path.join(h.temp, 'state', 'social-v2.json'), 'utf8'));
+  const readEmotionEvents = () => {
+    const dir = path.join(h.temp, 'state', 'memory', 'events');
+    const out = [];
+    if (!fs.existsSync(dir)) return out;
+    for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.jsonl'))) {
+      for (const line of fs.readFileSync(path.join(dir, f), 'utf8').split('\n')) {
+        if (!line.trim()) continue;
+        try { const e = JSON.parse(line); if (e.kind === 'emotion') out.push(e); } catch {}
+      }
+    }
+    return out;
+  };
+  try {
+    // 生产 poke notice 通常没有 messageId：走 key+sender+target+at 分支
+    const payload = { sender: '阿明', userId: '123', targetId: '123', targetIsSelf: true, at: 1794000123000 };
+    h.appendSocialV2Poke('private:123', payload);
+    const first = readState();
+    h.appendSocialV2Poke('private:123', payload);
+    const second = readState();
+    const emotions = readEmotionEvents();
+    assert.equal(emotions.length, 1, '无 messageId 重投后情绪事实只能有一条');
+    const ep1 = (first.agentMood?.episodes || []).find((e) => e.latestSourceEventId)?.latestSourceEventId;
+    const ep2 = (second.agentMood?.episodes || []).find((e) => e.latestSourceEventId)?.latestSourceEventId;
+    assert.ok(ep1, '第一次处理后 episode 必须带 source id');
+    assert.equal(ep2, ep1, '无 messageId 重投后 episode source id 不变');
+    assert.equal(emotions[0].id, ep1, '记忆事件 id 与 episode source id 一致');
+    assert.ok(emotions[0].text.trim().length > 0, '无 messageId 的 poke 也必须有正文');
+    const poked = (second.relationships['123']?.events || []).filter((e) => e.type === 'poked').length;
+    assert.equal(poked, 1, '关系事件 poked 不得重复累加');
+  } finally {
+    await h.close();
+  }
+});
